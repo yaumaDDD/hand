@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Generate zcity_csgo_gloves/lua/zcity_csgo_gloves/sh_data.lua from tools/zcg_layout.py and
+the model files, so that the Lua side and the build tools can never disagree.
+
+    python tools/make_lua_data.py <extracted_root>
+
+<extracted_root> has one sub-folder per source archive (build_addon.py --keep-temp leaves such
+a tree in build/_extract).  Run tools/make_vmts.py first: every material of a glove must have
+its generated VMT.  The one material without - "bare_arm_*", the bare arm that ships inside
+every glove model - is the one Lua takes care of: tools/patch_models.py leaves only the fingers
+of that arm, Lua gives them their skin or hides them.
+"""
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import make_vmts  # noqa: E402
+import mdl_lite  # noqa: E402
+import patch_models  # noqa: E402
+import zcg_layout as L  # noqa: E402
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ADDON = os.path.normpath(os.path.join(HERE, '..', L.ADDON_DIRNAME))
+
+
+def lua_str(s):
+    return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def variant_lua(v, info, addon=ADDON):
+    """the line of sh_data.lua for one glove. info: its model as read by mdl_lite;
+    addon: the addon folder that holds the materials (the skeleton, or a finished build)"""
+    line = '{ id = %s, name = %s, label = %s, model = %s, body = %d' % (
+        lua_str(v['id']), lua_str(v['name']), lua_str(v['label']),
+        lua_str(L.MODELS_DIR + '/' + v['model'] + '.mdl'), v['body'])
+    swaps = []
+    for index, name, drawn in L.glove_materials(info, v):
+        if drawn == name:
+            continue
+        if index > 31:
+            raise ValueError('%s: material index %d, Entity:SetSubMaterial only reaches 0..31' % (v['id'], index))
+        for cd in info['cdtextures']:
+            if os.path.exists(os.path.join(addon, 'materials', cd, drawn + '.vmt')):
+                swaps.append('[%d] = %s' % (index, lua_str(cd + '/' + drawn)))
+                break
+        else:
+            raise ValueError('%s: material "%s" has no VMT in the addon - run tools/make_vmts.py first' % (v['id'], drawn))
+    if swaps:
+        line += ', mats = { %s }' % ', '.join(swaps)
+    return line + ' },'
+
+
+def model_info(idx, name):
+    """returns (index of body group "gloves", index of "sleeves", number of glove variants,
+    sorted indices of the bare-arm materials used by the "gloves" body group, offset in the
+    .dx90.vtx of the first triangle that the build removes, the model as read by mdl_lite)"""
+    mdl_path = idx[L.MODELS_DIR + '/' + name + '.mdl']
+    info = mdl_lite.read(mdl_path)
+    names = [bp['name'] for bp in info['bodyparts']]
+    gloves, sleeves = names.index('gloves'), names.index('sleeves')
+    if info['bodyparts'][sleeves]['models'][0]['meshes']:
+        raise SystemExit('%s: sleeves submodel 0 is expected to be empty' % name)
+    bare = set()
+    for model in info['bodyparts'][gloves]['models']:
+        for mat in model['materials']:
+            tex = info['textures'][mat].lower()
+            if tex.startswith(patch_models.BARE_PREFIX):
+                bare.add(mat)
+            elif not any(os.path.exists(os.path.join(ADDON, 'materials', cd, tex + '.vmt')) for cd in info['cdtextures']):
+                raise SystemExit('%s: material "%s" has no VMT in the addon - run tools/make_vmts.py first' % (name, tex))
+    if not bare:
+        raise SystemExit('%s: no bare arm in this model - is it a glove model?' % name)
+    if any(i > 31 for i in bare):
+        raise SystemExit('%s: the bare arm has a material index > 31, Entity:SetSubMaterial cannot reach it' % name)
+    # The glove is drawn with skin 0 and the Lua code addresses materials by their place in the
+    # list of the model, so skin 0 must not shuffle that list (the other skins are the skin
+    # tones of the CS:GO arm).
+    if not info['skins'] or info['skins'][0] != list(range(len(info['skins'][0]))):
+        raise SystemExit('%s: skin 0 of this model replaces materials, the material indices in sh_data.lua would be wrong' % name)
+
+    with open(idx[L.MODELS_DIR + '/' + name + '.vvd'], 'rb') as f:
+        vvd = f.read()
+    with open(idx[L.MODELS_DIR + '/' + name + '.dx90.vtx'], 'rb') as f:
+        vtx = f.read()
+    patched, stats = patch_models.fingers_only(mdl_path, vvd, vtx)
+    cut = stats['first']
+    if cut is None or patch_models.is_removed(vtx, cut) or not patch_models.is_removed(patched, cut):
+        raise SystemExit('%s: no arm to remove in this model (the archives must hold the original models)' % name)
+    return gloves, sleeves, len(info['bodyparts'][gloves]['models']), sorted(bare), cut, info
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('src_root')
+    ap.add_argument('--out', default=os.path.join(ADDON, 'lua', 'zcity_csgo_gloves', 'sh_data.lua'))
+    args = ap.parse_args()
+
+    idx = make_vmts.build_index(args.src_root)
+    infos = {m: model_info(idx, m) for m in L.MODELS}
+
+    out = [
+        '-- Z-City CS:GO gloves - glove catalogue.',
+        '-- GENERATED by tools/make_lua_data.py from tools/zcg_layout.py - do not edit by hand.',
+        '--',
+        '-- id    : networked and used in hooks, never changes',
+        '-- name  : the key stored in the players\' appearance files (ABodygroups.HANDS), never changes',
+        '-- label : only shown in the picker',
+        '-- body  : value of the body group "gloves" of the model',
+        '-- mats  : only where the model does not name the materials of a glove: sub-material index ->',
+        '--         material that cl_render.lua puts there (Entity:SetSubMaterial)',
+        '',
+        'local ZCG = ZCGloves',
+        '',
+        'ZCG.ModelDir = %s' % lua_str(L.MODELS_DIR + '/'),
+        '',
+        '-- per model: body group indices, and the sub-materials of the bare CS:GO arm that is part of',
+        '-- every glove model. The build removes that arm except for the fingers of the fingerless',
+        '-- gloves (tools/patch_models.py); cl_render.lua gives them their skin, or hides them.',
+        '-- cut: where in the .dx90.vtx file the first triangle that the build removed is stored. There',
+        '-- cl_render.lua sees whether a client has these models or still those of version 1.0.x.',
+        'ZCG.Models = {',
+    ]
+    for m in L.MODELS:
+        gloves, sleeves, count, bare, cut, _info = infos[m]
+        out.append('\t[%s] = { gloves = %d, sleeves = %d, bare = { %s }, cut = %d },' % (
+            lua_str(L.MODELS_DIR + '/' + m + '.mdl'), gloves, sleeves, ', '.join(str(i) for i in bare), cut))
+    out += ['}', '', 'ZCG.Families = {']
+    for fam in L.FAMILIES:
+        out.append('\t{')
+        out.append('\t\tid = %s, title = %s, fingerless = %s,' % (lua_str(fam['id']), lua_str(fam['title']), 'true' if fam['fingerless'] else 'false'))
+        out.append('\t\tvariants = {')
+        for v in L.variants():
+            if v['family'] is not fam:
+                continue
+            if v['body'] >= infos[v['model']][2]:
+                raise SystemExit('%s: model %s has no glove variant %d' % (v['id'], v['model'], v['body']))
+            try:
+                out.append('\t\t\t' + variant_lua(v, infos[v['model']][5]))
+            except ValueError as err:
+                raise SystemExit(str(err))
+        out.append('\t\t},')
+        out.append('\t},')
+    out += ['}', '']
+
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    with open(args.out, 'w', encoding='ascii', newline='\n') as f:
+        f.write('\n'.join(out))
+    print('wrote %s (%d variants, %d models)' % (os.path.normpath(args.out), len(L.variants()), len(L.MODELS)))
+
+
+if __name__ == '__main__':
+    main()

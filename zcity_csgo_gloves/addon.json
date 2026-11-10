@@ -1,0 +1,11 @@
+{
+	"title": "Z-City CS:GO Gloves",
+	"type": "model",
+	"tags": [ "realism", "roleplay" ],
+	"ignore": [
+		"*.psd",
+		"*.md",
+		"*.txt",
+		".git*"
+	]
+}

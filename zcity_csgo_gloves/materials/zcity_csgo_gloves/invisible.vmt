@@ -1,0 +1,8 @@
+// Z-City CS:GO gloves - draws nothing. Used to hide a sub-material when the game has no "null" material.
+"VertexLitGeneric"
+{
+	"$basetexture" "color/white"
+	"$no_draw" "1"
+	"$translucent" "1"
+	"$alpha" "0"
+}

@@ -1,0 +1,9 @@
+# Windows batch files need CRLF line endings, whatever the platform of the checkout
+*.bat -text
+
+*.7z binary
+*.zip binary
+*.png binary
+*.jpg binary
+*.vtf binary
+*.mdl binary
