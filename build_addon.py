@@ -25,6 +25,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, 'tools'))
@@ -36,6 +37,8 @@ import zcg_layout as L  # noqa: E402
 
 OPTIMIZED = 'optimized_textures.7z'
 MARKER = '.zcg_extracted'
+# file date inside the zip: fixed, so that the same sources always give the very same zip
+ZIP_TIME = (2026, 11, 10, 12, 0, 0)
 
 
 class BuildError(Exception):
@@ -338,6 +341,21 @@ def step_verify(out):
     return problems, len(checked_vmts)
 
 
+def make_zip(out):
+    """<out>.zip with the addon folder inside; byte for byte the same for the same content"""
+    path = out + '.zip'
+    top = os.path.basename(out)
+    with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
+        for rel, full in sorted(walk_files(out)):
+            info = zipfile.ZipInfo(top + '/' + rel, date_time=ZIP_TIME)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3  # same header whatever the system the zip is made on
+            info.external_attr = 0o644 << 16
+            with open(full, 'rb') as f:
+                z.writestr(info, f.read())
+    return path
+
+
 def summary(out):
     groups = {'models': [0, 0], 'textures': [0, 0], 'materials': [0, 0], 'icons': [0, 0], 'lua': [0, 0], 'other': [0, 0]}
     for rel, full in walk_files(out):
@@ -417,7 +435,7 @@ def main():
         '%s %d' % (key, groups[key][0]) for key in ('models', 'textures', 'materials', 'icons', 'lua') if groups[key][0])))
 
     if args.zip:
-        archive = shutil.make_archive(out, 'zip', root_dir=os.path.dirname(out), base_dir=os.path.basename(out))
+        archive = make_zip(out)
         print('  zip: %s (%s)' % (archive, mb(os.path.getsize(archive))))
 
     print('')
