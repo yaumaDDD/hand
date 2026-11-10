@@ -14,7 +14,7 @@ MODELS_DIR = "models/zcity_csgo_gloves"
 # Made by tools/make_skin.py, used by cl_render.lua (Config.FingerMaterial in sh_config.lua).
 FINGER_MATERIAL = ADDON_DIRNAME + "/skin/fingers"
 
-# archive (without .7z) -> list of (folder inside the archive, destination)
+# archive (without .7z / .zip) -> list of (folder inside the archive, destination)
 # destination for textures is relative to ARMS_MAT_DIR, "@models" means MODELS_DIR
 ARCHIVES = {
     "bloodhound":               [("bloodhound", "glove_bloodhound")],
@@ -43,6 +43,10 @@ for _n in range(1, 14):
     ARCHIVES["driver%d" % _n] = [("driver%d" % _n, "glove_slick/%d" % _n)]
 for _n in range(1, 12):
     ARCHIVES["specialst%d" % _n] = [("specialst%d" % _n, "glove_specialist/right/%d" % _n)]
+# Sport gloves (these came as .zip): the VMTs and the exponent map, then one folder per colour
+ARCHIVES["sport main"] = [("sport main", "glove_sporty")]
+for _n in range(1, 14):
+    ARCHIVES["sport%d" % _n] = [("sport%d" % _n, "glove_sporty/%d" % _n)]
 
 # ---------------------------------------------------------------------------------------
 # Corrections to the VMTs of the archives: addon-relative path (lower case) -> {key: value}.
@@ -110,6 +114,9 @@ FAMILIES = [
         'Lt. Commander', 'Field Agent', 'Marble Fade', 'Crimson Kimono']),
         materials={5: {'glove_specialist_right_6': 'glove_specialist_right_5',
                        'glove_specialist_left_6': 'glove_specialist_left_5'}}),
+    dict(id='sport', title='Sport', fingerless=False, variants=_same_model('v_glove_sporty', [
+        'Orange', 'Amphibious', 'Superconductor', 'Hedge Maze', 'Vice', 'Omega', 'Scarlet Shamagh',
+        'Big Game', 'Bronze Morph', "Pandora's Box", 'Arid', 'Nocts', 'Slingshot'])),
 ]
 
 # models that have a complete set of glove materials in the archives

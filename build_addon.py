@@ -4,7 +4,7 @@
 
     python build_addon.py [--out DIR] [--zip] [--original-textures] [--keep-temp]
 
-The repository keeps the heavy content (models, textures) in the .7z archives it was delivered
+The repository keeps the heavy content (models, textures) in the .7z / .zip archives it was delivered
 in, plus a small addon skeleton (Lua, materials, icons) in zcity_csgo_gloves/.  This script
 unpacks the archives and puts everything where the game expects it:
 
@@ -39,8 +39,8 @@ import vmt  # noqa: E402
 import zcg_layout as L  # noqa: E402
 
 # reduced versions of the oversized textures (tools/optimize_textures.py), in the addon layout;
-# the second archive came with the Driver and Specialist gloves
-OPTIMIZED = ('optimized_textures.7z', 'optimized_textures2.7z')
+# the second archive came with the Driver and Specialist gloves, the third with Sport
+OPTIMIZED = ('optimized_textures.7z', 'optimized_textures2.7z', 'optimized_textures3.7z')
 OVERSIZED = 6 * 1024 * 1024  # as in tools/optimize_textures.py
 MARKER = '.zcg_extracted'
 # file date inside the zip: fixed, so that the same sources always give the very same zip
@@ -113,7 +113,11 @@ def extract(extractor, archive, dest):
     if os.path.isdir(dest):
         shutil.rmtree(dest)
     os.makedirs(dest)
-    extractor(archive, dest)
+    if archive.lower().endswith('.zip'):
+        with zipfile.ZipFile(archive) as z:
+            z.extractall(dest)
+    else:
+        extractor(archive, dest)
     with open(marker, 'w', encoding='utf-8') as f:
         f.write(stamp)
     return True
@@ -182,10 +186,12 @@ def mb(size):
 def step_extract(extractor, temp):
     names = sorted(L.ARCHIVES)
     for i, name in enumerate(names, 1):
-        archive = os.path.join(HERE, name + '.7z')
-        if not os.path.isfile(archive):
-            raise BuildError('archive is missing: %s' % archive)
-        print('  [%2d/%d] %s.7z' % (i, len(names), name), end='', flush=True)
+        # most archives are .7z, the later uploads .zip
+        found = [os.path.join(HERE, name + ext) for ext in ('.7z', '.zip') if os.path.isfile(os.path.join(HERE, name + ext))]
+        if not found:
+            raise BuildError('archive is missing: %s (.7z or .zip)' % os.path.join(HERE, name))
+        archive = found[0]
+        print('  [%2d/%d] %s' % (i, len(names), os.path.basename(archive)), end='', flush=True)
         fresh = extract(extractor, archive, os.path.join(temp, name))
         print('' if fresh else '  (already unpacked)')
 
@@ -489,7 +495,7 @@ def main():
     ap.add_argument('--keep-temp', action='store_true',
                     help='keep the unpacked archives (the scripts in tools/ work on that folder, and the next build is faster)')
     ap.add_argument('--original-textures', action='store_true',
-                    help='keep the original 4096 px (and uncompressed 2048 px) textures: about 840 MB instead of 270 MB')
+                    help='keep the original 4096 px (and uncompressed 2048 px) textures: about 1020 MB instead of 364 MB')
     ap.add_argument('--zip', action='store_true', help='also pack the result into <out>.zip')
     args = ap.parse_args()
 

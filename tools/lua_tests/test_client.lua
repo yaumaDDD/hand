@@ -913,7 +913,7 @@ return function(testdir, luaroot)
 	for _, panel in ipairs(M.panels) do
 		if not panel.removed and panel.zcg_variant then tiles[#tiles + 1] = panel end
 	end
-	eq(#tiles, 68, "one tile per glove")
+	eq(#tiles, 81, "one tile per glove")
 	local px, py = picker:GetPos()
 	check(px >= 0 and px + picker:GetWide() <= 1920, "picker inside the window (x)")
 	check(py >= 0 and py + picker:GetTall() <= 1080, "picker inside the window (y)")
@@ -1038,7 +1038,7 @@ return function(testdir, luaroot)
 			check(panel.zcg_variant.family.id ~= "moto", "moto hidden by the hook")
 		end
 	end
-	eq(shown, 68 - 13 - 1, "CanSelect hook removes tiles")
+	eq(shown, 81 - 13 - 1, "CanSelect hook removes tiles")
 	main.zcg_picker:Remove() M.flushPanels()
 	hook.Remove("ZCityCSGOGloves_CanSelect", "test")
 
@@ -1295,6 +1295,45 @@ return function(testdir, luaroot)
 		M.advance(17)
 		check(again.removed == true, "the unused model is removed")
 		check(ZCG.States[eve] == nil, "state forgotten")
+	end
+
+	-- The Sport gloves (1.3.0): closed gloves on one more model, nothing is swapped on it
+	do
+		local SPORT = "models/zcity_csgo_gloves/v_glove_sporty.mdl"
+		local DIR = "models/weapons/v_models/arms/glove_sporty/"
+		local materials = { "models/weapons/v_models/arms/bare/bare_arm_133" }
+		for n = 1, 13 do
+			local suffix = n == 1 and "" or ("_" .. n)
+			materials[#materials + 1] = DIR .. "glove_sporty_left" .. suffix
+			materials[#materials + 1] = DIR .. "glove_sporty_right" .. suffix
+		end
+		M.files[SPORT] = true
+		M.models[SPORT] = { bones = gloveBones(), materials = materials }
+		local zoe = M.newPlayer("zoe", Z.MALE)
+		dress(zoe)
+		zoe.nw.zcg_glove = "sport_13"
+		frame() Z.draw(zoe)
+		local sport = ZCG.States[zoe] and ZCG.States[zoe].mdl
+		check(sport ~= nil and sport.model == SPORT, "sport_13 is drawn with the Sport model")
+		if sport then
+			eq(sport:GetBodygroup(0), 12, "Sport: body group gloves = variant - 1")
+			eq(sport:GetBodygroup(1), 0, "Sport: no sleeves")
+			eq(sport:GetSubMaterial(0), "null", "Sport: the bare arm inside the model is hidden")
+			local swapped = 0
+			for index = 1, #materials - 1 do
+				if sport:GetSubMaterial(index) ~= "" then swapped = swapped + 1 end
+			end
+			eq(swapped, 0, "Sport: the materials of the model are left alone")
+		end
+		eq(zoe:GetSubMaterial(HANDS_SLOT), "null", "Sport: a closed glove hides the hands of its wearer")
+		zoe.nw.zcg_glove = "sport_1"
+		frame() Z.draw(zoe)
+		local first = ZCG.States[zoe] and ZCG.States[zoe].mdl
+		check(first ~= nil and first.model == SPORT, "sport_1 is drawn with the Sport model")
+		if first then eq(first:GetBodygroup(0), 0, "Sport: the first body of the model") end
+		zoe.nw.zcg_glove = "none"
+		frame() Z.draw(zoe)
+		eq(zoe:GetSubMaterial(HANDS_SLOT), CLOTHES, "Sport: hands back when the glove is taken off")
 	end
 
 	eq(#M.errors, 0, "no errors at the end: " .. table.concat(M.errors, " | "))

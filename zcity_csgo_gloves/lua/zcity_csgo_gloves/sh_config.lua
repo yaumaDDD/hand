@@ -19,14 +19,14 @@ ZCGloves.Config = {
 	PollInterval = 0.3,
 
 	-- A glove hides the hands of the player model. Under a full-finger glove (moto, hardknuckle,
-	-- leather, driver, specialist) the skin would poke through; a fingerless glove brings fingers of its own: they
+	-- leather, driver, specialist, sport) the skin would poke through; a fingerless glove brings fingers of its own: they
 	-- are part of the glove models and fit them exactly, which the fingers of a player model
 	-- do not.
 	-- Set a family to false to keep the wearer's own hands under it (a fingerless glove is then
 	-- drawn without its fingers, as up to version 1.0.1):
 	--   HideHands = { handwrap = false }
 	-- Families: bloodhound, brokenfang, hydra, handwrap, fingerless, moto, hardknuckle, leather,
-	-- driver, specialist.
+	-- driver, specialist, sport.
 	-- (zcg_hide_hands 0 does this for every glove, zcg_fingers 0 for all fingerless ones.)
 	HideHands = {},
 

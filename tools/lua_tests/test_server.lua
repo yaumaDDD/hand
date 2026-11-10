@@ -19,7 +19,7 @@ return function(testdir, luaroot)
 		"v_glove_bloodhound", "v_glove_bloodhound_fingerless_brokenfang", "v_glove_bloodhound_fingerless_hydra",
 		"v_glove_handwrap_leathery", "v_glove_fingerless", "v_glove_motorcycle", "v_glove_ct_hardknuckle",
 		"v_glove_ct_hardknuckle_black", "v_glove_ct_hardknuckle_blue", "v_glove_fullfinger",
-		"v_glove_slick", "v_glove_ct_specialist",
+		"v_glove_slick", "v_glove_ct_specialist", "v_glove_sporty",
 	}
 	for _, name in ipairs(models) do
 		for _, ext in ipairs({ ".mdl", ".vvd", ".dx90.vtx" }) do
@@ -38,11 +38,11 @@ return function(testdir, luaroot)
 	include("autorun/zcity_csgo_gloves.lua")
 	local ZCG = ZCGloves
 	check(ZCG ~= nil, "ZCGloves table exists")
-	eq(#ZCG.Variants, 68, "number of gloves")
-	eq(#ZCG.Families, 10, "number of glove families")
+	eq(#ZCG.Variants, 81, "number of gloves")
+	eq(#ZCG.Families, 11, "number of glove families")
 	eq(ZCG.Ready, nil, "not registered while Z-City is missing")
 	eq(#M.csfiles, 6, "files sent to clients")
-	eq(#util.precached, 12, "precached models")
+	eq(#util.precached, 13, "precached models")
 	eq(#resource.files, 0, "nothing in FastDL by default")
 	eq(#resource.workshop, 0, "no workshop download by default")
 
@@ -56,6 +56,24 @@ return function(testdir, luaroot)
 		check(v.name:sub(1, 6) == "CS:GO ", "name prefix of " .. v.id)
 	end
 
+	do -- Sport (1.3.0): thirteen closed gloves, the thirteen bodies of one model
+		local SPORT = "models/zcity_csgo_gloves/v_glove_sporty.mdl"
+		local count = 0
+		for _, v in ipairs(ZCG.Variants) do
+			if v.family.id == "sport" then
+				count = count + 1
+				eq(v.id, "sport_" .. count, "id of Sport glove " .. count)
+				eq(v.name, string.format("CS:GO Sport %02d", count), "name of Sport glove " .. count)
+				eq(v.model, SPORT, "model of Sport glove " .. count)
+				eq(v.body, count - 1, "body of Sport glove " .. count)
+				check(v.mats == nil, "no material is swapped for Sport glove " .. count)
+				eq(v.family.fingerless, false, "Sport glove " .. count .. " is a closed one")
+			end
+		end
+		eq(count, 13, "Sport gloves")
+		check(ZCG.ByID.sport_13 ~= nil and ZCG.ByName["CS:GO Sport 13"] == ZCG.ByID.sport_13, "a Sport glove is found by id and by name")
+	end
+
 	M.advance(3)
 	eq(ZCG.Ready, nil, "still waiting for Z-City")
 	eq(#M.errors, 0, "no errors while waiting")
@@ -67,7 +85,7 @@ return function(testdir, luaroot)
 
 	local hands = hg.Appearance.Bodygroups.HANDS
 	for sex = 1, 2 do
-		eq(table.Count(hands[sex]), 3 + 68, "entries in HANDS[" .. sex .. "]")
+		eq(table.Count(hands[sex]), 3 + 81, "entries in HANDS[" .. sex .. "]")
 		local entry = hands[sex]["CS:GO Moto 05"]
 		check(entry ~= nil, "moto 05 registered for sex " .. sex)
 		eq(entry[1], "hands", "our gloves keep the bare hands submodel")
@@ -208,7 +226,7 @@ return function(testdir, luaroot)
 	hands[1] = { ["None"] = { "hands", false } }
 	hands[2]["CS:GO Moto 05"] = nil
 	M.advance(21)
-	eq(table.Count(hands[1]), 1 + 68, "re-registered after a rebuild")
+	eq(table.Count(hands[1]), 1 + 81, "re-registered after a rebuild")
 	check(hands[2]["CS:GO Moto 05"] ~= nil, "single missing entry restored")
 
 	-- ---------------------------------------------------------------- status command

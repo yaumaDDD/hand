@@ -30,6 +30,7 @@ ZCG.Models = {
 	["models/zcity_csgo_gloves/v_glove_fullfinger.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 616194 },
 	["models/zcity_csgo_gloves/v_glove_slick.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 1108800 },
 	["models/zcity_csgo_gloves/v_glove_ct_specialist.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 1563943 },
+	["models/zcity_csgo_gloves/v_glove_sporty.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 1359479 },
 }
 
 ZCG.Families = {
@@ -149,6 +150,24 @@ ZCG.Families = {
 			{ id = "specialist_9", name = "CS:GO Specialist 09", label = "Field Agent", model = "models/zcity_csgo_gloves/v_glove_ct_specialist.mdl", body = 8 },
 			{ id = "specialist_10", name = "CS:GO Specialist 10", label = "Marble Fade", model = "models/zcity_csgo_gloves/v_glove_ct_specialist.mdl", body = 9 },
 			{ id = "specialist_11", name = "CS:GO Specialist 11", label = "Crimson Kimono", model = "models/zcity_csgo_gloves/v_glove_ct_specialist.mdl", body = 10 },
+		},
+	},
+	{
+		id = "sport", title = "Sport", fingerless = false,
+		variants = {
+			{ id = "sport_1", name = "CS:GO Sport 01", label = "Orange", model = "models/zcity_csgo_gloves/v_glove_sporty.mdl", body = 0 },
+			{ id = "sport_2", name = "CS:GO Sport 02", label = "Amphibious", model = "models/zcity_csgo_gloves/v_glove_sporty.mdl", body = 1 },
+			{ id = "sport_3", name = "CS:GO Sport 03", label = "Superconductor", model = "models/zcity_csgo_gloves/v_glove_sporty.mdl", body = 2 },
+			{ id = "sport_4", name = "CS:GO Sport 04", label = "Hedge Maze", model = "models/zcity_csgo_gloves/v_glove_sporty.mdl", body = 3 },
+			{ id = "sport_5", name = "CS:GO Sport 05", label = "Vice", model = "models/zcity_csgo_gloves/v_glove_sporty.mdl", body = 4 },
+			{ id = "sport_6", name = "CS:GO Sport 06", label = "Omega", model = "models/zcity_csgo_gloves/v_glove_sporty.mdl", body = 5 },
+			{ id = "sport_7", name = "CS:GO Sport 07", label = "Scarlet Shamagh", model = "models/zcity_csgo_gloves/v_glove_sporty.mdl", body = 6 },
+			{ id = "sport_8", name = "CS:GO Sport 08", label = "Big Game", model = "models/zcity_csgo_gloves/v_glove_sporty.mdl", body = 7 },
+			{ id = "sport_9", name = "CS:GO Sport 09", label = "Bronze Morph", model = "models/zcity_csgo_gloves/v_glove_sporty.mdl", body = 8 },
+			{ id = "sport_10", name = "CS:GO Sport 10", label = "Pandora's Box", model = "models/zcity_csgo_gloves/v_glove_sporty.mdl", body = 9 },
+			{ id = "sport_11", name = "CS:GO Sport 11", label = "Arid", model = "models/zcity_csgo_gloves/v_glove_sporty.mdl", body = 10 },
+			{ id = "sport_12", name = "CS:GO Sport 12", label = "Nocts", model = "models/zcity_csgo_gloves/v_glove_sporty.mdl", body = 11 },
+			{ id = "sport_13", name = "CS:GO Sport 13", label = "Slingshot", model = "models/zcity_csgo_gloves/v_glove_sporty.mdl", body = 12 },
 		},
 	},
 }
