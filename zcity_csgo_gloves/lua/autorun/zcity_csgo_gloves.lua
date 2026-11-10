@@ -1,0 +1,34 @@
+-- Z-City CS:GO Gloves
+-- Adds 44 CS:GO gloves to the "Gloves" slot of the Z-City appearance editor.
+-- https://github.com/yaumaDDD/hand
+
+if SERVER then AddCSLuaFile() end
+
+ZCGloves = ZCGloves or {}
+ZCGloves.Version = "1.0.0"
+
+local DIR = "zcity_csgo_gloves/"
+
+local function shared(name)
+	if SERVER then AddCSLuaFile(DIR .. name) end
+	include(DIR .. name)
+end
+
+local function client(name)
+	if SERVER then
+		AddCSLuaFile(DIR .. name)
+	else
+		include(DIR .. name)
+	end
+end
+
+local function server(name)
+	if SERVER then include(DIR .. name) end
+end
+
+shared("sh_config.lua")
+shared("sh_data.lua")
+shared("sh_core.lua")
+server("sv_core.lua")
+client("cl_render.lua")
+client("cl_editor.lua")

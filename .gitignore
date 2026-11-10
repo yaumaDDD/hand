@@ -1,0 +1,6 @@
+# result and temporary files of build_addon.py
+/build/
+
+# Python
+__pycache__/
+*.pyc
