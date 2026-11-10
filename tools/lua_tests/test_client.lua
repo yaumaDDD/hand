@@ -20,8 +20,34 @@ return function(testdir, luaroot)
 	local HYDRA = "models/zcity_csgo_gloves/v_glove_bloodhound_fingerless_hydra.mdl"
 	local LEATHER = "models/zcity_csgo_gloves/v_glove_fullfinger.mdl"
 	local HANDWRAP = "models/zcity_csgo_gloves/v_glove_handwrap_leathery.mdl"
+	-- The skeleton of the glove models, much reduced (the real ones have 41 bones): the bone
+	-- names of a player model, in another order, the wrist helper after the hand.
+	local function gloveBones()
+		local bones = {}
+		local function add(name, parent, x, y, z)
+			bones[#bones + 1] = { "ValveBiped.Bip01_" .. name, parent, x, y, z }
+			return #bones - 1
+		end
+		local spine = add("Spine4", -1, 0, 19, -4)
+		for _, side in ipairs({ "L", "R" }) do
+			local y = side == "L" and 1 or -1
+			local clavicle = add(side .. "_Clavicle", spine, 2, 1, 2 * y)
+			local upperarm = add(side .. "_UpperArm", clavicle, 5, 0, y)
+			local forearm = add(side .. "_Forearm", upperarm, 12.3, 0, 0)
+			local hand = add(side .. "_Hand", forearm, 11.5, 0, 0)
+			local finger = add(side .. "_Finger1", hand, 3.7, -0.2, 1.4 * y)
+			add(side .. "_Finger11", finger, 1.2, 0.1, 0)
+			add(side .. "_Wrist", forearm, 11.5, 0, 0)
+		end
+		return bones
+	end
+	local function bone(side, part) return "ValveBiped.Bip01_" .. side .. "_" .. part end
+
 	-- (the hard knuckle and broken fang models are "not installed")
-	for _, path in ipairs({ MOTO, BLOODHOUND, HYDRA, LEATHER, HANDWRAP }) do M.files[path] = true end
+	for _, path in ipairs({ MOTO, BLOODHOUND, HYDRA, LEATHER, HANDWRAP }) do
+		M.files[path] = true
+		M.models[path] = { bones = gloveBones() }
+	end
 	M.files["materials/zcity_csgo_gloves/icons/moto_5.png"] = true -- the other icons are "missing"
 
 	local CLOTHES = "models/humans/male/group01/normal"
@@ -46,6 +72,21 @@ return function(testdir, luaroot)
 	end
 	local function lastModel() return M.csmodels[#M.csmodels] end
 
+	-- Is the glove where its wearer was drawn? nil = every bone the two have in common is at the
+	-- same place, otherwise the name of a bone that is not.
+	local function offBone(glove, wearer)
+		if not glove.shown or not wearer.shown then return "nothing was drawn" end
+		local common = 0
+		for name, m in pairs(glove.shown) do
+			if wearer.shown[name] then
+				common = common + 1
+				if not M.sameMatrix(m, wearer.shown[name]) then return name end
+			end
+		end
+		if common == 0 then return "no bones in common" end
+		return nil
+	end
+
 	-- the server applied the appearance: clothes on every slot, hands included
 	local function dress(ent)
 		ent.submats = {}
@@ -54,6 +95,8 @@ return function(testdir, luaroot)
 
 	-- ---------------------------------------------------------------- a full-finger glove
 	local alice = M.newPlayer("alice", Z.MALE)
+	alice:SetPos(Vector(100, 200, 0))
+	alice.tpik = Z.tpik -- her arms are not where the animation alone would put them
 	dress(alice)
 	alice.nw.zcg_glove = "moto_5"
 
@@ -63,23 +106,57 @@ return function(testdir, luaroot)
 	eq(glove.model, MOTO, "glove model path")
 	eq(glove.nodraw, true, "the glove is drawn by hand")
 	eq(glove.shadow, false, "no shadow")
-	eq(glove:GetParent(), alice, "parented to the wearer")
-	eq(glove.effects, EF_BONEMERGE, "bone merged")
+	eq(glove.parent, nil, "no parent")
+	eq(glove.effects, nil, "not bone merged: the addon places the bones")
 	eq(glove:GetBodygroup(0), 4, "body group gloves = variant - 1")
 	eq(glove:GetBodygroup(1), 0, "no sleeves")
 	eq(glove:GetSubMaterial(0), "null", "the bare arm inside the glove model is hidden")
 	eq(glove.draws, 1, "drawn once")
 	eq(alice:GetSubMaterial(HANDS_SLOT), "null", "the wearer's hands are hidden")
 	eq(alice:GetSubMaterial(0), CLOTHES, "the other slots are untouched")
-	eq(M.drawn[#M.drawn], glove, "the glove is drawn after its wearer")
-	eq(M.drawn[#M.drawn - 1], alice, "the wearer is drawn first")
+	eq(M.drawn[#M.drawn], alice, "the wearer is drawn after her glove")
+	eq(M.drawn[#M.drawn - 1], glove, "the glove is drawn in the hook right before its wearer")
 
-	local writes, parents = alice.submatWrites, glove.parentSets
+	-- the point of it all: the glove is on the hands that were drawn
+	check(not M.sameMatrix(alice.shown[bone("R", "Hand")], alice:GetBoneMatrix(alice:LookupBone(bone("R", "Hand")))),
+		"(the imitation: the drawn hand is not where the animation alone puts it)")
+	eq(offBone(glove, alice), nil, "every bone of the glove is where the wearer's bone was drawn")
+	eq(glove.shownAt, alice.shown["ValveBiped.Bip01_Spine4"]:GetTranslation() - Vector(0, 0, 31),
+		"the entity is placed so that the glove takes its light at the wearer's chest")
+	eq(glove.setups, 2, "bones set up: once to read the skeleton, once for the draw")
+
+	local writes, boneWrites = alice.submatWrites, glove.boneWrites
+	eq(boneWrites, 15, "every bone of the glove was written")
 	for _ = 1, 10 do frame() Z.draw(alice) end
 	eq(#M.csmodels, 1, "no model is created twice")
 	eq(glove.draws, 11, "drawn every frame")
 	eq(alice.submatWrites, writes, "the hands are not written again while they stay hidden")
-	eq(glove.parentSets, parents, "the parent is not set again")
+	eq(glove.setups, 12, "the bones are set up once per draw")
+	eq(glove.boneWrites, (boneWrites or 0) * 11, "and written again after every set up")
+	eq(offBone(glove, alice), nil, "still on the hands")
+	eq(hook.list.PostDrawAppearance and hook.list.PostDrawAppearance.zcg_gloves, nil, "nothing is drawn after the wearer any more")
+
+	-- the wearer moves: the glove follows
+	alice:SetPos(Vector(-300, 40, 64))
+	frame() Z.draw(alice)
+	eq(offBone(glove, alice), nil, "the glove follows its wearer")
+	eq(glove.shown[bone("L", "Hand")]:GetTranslation(), alice.shown[bone("L", "Hand")]:GetTranslation(), "(left hand, to be explicit)")
+
+	-- an arm that Z-City amputated is scaled to nothing: the glove goes with it
+	alice.tpik = function(ent)
+		Z.tpik(ent)
+		for _, part in ipairs({ "Forearm", "Ulna", "Wrist", "Hand", "Finger1", "Finger11" }) do
+			local index = ent:LookupBone(bone("L", part))
+			local m = ent:GetBoneMatrix(index)
+			m:SetScale(Vector(0.01, 0.01, 0.01))
+			ent:SetBoneMatrix(index, m)
+		end
+	end
+	frame() Z.draw(alice)
+	eq(offBone(glove, alice), nil, "the glove takes the wearer's bones as they are")
+	check(glove.shown[bone("L", "Finger11")]:GetScale().x < 0.02, "the glove of an amputated arm is scaled to nothing with it")
+	check(math.abs(glove.shown[bone("R", "Finger11")]:GetScale().x - 1) < 1e-6, "the other one is not")
+	alice.tpik = Z.tpik
 
 	-- the engine's colour modulation is put back
 	render.SetColorModulation(0.2, 0.4, 0.6)
@@ -170,12 +247,35 @@ return function(testdir, luaroot)
 
 	-- a model without the hands material (zcg_any_model 1 on a class model): glove drawn, nothing hidden
 	local dave = M.newPlayer("dave", Z.COMBINE)
+	dave:SetPos(Vector(-50, 10, 0))
+	dave.tpik = Z.tpik
 	dress(dave)
 	dave.nw.zcg_glove = "moto_3"
 	Z.draw(dave)
-	eq(lastModel():GetParent(), dave, "glove on a foreign model")
+	local daveGlove = lastModel()
+	eq(ZCG.States[dave].mdl, daveGlove, "glove on a foreign model")
+	eq(daveGlove.draws, 1, "drawn on a foreign model")
 	eq(dave:GetSubMaterial(0), CLOTHES, "nothing hidden on a foreign model")
 	eq(dave.submatWrites, nil, "no sub-material written on a foreign model")
+
+	-- this model has neither the wrist helpers nor finger bones
+	eq(offBone(daveGlove, dave), nil, "the bones the model has are taken from it")
+	for _, side in ipairs({ "L", "R" }) do
+		local forearm, hand = dave.shown[bone(side, "Forearm")], dave.shown[bone(side, "Hand")]
+		local wrist = M.copyMatrix(forearm)
+		wrist:SetTranslation(hand:GetTranslation())
+		check(M.sameMatrix(daveGlove.shown[bone(side, "Wrist")], wrist),
+			side .. ": no wrist helper - the rotation of the forearm at the place of the hand")
+		local finger = hand * M.matrix(3.7, -0.2, side == "L" and 1.4 or -1.4)
+		check(M.sameMatrix(daveGlove.shown[bone(side, "Finger1")], finger),
+			side .. ": no finger bones - the fingers keep the pose of the glove model, on the hand")
+		check(M.sameMatrix(daveGlove.shown[bone(side, "Finger11")], finger * M.matrix(1.2, 0.1, 0)),
+			side .. ": down to the last joint")
+	end
+	frame() Z.draw(dave)
+	eq(offBone(daveGlove, dave), nil, "the same in the next frame")
+	check(M.sameMatrix(daveGlove.shown[bone("R", "Finger1")], dave.shown[bone("R", "Hand")] * M.matrix(3.7, -0.2, -1.4)),
+		"the pose of the glove model is remembered, not read from bones that were written")
 
 	-- ---------------------------------------------------------------- convars
 	alice:SetModel(Z.MALE)
@@ -213,8 +313,10 @@ return function(testdir, luaroot)
 	local rag = M.newEntity("prop_ragdoll", Z.MALE)
 	dress(rag)
 	rag.nw.ply = alice
+	rag:SetPos(Vector(10, 20, 30))
 	Z.draw(rag, alice)
-	eq(lastModel():GetParent(), rag, "a fresh ragdoll takes the glove of its owner")
+	eq(ZCG.States[rag].mdl, lastModel(), "a fresh ragdoll takes the glove of its owner")
+	eq(offBone(lastModel(), rag), nil, "on the hands of the ragdoll")
 	eq(rag:GetSubMaterial(HANDS_SLOT), "null", "the ragdoll's hands are hidden too")
 	rag.nw.zcg_glove = "none"
 	frame() Z.draw(rag, alice)
@@ -222,7 +324,7 @@ return function(testdir, luaroot)
 	rag.nw.zcg_glove = "handwrap_4"
 	rag.nw.ply = NULL
 	frame() Z.draw(rag)
-	eq(lastModel():GetParent(), rag, "a dead body keeps its glove without an owner")
+	eq(ZCG.States[rag].mdl, lastModel(), "a dead body keeps its glove without an owner")
 	eq(lastModel().model, HANDWRAP, "the dead body's own glove")
 	eq(lastModel():GetBodygroup(0), 3, "the dead body's own variant")
 
@@ -263,11 +365,112 @@ return function(testdir, luaroot)
 	eq(bob:GetSubMaterial(HANDS_SLOT), CLOTHES, "hands are not hidden when the glove cannot be drawn")
 	eq(#M.log, 1, "still one warning")
 
+	-- ---------------------------------------------------------------- gloves and wearers that are not ready
+	local R_HAND = bone("R", "Hand")
+
+	-- a glove model the engine does not hand out bones for yet
+	local HARD3 = ZCG.ByID.hardknuckle_3.model
+	check(HARD3 ~= ZCG.ByID.hardknuckle_2.model, "(hardknuckle_3 has a model of its own)")
+	M.files[HARD3] = true
+	M.models[HARD3] = { bones = {} }
+	local erin = M.newPlayer("erin", Z.MALE)
+	erin.tpik = Z.tpik
+	dress(erin)
+	erin.nw.zcg_glove = "hardknuckle_3"
+	Z.draw(erin)
+	local erinGlove = ZCG.States[erin].mdl
+	eq(erinGlove.draws, nil, "a glove without bones is not drawn")
+	eq(erinGlove.hiddenDraws, 1, "it is drawn invisibly instead, which makes the engine load it")
+	eq(erin:GetSubMaterial(HANDS_SLOT), CLOTHES, "the hands stay as long as no glove is drawn over them")
+	eq(ZCG.States[erin].why, "the glove model has no bones yet", "the reason is kept for zcg_debug")
+	M.models[HARD3].bones = gloveBones()
+	frame() Z.draw(erin)
+	eq(erinGlove.draws, 1, "drawn as soon as the bones are there")
+	eq(offBone(erinGlove, erin), nil, "and on the hands")
+	eq(erin:GetSubMaterial(HANDS_SLOT), "null", "now the hands are hidden")
+	eq(ZCG.States[erin].why, nil, "no reason left")
+
+	-- a wearer without hand bones
+	local CRAB = "models/headcrabclassic.mdl"
+	M.models[CRAB] = { materials = { "models/headcrab_classic/headcrabsheet" }, bones = { { "HCclassic.body", -1, 0, 0, 8 } } }
+	local frank = M.newPlayer("frank", CRAB)
+	frank.nw.zcg_glove = "moto_1"
+	Z.draw(frank)
+	frame() Z.draw(frank)
+	eq(ZCG.States[frank].mdl.draws, nil, "no hand bones: no glove")
+	eq(ZCG.States[frank].mdl.hiddenDraws, nil, "(and no invisible draw: the glove model is not the problem)")
+	eq(ZCG.States[frank].why, "the wearer's model has no hand bones", "the reason is kept")
+	eq(frank.submatWrites, nil, "nothing is hidden on it")
+
+	-- a wearer with one arm only
+	local ONEARM = "models/onearm.mdl"
+	M.models[ONEARM] = { materials = M.models[Z.MALE].materials, bones = Z.skeleton({ wrist = true, fingers = true, left = false }) }
+	local gina = M.newPlayer("gina", ONEARM)
+	gina.tpik = Z.tpik
+	dress(gina)
+	gina.nw.zcg_glove = "moto_1"
+	Z.draw(gina)
+	local ginaGlove = ZCG.States[gina].mdl
+	eq(ginaGlove.draws, 1, "one hand is enough")
+	eq(offBone(ginaGlove, gina), nil, "the glove of that hand is on it")
+	for _, part in ipairs({ "Clavicle", "UpperArm", "Forearm", "Hand", "Finger1", "Finger11", "Wrist" }) do
+		local m = ginaGlove.shown[bone("L", part)]
+		check(m:GetScale().x < 0.02 and m:GetTranslation() == gina.shown[R_HAND]:GetTranslation(),
+			"the glove of the missing hand is shrunk to nothing (" .. part .. ")")
+	end
+
+	-- a wearer whose bones were never set up (somebody calls ZCG.DrawGlove on a model of their own)
+	local doll = ClientsideModel(Z.MALE)
+	eq(ZCG.DrawGlove(doll, ZCG.ByID.moto_1), false, "no bone matrices: nothing is drawn")
+	eq(ZCG.States[doll].why, "the wearer's bones are not set up", "the reason is kept")
+	doll:SetupBones()
+	eq(ZCG.DrawGlove(doll, ZCG.ByID.moto_1), true, "drawn once the wearer has bones")
+	eq(offBone(ZCG.States[doll].mdl, { shown = (function()
+		local shown = {}
+		for i = 0, doll:GetBoneCount() - 1 do shown[doll:GetBoneName(i)] = doll:GetBoneMatrix(i) end
+		return shown
+	end)() }), nil, "on its hands")
+	ZCG.ClearGlove(doll)
+	doll:Remove()
+
+	-- ---------------------------------------------------------------- zcg_bonemerge 1: the engine places the bones
+	local byHand = ZCG.States[alice].mdl
+	M.setConVar("zcg_bonemerge", 1)
+	frame() Z.draw(alice)
+	local merged = ZCG.States[alice].mdl
+	check(merged ~= byHand and byHand.removed == true, "the glove model is made anew for the other method")
+	eq(merged:GetParent(), alice, "parented to the wearer")
+	eq(merged.effects, EF_BONEMERGE, "bone merged")
+	eq(merged.boneWrites, nil, "the addon writes no bones")
+	eq(merged.setups, 1, "but has them merged at the moment of drawing")
+	eq(M.drawn[#M.drawn], alice, "the wearer is still drawn after her glove")
+	eq(M.drawn[#M.drawn - 1], merged, "the merged glove is drawn in the same hook")
+	eq(offBone(merged, alice), nil, "(the imitation of the engine merges the pose of that moment)")
+	eq(alice:GetSubMaterial(HANDS_SLOT), "null", "hands hidden as before")
+	local parentSets = merged.parentSets
+	for _ = 1, 3 do frame() Z.draw(alice) end
+	eq(merged.parentSets, parentSets, "the parent is set once")
+	eq(merged.setups, 4, "merged again for every draw")
+
+	me.lookat = alice
+	M.log = {}
+	M.command("zcg_debug", me)
+	check(table.concat(M.log, "\n"):find("bone-merged by the engine", 1, true) ~= nil, "zcg_debug names the method in use")
+	M.log = {}
+	frame() Z.draw(alice)
+	check(table.concat(M.log, "\n"):find("(zcg_bonemerge 1)", 1, true) ~= nil, "the bone report works for a merged glove too")
+	me.lookat = nil
+
+	M.setConVar("zcg_bonemerge", 0)
+	frame() Z.draw(alice)
+	check(merged.removed == true and ZCG.States[alice].mdl.parent == nil, "and back to the default")
+	eq(offBone(ZCG.States[alice].mdl, alice), nil, "on the hands again")
+
 	-- ---------------------------------------------------------------- zcg_preview / zcg_debug
 	dress(me)
 	M.command("zcg_preview", me, "moto_9")
 	Z.draw(me)
-	eq(lastModel():GetParent(), me, "zcg_preview shows a glove on the local player")
+	eq(ZCG.States[me].mdl, lastModel(), "zcg_preview shows a glove on the local player")
 	eq(lastModel():GetBodygroup(0), 8, "zcg_preview variant")
 	frame() Z.draw(alice)
 	eq(ZCG.States[alice].variant.id, "moto_2", "zcg_preview does not touch other players")
@@ -285,6 +488,34 @@ return function(testdir, luaroot)
 	M.log = {}
 	M.command("zcg_debug", me)
 	check(#M.log > 8, "zcg_debug prints a report")
+	local report = table.concat(M.log, "\n")
+	check(report:find("zcg_bonemerge 0", 1, true) ~= nil, "the report names the method")
+	check(report:find("15 of 15 bones taken from the wearer", 1, true) ~= nil, "the report says how many bones were copied")
+	check(report:find("R_Wrist 15", 1, true) ~= nil, "the report lists the bones of the wearer that matter")
+	M.log = {}
+	frame() Z.draw(alice)
+	report = table.concat(M.log, "\n")
+	check(report:find("ValveBiped.Bip01_L_Hand: wearer", 1, true) ~= nil and report:find("ValveBiped.Bip01_R_Hand: wearer", 1, true) ~= nil,
+		"with the next draw the hand bones are printed")
+	local _, zero = report:gsub("0%.00 apart", "")
+	eq(zero, 2, "both gloves are reported to be on the hands")
+	check(report:find("the glove was drawn with exactly these bones", 1, true) ~= nil, "and to be drawn there")
+	check(report:find("MOVED", 1, true) == nil, "(nothing is reported as moved)")
+
+	-- an engine that works the bones out again while drawing would be noticed
+	local aliceGlove = ZCG.States[alice].mdl
+	local realDraw = aliceGlove.DrawModel
+	aliceGlove.DrawModel = function(self) M.engineSetup(self) return realDraw(self) end
+	M.command("zcg_debug", me)
+	M.log = {}
+	frame() Z.draw(alice)
+	aliceGlove.DrawModel = nil
+	report = table.concat(M.log, "\n")
+	local _, moved = report:gsub("the engine MOVED this glove bone while drawing", "")
+	eq(moved, 2, "zcg_debug notices bones that the engine replaced while drawing")
+	M.log = {}
+	frame() Z.draw(alice)
+	eq(#M.log, 0, "the bone report is printed once")
 	me.lookat = nil
 	M.command("zcg_debug", me)
 
@@ -353,11 +584,15 @@ return function(testdir, luaroot)
 	Z.paintViewer(viewer)
 	local preview = viewer.Entity
 	glove = lastModel()
-	eq(glove:GetParent(), preview, "the editor model wears the selected glove")
+	eq(ZCG.States[preview].mdl, glove, "the editor model wears the selected glove")
 	eq(glove:GetBodygroup(0), 4, "the right variant in the editor")
-	eq(preview:GetSubMaterial(HANDS_SLOT), "null", "hands hidden in the editor")
+	eq(glove.draws, 1, "drawn in the editor")
+	eq(offBone(glove, preview), nil, "on the hands of the editor model")
 	eq(main.accessoriesDrawn, 1, "the original PostDrawModel still runs")
 	eq(M.drawn[#M.drawn], glove, "glove drawn after the editor model")
+	eq(preview:GetSubMaterial(HANDS_SLOT), CLOTHES, "the hands stay until the glove has been drawn")
+	frame() Z.paintViewer(viewer)
+	eq(preview:GetSubMaterial(HANDS_SLOT), "null", "hands hidden in the editor")
 	count = #M.csmodels
 	for _ = 1, 5 do frame() Z.paintViewer(viewer) end
 	eq(#M.csmodels, count, "no new models while the editor repaints")
@@ -383,7 +618,8 @@ return function(testdir, luaroot)
 	frame() Z.paintViewer(viewer)
 	check(viewer.Entity ~= preview, "the editor created a new entity")
 	preview = viewer.Entity
-	eq(lastModel():GetParent(), preview, "glove moved to the new editor entity")
+	eq(ZCG.States[preview].mdl, lastModel(), "glove moved to the new editor entity")
+	eq(offBone(lastModel(), preview), nil, "and sits on its hands")
 	eq(preview:GetSubMaterial(HANDS_SLOT_F), "null", "hands hidden on the female model")
 	main.AppearanceTable.AModel = "Male 01"
 	frame() Z.paintViewer(viewer)
@@ -462,6 +698,7 @@ return function(testdir, luaroot)
 	frame() Z.paintViewer(viewer)
 	eq(lastModel().model, MOTO, "the hovered glove is on the editor model")
 	eq(lastModel():GetBodygroup(0), 4, "hovered variant")
+	frame() Z.paintViewer(viewer)
 	eq(preview:GetSubMaterial(HANDS_SLOT), "null", "hands hidden for the hovered glove")
 	eq(main.AppearanceTable.ABodygroups.HANDS, "Gloves", "hovering does not select")
 	M.texts = {}
@@ -596,7 +833,7 @@ return function(testdir, luaroot)
 		eq(win.viewer.zcg_wrapped, true, "the rebuilt model panel is hooked as well")
 		win.AppearanceTable.ABodygroups.HANDS = "CS:GO Moto 01"
 		Z.paintViewer(win.viewer)
-		eq(lastModel():GetParent(), win.viewer.Entity, "preview on the rebuilt model panel")
+		eq(ZCG.States[win.viewer.Entity].mdl, lastModel(), "preview on the rebuilt model panel")
 		win:Remove() M.flushPanels()
 	end
 
@@ -613,7 +850,7 @@ return function(testdir, luaroot)
 		eq(win.viewer.zcg_wrapped, true, "the timer attaches to an editor that is already open (global zpan)")
 		win.AppearanceTable.ABodygroups.HANDS = "CS:GO Moto 01"
 		Z.paintViewer(win.viewer)
-		eq(lastModel():GetParent(), win.viewer.Entity, "and the preview works there")
+		eq(ZCG.States[win.viewer.Entity].mdl, lastModel(), "and the preview works there")
 		win:Remove() M.flushPanels()
 		zpan = nil
 	end
@@ -637,7 +874,8 @@ return function(testdir, luaroot)
 		eq(win.viewer.zcg_wrapped, true, "attached without a Gloves button")
 		win.AppearanceTable.ABodygroups.HANDS = "CS:GO Moto 02"
 		Z.paintViewer(win.viewer)
-		eq(lastModel():GetParent(), win.viewer.Entity, "preview works without the button")
+		eq(ZCG.States[win.viewer.Entity].mdl, lastModel(), "preview works without the button")
+		eq(lastModel().draws, 1, "drawn although this editor never sets the bones up itself")
 
 		-- no model panel at all
 		local PANEL2 = {}

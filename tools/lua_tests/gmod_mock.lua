@@ -70,6 +70,80 @@ return function(realm)
 	function ScrW() return M.scrw or 1920 end
 	function ScrH() return M.scrh or 1080 end
 
+	-- ------------------------------------------------------------------ vectors, angles, matrices
+	local VEC = {}
+	VEC.__index = VEC
+	function Vector(x, y, z) return setmetatable({ x = x or 0, y = y or 0, z = z or 0 }, VEC) end
+	VEC.__add = function(a, b) return Vector(a.x + b.x, a.y + b.y, a.z + b.z) end
+	VEC.__sub = function(a, b) return Vector(a.x - b.x, a.y - b.y, a.z - b.z) end
+	VEC.__eq = function(a, b) return a.x == b.x and a.y == b.y and a.z == b.z end
+	function VEC:Distance(o) return math.sqrt((self.x - o.x) ^ 2 + (self.y - o.y) ^ 2 + (self.z - o.z) ^ 2) end
+
+	function Angle(p, y, r) return { p = p or 0, y = y or 0, r = r or 0 } end
+
+	-- VMatrix, reduced to rotation / scale / translation: 12 numbers, row by row
+	-- ( 1  2  3 | 4 )     columns 1-3: where the x, y and z axis of the bone point,
+	-- ( 5  6  7 | 8 )     column 4: where the bone is
+	-- ( 9 10 11 | 12 )
+	local MAT = {}
+	MAT.__index = MAT
+	local function matrix(t) return setmetatable(t, MAT) end
+	function Matrix(data)
+		assert(data == nil, "the imitation of Matrix() only builds the identity")
+		return matrix({ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 })
+	end
+	MAT.__mul = function(a, b)
+		assert(getmetatable(a) == MAT and getmetatable(b) == MAT, "VMatrix * VMatrix expected")
+		local m = {}
+		for row = 0, 2 do
+			local a1, a2, a3, a4 = a[row * 4 + 1], a[row * 4 + 2], a[row * 4 + 3], a[row * 4 + 4]
+			for col = 1, 4 do
+				m[row * 4 + col] = a1 * b[col] + a2 * b[4 + col] + a3 * b[8 + col] + (col == 4 and a4 or 0)
+			end
+		end
+		return matrix(m)
+	end
+	function MAT:GetTranslation() return Vector(self[4], self[8], self[12]) end
+	function MAT:SetTranslation(v) self[4], self[8], self[12] = v.x, v.y, v.z end
+	function MAT:GetScale()
+		local out = {}
+		for col = 1, 3 do out[col] = math.sqrt(self[col] ^ 2 + self[4 + col] ^ 2 + self[8 + col] ^ 2) end
+		return Vector(out[1], out[2], out[3])
+	end
+	function MAT:SetScale(v) -- the length of the three axes; rotation and translation stay
+		local have, want = self:GetScale(), { v.x, v.y, v.z }
+		local old = { have.x, have.y, have.z }
+		for col = 1, 3 do
+			local f = old[col] > 0 and want[col] / old[col] or 0
+			self[col], self[4 + col], self[8 + col] = self[col] * f, self[4 + col] * f, self[8 + col] * f
+		end
+	end
+	function MAT:GetInverseTR() -- like the game: only right for a matrix without scale
+		local m = { self[1], self[5], self[9], 0, self[2], self[6], self[10], 0, self[3], self[7], self[11], 0 }
+		for row = 0, 2 do
+			m[row * 4 + 4] = -(m[row * 4 + 1] * self[4] + m[row * 4 + 2] * self[8] + m[row * 4 + 3] * self[12])
+		end
+		return matrix(m)
+	end
+
+	-- for the tests: a bone at x y z, turned by `yaw` degrees about the z axis, scaled by `scale`
+	function M.matrix(x, y, z, yaw, scale)
+		local c, sn, k = math.cos(math.rad(yaw or 0)), math.sin(math.rad(yaw or 0)), scale or 1
+		return matrix({ c * k, -sn * k, 0, x, sn * k, c * k, 0, y, 0, 0, k, z })
+	end
+	function M.copyMatrix(m)
+		local t = {}
+		for i = 1, 12 do t[i] = m[i] end
+		return matrix(t)
+	end
+	function M.sameMatrix(a, b)
+		if not a or not b then return false end
+		for i = 1, 12 do
+			if math.abs(a[i] - b[i]) > 1e-6 then return false end
+		end
+		return true
+	end
+
 	FCVAR_ARCHIVE, FCVAR_REPLICATED = 128, 8192
 	EF_BONEMERGE = 1
 	RENDERGROUP_OPAQUE, RENDERGROUP_BOTH = 7, 9
@@ -219,7 +293,10 @@ return function(realm)
 	function ENT:Nick() return self.nick or "player" end
 	function ENT:IsSuperAdmin() return self.superadmin == true end
 	function ENT:GetModel() return self.model end
-	function ENT:SetModel(path) self.model = path end
+	function ENT:SetModel(path)
+		self.model = path
+		self.bones = nil
+	end
 	function ENT:GetMaterials()
 		local info = M.models[self.model]
 		local out = {}
@@ -270,12 +347,102 @@ return function(realm)
 		self.bodygroups[id] = value
 	end
 	function ENT:GetBodygroup(id) return self.bodygroups[id] or 0 end
+	function ENT:SetPos(v) self.pos = Vector(v.x, v.y, v.z) end
+	function ENT:GetPos() return self.pos and Vector(self.pos.x, self.pos.y, self.pos.z) or Vector(0, 0, 0) end
+	function ENT:SetAngles(a)
+		assert(a.p == 0 and a.y == 0 and a.r == 0, "the imitation does not turn entities")
+	end
+
+	-- ---- bones
+	-- M.models[path].bones = { { name, parent, x, y, z }, ... }: the pose a model has on its own,
+	-- every bone relative to its parent (index from 0, -1 = no parent), translations only.
+	local function boneDefs(ent)
+		local info = M.models[ent.model]
+		return info and info.bones or {}
+	end
+
+	-- What the engine does when it sets the bones of an entity up: the animation (here: the pose
+	-- of the model itself, then ent.animate), then - for a bone-merged model - the bones of the
+	-- parent with the same names. Whatever was written to the bones before is gone.
+	function M.engineSetup(ent)
+		local pos = ent:GetPos()
+		local bones = {}
+		for i, def in ipairs(boneDefs(ent)) do
+			local parent = def[2] >= 0 and bones[def[2]] or M.matrix(pos.x, pos.y, pos.z)
+			bones[i - 1] = parent * M.matrix(def[3], def[4], def[5])
+		end
+		ent.bones, ent.bonesFrame = bones, M.frame
+		if ent.animate then ent.animate(ent) end
+
+		local parent = ent.parent
+		if parent and not parent.removed and bit.band(ent.effects or 0, EF_BONEMERGE) ~= 0 and parent.bones then
+			for i, def in ipairs(boneDefs(ent)) do
+				local theirs = parent:LookupBone(def[1])
+				if theirs then bones[i - 1] = M.copyMatrix(parent.bones[theirs]) end
+			end
+		end
+	end
+
+	-- a clientside model knows nothing about its bones before the first SetupBones
+	local function ready(ent) return ent.bones ~= nil or not ent.clientside end
+
+	function ENT:SetupBones()
+		assert(not self.removed, "SetupBones on a removed entity")
+		self.setups = (self.setups or 0) + 1
+		M.engineSetup(self)
+	end
+	function ENT:GetBoneCount()
+		if not ready(self) then return 0 end
+		return #boneDefs(self)
+	end
+	function ENT:GetBoneName(index)
+		local def = boneDefs(self)[index + 1]
+		if not def then return nil end
+		if not ready(self) then return "__INVALIDBONE__" end
+		return def[1]
+	end
+	function ENT:GetBoneParent(index)
+		local def = boneDefs(self)[index + 1]
+		if not def or not ready(self) then return -1 end
+		return def[2]
+	end
+	function ENT:LookupBone(name)
+		assert(type(name) == "string", "LookupBone: a bone name expected")
+		for i, def in ipairs(boneDefs(self)) do
+			if def[1] == name then return i - 1 end
+		end
+		return nil
+	end
+	function ENT:GetBoneMatrix(index)
+		assert(type(index) == "number", "GetBoneMatrix: a bone index expected")
+		local m = self.bones and self.bones[index]
+		return m and M.copyMatrix(m) or nil
+	end
+	function ENT:SetBoneMatrix(index, m)
+		assert(type(index) == "number" and getmetatable(m) == MAT, "SetBoneMatrix: (number, VMatrix) expected")
+		assert(self.bones and self.bones[index], "SetBoneMatrix on an invalid bone: the game cannot even catch this error")
+		assert(self.bonesFrame == M.frame, "SetBoneMatrix without SetupBones in the same frame: the engine throws it away")
+		self.bones[index] = M.copyMatrix(m)
+		self.boneWrites = (self.boneWrites or 0) + 1
+	end
+
 	function ENT:DrawModel()
 		assert(not self.removed, "DrawModel on a removed entity")
+		-- the engine sets the bones up itself when nobody did in this frame
+		if boneDefs(self)[1] and self.bonesFrame ~= M.frame then M.engineSetup(self) end
+		if M.blend <= 0 then -- render.SetBlend(0): nothing on the screen
+			self.hiddenDraws = (self.hiddenDraws or 0) + 1
+			return
+		end
 		self.draws = (self.draws or 0) + 1
 		M.drawn[#M.drawn + 1] = self
+		-- what is on the screen now: bone name -> matrix
+		local shown = {}
+		for i, def in ipairs(boneDefs(self)) do shown[def[1]] = M.copyMatrix(self.bones[i - 1]) end
+		self.shown, self.shownAt = shown, self:GetPos()
 	end
 	M.drawn = {}
+	M.blend = 1
 
 	NULL = setmetatable({ removed = true, nw = {}, submats = {}, bodygroups = {} }, ENT)
 
@@ -315,6 +482,8 @@ return function(realm)
 	render = {}
 	function render.GetColorModulation() return M.modulation[1], M.modulation[2], M.modulation[3] end
 	function render.SetColorModulation(r, g, b) M.modulation = { r, g, b } end
+	function render.GetBlend() return M.blend end
+	function render.SetBlend(blend) M.blend = blend end
 
 	function Material(name, flags)
 		local exists = M.materials[name] == true or M.files["materials/" .. name] == true

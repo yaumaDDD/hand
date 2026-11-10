@@ -1,24 +1,37 @@
 -- Z-City CS:GO gloves - drawing the gloves on players and their ragdolls.
 --
--- Z-City draws every player / ragdoll through hg.renderOverride, which runs two hooks:
---     CoolPostDrawAppearance(ent, owner)   right before ent:DrawModel()
---     PostDrawAppearance(ent, owner)       right after it
--- In the first one the wearer's own hands are hidden (full-finger gloves only, otherwise the
--- skin pokes through the glove), in the second one the glove is drawn.
+-- Z-City draws every player / ragdoll through hg.renderOverride:
+--     DrawPlayerRagdoll(ent, owner)        ent:SetupBones(), then the arms are moved onto the
+--                                          weapon by writing bone matrices (TPIK)
+--     CoolPostDrawAppearance(ent, owner)   hook, right before ent:DrawModel()
+--     ent:DrawModel()
+--     PostDrawAppearance(ent, owner)       hook, right after it
+--
+-- Everything here happens in the first hook, where Z-City itself draws whatever sits on the arms
+-- (armour, bandages, tourniquets): at that moment the bone matrices of the wearer hold exactly
+-- the pose it is about to be drawn with. Version 1.0.0 drew a bone-merged glove in the second
+-- hook and the glove did not get that pose: it hung in the air where the animation alone would
+-- have put the hands.
 --
 -- The glove is a clientside model made for the c_hands skeleton, which uses the same bone names
--- as a player model, so EF_BONEMERGE puts it on the hands - the same way Z-City draws its own
--- bone-merged accessories.
+-- as a player model. By default ("zcg_bonemerge 0") every bone of the glove is set by hand to the
+-- matrix of the wearer's bone of the same name, so the glove cannot be anywhere else than on the
+-- hands that get drawn. "zcg_bonemerge 1" leaves that to the engine (EF_BONEMERGE) instead.
+--
+-- In the same hook the wearer's own hands are hidden (full-finger gloves only, otherwise the
+-- skin pokes through the glove) - but only while a glove really is drawn over them.
 
 local ZCG = ZCGloves
 local Config = ZCG.Config
 
 local IsValid = IsValid
 local RealTime = RealTime
-local FrameNumber = FrameNumber
 
 local cvEnable = CreateClientConVar("zcg_enable", "1", true, false,
 	"CS:GO gloves: 0 = do not draw the gloves on this client.", 0, 1)
+local cvBonemerge = CreateClientConVar("zcg_bonemerge", "0", true, false,
+	"CS:GO gloves: 0 = the addon puts the glove bones on the hand bones itself (default), "
+	.. "1 = the engine does it (EF_BONEMERGE). Try the other value if the gloves are not on the hands.", 0, 1)
 
 -- ---------------------------------------------------------------------------------------------
 -- the "draw nothing" material
@@ -97,10 +110,14 @@ end
 -- per entity state
 -- ---------------------------------------------------------------------------------------------
 -- state = {
---   variant, frame   glove decided by the pre-draw hook and the frame it was decided in
---   seen             RealTime of the last draw
+--   variant          glove decided by the draw hook
+--   seen             RealTime of the last attempt to draw
+--   drawn, why       was the glove drawn at that attempt; if not, the reason (for zcg_debug)
 --   mdl, path, body  clientside glove model, its model path and current "gloves" body value
+--   merge            the model was set up for zcg_bonemerge 1
+--   copied, total    bones taken from the wearer / bones of the glove (zcg_bonemerge 0)
 --   hide             { slot, old } while this addon hides the wearer's hands
+--   probe            zcg_debug asked for a bone report at the next draw
 -- }
 local states = {}
 ZCG.States = states
@@ -116,7 +133,8 @@ end
 
 local function removeModel(state)
 	if IsValid(state.mdl) then state.mdl:Remove() end
-	state.mdl, state.path, state.body = nil, nil, nil
+	state.mdl, state.path, state.body, state.merge = nil, nil, nil, nil
+	state.drawn = false
 end
 
 -- Give the hands back. The value is only touched while it still is our "invisible" material:
@@ -163,8 +181,9 @@ end
 -- the glove model
 -- ---------------------------------------------------------------------------------------------
 local function gloveModel(ent, state, variant)
+	local merge = cvBonemerge:GetBool()
 	local mdl = state.mdl
-	if mdl and (not IsValid(mdl) or state.path ~= variant.model) then
+	if mdl and (not IsValid(mdl) or state.path ~= variant.model or state.merge ~= merge) then
 		removeModel(state)
 		mdl = nil
 	end
@@ -177,8 +196,6 @@ local function gloveModel(ent, state, variant)
 
 		mdl:SetNoDraw(true) -- drawn by hand, in step with its wearer
 		mdl:DrawShadow(false)
-		mdl:SetParent(ent)
-		mdl:AddEffects(EF_BONEMERGE)
 
 		-- the models still contain CS:GO sleeves and a bare arm: only the glove is wanted
 		mdl:SetBodygroup(info.sleeves, 0)
@@ -187,7 +204,7 @@ local function gloveModel(ent, state, variant)
 			mdl:SetSubMaterial(index, invisible)
 		end
 
-		state.mdl, state.path, state.body = mdl, variant.model, nil
+		state.mdl, state.path, state.body, state.merge = mdl, variant.model, nil, merge
 	end
 
 	if state.body ~= variant.body then
@@ -195,7 +212,9 @@ local function gloveModel(ent, state, variant)
 		state.body = variant.body
 	end
 
-	if mdl:GetParent() ~= ent then
+	-- zcg_bonemerge 1 only; otherwise the model has no parent and its bones are written by hand
+	if merge and mdl:GetParent() ~= ent then
+		mdl:SetPos(ent:GetPos())
 		mdl:SetParent(ent)
 		mdl:AddEffects(EF_BONEMERGE)
 	end
@@ -203,20 +222,290 @@ local function gloveModel(ent, state, variant)
 	return mdl
 end
 
+-- ---------------------------------------------------------------------------------------------
+-- zcg_bonemerge 0: every bone of the glove is put on the wearer's bone of the same name
+-- ---------------------------------------------------------------------------------------------
+local INVALID_BONE = "__INVALIDBONE__" -- Entity:SetBoneMatrix on such a bone is an error pcall cannot catch
+local L_HAND, R_HAND = "ValveBiped.Bip01_L_Hand", "ValveBiped.Bip01_R_Hand"
+local CHEST = "ValveBiped.Bip01_Spine4"
+-- The cuff of a glove hangs on the twist helper of the forearm, which not every player model
+-- has. Without it: the rotation of the forearm at the place of the hand.
+local WRISTS = {
+	["ValveBiped.Bip01_L_Wrist"] = "ValveBiped.Bip01_L_Forearm",
+	["ValveBiped.Bip01_R_Wrist"] = "ValveBiped.Bip01_R_Forearm",
+}
+
+local ANGLE_ZERO = Angle(0, 0, 0)
+local LIGHT_OFFSET = Vector(0, 0, 31) -- $illumposition of the glove models: where their lighting is taken
+local SCALE_GONE = Vector(0.01, 0.01, 0.01)
+local IDENTITY = Matrix()
+
+local skeletons = {} -- glove model path -> bone names, parents, ...
+local bonemaps = {} -- glove model path -> wearer model path -> wearer bone for every glove bone
+
+-- A clientside model that was never drawn may not hand out its bones yet. Drawing it once,
+-- fully transparent, loads everything; the glove appears a frame later.
+local function notReady(mdl, why)
+	local blend = render.GetBlend()
+	render.SetBlend(0)
+	mdl:DrawModel()
+	render.SetBlend(blend)
+	return false, why
+end
+
+local function readSkeleton(mdl, path)
+	local skeleton = skeletons[path]
+	if skeleton then return skeleton end
+
+	mdl:SetupBones() -- a clientside model has no bones before this
+	local count = mdl:GetBoneCount() or 0
+	if count <= 0 then return nil end
+
+	local names, parents, index = {}, {}, {}
+	for i = 0, count - 1 do
+		local name = mdl:GetBoneName(i)
+		if not name or name == INVALID_BONE then return nil end -- not loaded yet: asked again in the next frame
+		names[i], parents[i], index[name] = name, mdl:GetBoneParent(i) or -1, i
+	end
+
+	local left, right = index[L_HAND], index[R_HAND]
+	local side, finger, wrists = {}, {}, {}
+	for i = 0, count - 1 do
+		local name = names[i]
+		side[i] = string.find(name, "_L_", 1, true) and 1 or string.find(name, "_R_", 1, true) and 2 or 0
+
+		-- below a hand: the bones that carry the glove itself
+		local parent = parents[i]
+		finger[i] = parent >= 0 and parent < i and (parent == left or parent == right or finger[parent]) or false
+
+		local forearm = WRISTS[name]
+		if forearm then
+			forearm = index[forearm]
+			wrists[i] = forearm and forearm < i and forearm or false
+		end
+	end
+
+	skeleton = { count = count, names = names, parents = parents, left = left, right = right,
+		side = side, finger = finger, wrists = wrists }
+	skeletons[path] = skeleton
+	return skeleton
+end
+
+local function boneMap(ent, skeleton, path)
+	local model = ent:GetModel()
+	if not model then return nil end
+
+	local maps = bonemaps[path]
+	if not maps then
+		maps = {}
+		bonemaps[path] = maps
+	end
+
+	local map = maps[model]
+	-- a model without hand bones may simply not be loaded yet: it is asked again once a second
+	if map and (map.usable or RealTime() < map.again) then return map end
+
+	local names, finger = skeleton.names, skeleton.finger
+	local bones, copied, needBind = {}, 0, false
+	for i = 0, skeleton.count - 1 do
+		local bone = ent:LookupBone(names[i])
+		if bone then
+			bones[i] = bone
+			copied = copied + 1
+		else
+			bones[i] = false
+			if finger[i] then needBind = true end
+		end
+	end
+
+	map = {
+		bones = bones, copied = copied, needBind = needBind,
+		left = skeleton.left and bones[skeleton.left] or nil,
+		right = skeleton.right and bones[skeleton.right] or nil,
+		chest = ent:LookupBone(CHEST) or nil,
+		again = RealTime() + 1,
+	}
+	map.usable = (map.left or map.right) and true or false
+	maps[model] = map
+	return map
+end
+
+-- The pose the glove model has on its own, every bone relative to its parent. Only needed for
+-- finger bones a wearer does not have, and only right after SetupBones gives the right answer.
+local function readBind(mdl, skeleton)
+	local world = {}
+	for i = 0, skeleton.count - 1 do
+		local matrix = mdl:GetBoneMatrix(i)
+		if not matrix then return nil end
+		world[i] = matrix
+	end
+
+	local bind = {}
+	for i = 0, skeleton.count - 1 do
+		local parent = world[skeleton.parents[i]]
+		if parent then bind[i] = parent:GetInverseTR() * world[i] end
+	end
+	return bind
+end
+
+local placed = {} -- scratch: the matrix chosen for every glove bone during one call
+
+-- Returns true, or false and the reason.
+local function poseGlove(ent, mdl, state)
+	local path = state.path
+	local skeleton = readSkeleton(mdl, path)
+	if not skeleton then return notReady(mdl, "the glove model has no bones yet") end
+
+	local map = boneMap(ent, skeleton, path)
+	if not map or not map.usable then return false, "the wearer's model has no hand bones" end
+
+	local left = map.left and ent:GetBoneMatrix(map.left) or nil
+	local right = map.right and ent:GetBoneMatrix(map.right) or nil
+	if not left and not right then return false, "the wearer's bones are not set up" end
+
+	-- The bones are placed one by one below. The entity itself only decides where the lighting
+	-- is taken: at the wearer's chest, where a bone-merged model would take it too.
+	local chest = map.chest and ent:GetBoneMatrix(map.chest) or right or left
+	mdl:SetAngles(ANGLE_ZERO)
+	mdl:SetPos(chest:GetTranslation() - LIGHT_OFFSET)
+
+	-- Makes the bones writable for this frame. Whatever was written earlier is gone after it.
+	mdl:SetupBones()
+	local count = skeleton.count
+	if mdl:GetBoneCount() ~= count then return notReady(mdl, "the glove model has no bones yet") end
+
+	local bind = skeleton.bind
+	if map.needBind and not bind then
+		bind = readBind(mdl, skeleton) -- before anything is written
+		if not bind then return notReady(mdl, "the glove model has no bone matrices yet") end
+		skeleton.bind = bind
+	end
+
+	local gone -- the glove of a hand the wearer does not have is shrunk to nothing
+	if not (left and right) then
+		gone = Matrix()
+		gone:SetScale(SCALE_GONE)
+		gone:SetTranslation((left or right):GetTranslation())
+	end
+
+	local names, parents, bones = skeleton.names, skeleton.parents, map.bones
+	local side, wrists = skeleton.side, skeleton.wrists
+	for i = 0, count - 1 do
+		local matrix
+		local hand = side[i] == 1 and left or side[i] == 2 and right or nil
+		if side[i] ~= 0 and not hand then
+			matrix = gone
+		else
+			-- the wearer's own bone, as it is: an amputated arm (scaled to nothing) takes its glove along
+			local source = bones[i]
+			if source then matrix = ent:GetBoneMatrix(source) end
+
+			if not matrix then
+				local forearm = wrists[i]
+				if forearm ~= nil then
+					forearm = forearm and placed[forearm] or nil
+					matrix = (forearm or hand) * IDENTITY -- a copy
+					matrix:SetTranslation(hand:GetTranslation())
+				else
+					local parent = parents[i]
+					parent = parent >= 0 and parent < i and placed[parent] or nil
+					if parent and bind and bind[i] then matrix = parent * bind[i] end
+				end
+			end
+		end
+
+		placed[i] = matrix or false
+		-- (a bone nothing could be found for stays where SetupBones put it; none of them carries a glove)
+		if matrix and mdl:GetBoneName(i) == names[i] then mdl:SetBoneMatrix(i, matrix) end
+	end
+
+	state.copied, state.total = map.copied, count
+	return true
+end
+
+-- zcg_debug: where are the hand bones of the glove and of its wearer at the moment of drawing?
+-- Returns where the glove's hand bones are, to compare with where they are after the draw.
+local function reportBones(ent, mdl, state)
+	print("[CS:GO Gloves] hand bones at the moment of drawing (zcg_bonemerge " .. (state.merge and 1 or 0) .. "):")
+	local before = {}
+	for _, name in ipairs({ L_HAND, R_HAND }) do
+		local theirs, ours = ent:LookupBone(name), mdl:LookupBone(name)
+		local a = theirs and ent:GetBoneMatrix(theirs)
+		local b = ours and mdl:GetBoneMatrix(ours)
+		if a and b then
+			local pa, pb = a:GetTranslation(), b:GetTranslation()
+			before[name] = pb
+			print(string.format("  %s: wearer (%.1f %.1f %.1f), glove (%.1f %.1f %.1f), %.2f apart",
+				name, pa.x, pa.y, pa.z, pb.x, pb.y, pb.z, pa:Distance(pb)))
+		else
+			print("  " .. name .. ": wearer bone " .. tostring(theirs) .. (a and "" or " (no matrix)")
+				.. ", glove bone " .. tostring(ours) .. (b and "" or " (no matrix)"))
+		end
+	end
+	return before
+end
+
+-- ... and did the engine draw the glove with these bones, or work out its own?
+local function reportDrawn(mdl, before)
+	local moved = false
+	for name, was in pairs(before) do
+		local bone = mdl:LookupBone(name)
+		local now = bone and mdl:GetBoneMatrix(bone)
+		local far = now and now:GetTranslation():Distance(was) or -1
+		if far < 0 or far > 0.01 then
+			moved = true
+			print(string.format("  %s: the engine MOVED this glove bone while drawing (%.2f units) - please report this", name, far))
+		end
+	end
+	if not moved then print("  the glove was drawn with exactly these bones") end
+end
+
 -- Draws a glove on any entity with a ValveBiped skeleton (players, ragdolls, the model of the
--- appearance editor). Call it right after the entity itself was drawn.
+-- appearance editor). The glove takes the pose the entity's bones have at this very moment:
+-- call it where the entity is drawn. Returns true when the glove was drawn.
 function ZCG.DrawGlove(ent, variant)
 	local state = getState(ent)
 	state.seen = RealTime()
+	state.drawn = false
 
-	if not ZCG.HasModel(variant.model) then return false end
+	if not ZCG.HasModel(variant.model) then
+		state.why = "the glove model is not installed"
+		return false
+	end
 	local mdl = gloveModel(ent, state, variant)
-	if not mdl then return false end
+	if not mdl then
+		state.why = "the glove model could not be created"
+		return false
+	end
+
+	if state.merge then
+		mdl:SetupBones() -- merge now, with the pose the wearer has just been given
+	else
+		local ok, why = poseGlove(ent, mdl, state)
+		if not ok then
+			state.why = why
+			return false
+		end
+	end
+
+	local probe
+	if state.probe then
+		state.probe = nil
+		local ok, result = pcall(reportBones, ent, mdl, state)
+		if ok then probe = result else print("[CS:GO Gloves] bone report failed: " .. tostring(result)) end
+	end
 
 	local r, g, b = render.GetColorModulation()
 	render.SetColorModulation(1, 1, 1) -- the wearer's player colour must not tint the glove
 	mdl:DrawModel()
 	render.SetColorModulation(r, g, b)
+
+	if probe then
+		local ok, err = pcall(reportDrawn, mdl, probe)
+		if not ok then print("[CS:GO Gloves] bone report failed: " .. tostring(err)) end
+	end
+
+	state.drawn, state.why = true, nil
 	return true
 end
 
@@ -262,7 +551,7 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- hooks
 -- ---------------------------------------------------------------------------------------------
-local function preDraw(ent)
+local function drawHook(ent)
 	if not IsValid(ent) then return end
 
 	local state = states[ent]
@@ -279,11 +568,10 @@ local function preDraw(ent)
 
 	state = state or getState(ent)
 	state.variant = variant
-	state.frame = FrameNumber()
-	state.seen = RealTime()
 
+	-- The glove first: the hands are only hidden while a glove really is drawn over them.
 	local slot
-	if ZCG.HidesHands(variant) and ZCG.HasModel(variant.model) then
+	if ZCG.DrawGlove(ent, variant) and ZCG.HidesHands(variant) then
 		slot = ZCG.HandsSlot(ent)
 	end
 	if slot then
@@ -291,12 +579,6 @@ local function preDraw(ent)
 	else
 		unhide(ent, state)
 	end
-end
-
-local function postDraw(ent)
-	local state = states[ent]
-	if not state or not state.variant or state.frame ~= FrameNumber() then return end
-	ZCG.DrawGlove(ent, state.variant)
 end
 
 -- A mistake in here would otherwise be repeated for every player in every frame.
@@ -315,8 +597,8 @@ local function guarded(func)
 	end
 end
 
-hook.Add("CoolPostDrawAppearance", "zcg_gloves", guarded(preDraw))
-hook.Add("PostDrawAppearance", "zcg_gloves", guarded(postDraw))
+hook.Add("CoolPostDrawAppearance", "zcg_gloves", guarded(drawHook))
+hook.Remove("PostDrawAppearance", "zcg_gloves") -- 1.0.0 drew there; matters when the file is reloaded
 
 -- housekeeping: entities that left, gloves nobody looked at for a while
 timer.Create("zcg_housekeeping", 1, 0, function()
@@ -389,8 +671,8 @@ concommand.Add("zcg_debug", function()
 
 	print("[CS:GO Gloves] version " .. ZCG.Version)
 	print("  registered in Z-City : " .. tostring(ZCG.Ready == true))
-	print("  zcg_enable " .. cvEnable:GetString() .. ", zcg_hide_hands " .. ZCG.cvHideHands:GetString()
-		.. ", zcg_any_model " .. ZCG.cvAnyModel:GetString())
+	print("  zcg_enable " .. cvEnable:GetString() .. ", zcg_bonemerge " .. cvBonemerge:GetString()
+		.. ", zcg_hide_hands " .. ZCG.cvHideHands:GetString() .. ", zcg_any_model " .. ZCG.cvAnyModel:GetString())
 	print("  hide material        : " .. ZCG.HideMaterial())
 	print("  draw errors          : " .. failures)
 	print("  entity               : " .. tostring(ent))
@@ -402,14 +684,32 @@ concommand.Add("zcg_debug", function()
 	end
 	print("  hands material       : " .. ZCG.HandsMaterialName(model) .. " -> slot " .. tostring(slot)
 		.. (slot and (", currently \"" .. ent:GetSubMaterial(slot) .. "\"") or ""))
+
+	local bones = {}
+	for _, name in ipairs({ "L_Hand", "R_Hand", "L_Forearm", "R_Forearm", "L_Wrist", "R_Wrist" }) do
+		bones[#bones + 1] = name .. " " .. tostring(ent:LookupBone("ValveBiped.Bip01_" .. name))
+	end
+	print("  bones of the wearer  : " .. tostring(ent:GetBoneCount()) .. " (" .. table.concat(bones, ", ") .. ")")
+
 	if state then
 		print("  state                : model " .. tostring(state.mdl) .. ", body " .. tostring(state.body)
-			.. ", hands hidden " .. tostring(state.hide ~= nil) .. ", last drawn " .. string.format("%.1f", RealTime() - (state.seen or 0)) .. " s ago")
+			.. ", hands hidden " .. tostring(state.hide ~= nil) .. ", last try " .. string.format("%.1f", RealTime() - (state.seen or 0)) .. " s ago")
+		if state.drawn then
+			print("  drawn                : yes" .. (state.merge and ", bone-merged by the engine"
+				or (", " .. tostring(state.copied) .. " of " .. tostring(state.total) .. " bones taken from the wearer")))
+		else
+			print("  drawn                : NO - " .. tostring(state.why or "not tried"))
+		end
 	else
-		print("  state                : none (the draw hooks did not run for this entity)")
+		print("  state                : none (the draw hook did not run for this entity)")
 	end
 	print("  materials of the model:")
 	for i, name in ipairs(ent:GetMaterials() or {}) do
 		print(string.format("    [%2d] %s", i - 1, name))
+	end
+
+	if state and variant then
+		state.probe = true
+		print("  (the hand bones are printed when this entity is drawn the next time)")
 	end
 end, nil, "CS:GO gloves: print what the addon knows about you or the player / ragdoll you look at.")

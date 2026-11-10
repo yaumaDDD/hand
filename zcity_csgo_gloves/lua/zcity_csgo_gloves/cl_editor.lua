@@ -55,11 +55,16 @@ local function editorLayout(main, ent)
 	if not IsValid(ent) then return end
 	local variant = editorVariant(main)
 	if not variant or not ZCG.HidesHands(variant) or not ZCG.HasModel(variant.model) then return end
+	-- only while a glove really is drawn over the hands; it is drawn after the model, so the
+	-- hands go one frame after the glove came
+	local state = ZCG.States[ent]
+	if not state or not state.drawn then return end
 	local slot = ZCG.HandsSlot(ent)
 	if slot then ent:SetSubMaterial(slot, ZCG.HideMaterial()) end
 end
 
--- runs after the editor's own PostDrawModel (which draws the accessories)
+-- runs after the editor's own PostDrawModel (which draws the accessories and ends with
+-- Entity:SetupBones(), so the bones the glove is put on are those of this frame)
 local function editorDraw(main, ent)
 	if not IsValid(ent) then return end
 	local variant = editorVariant(main)

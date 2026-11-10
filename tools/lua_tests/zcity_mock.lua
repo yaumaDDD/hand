@@ -9,16 +9,49 @@ return function(M)
 	Z.FEMALE = "models/zcity/f/female_01.mdl"
 	Z.COMBINE = "models/player/combine_soldier.mdl"
 
+	-- A ValveBiped skeleton, much reduced: { name, parent, x, y, z } with the place of every bone
+	-- relative to its parent. `with` says what the model has: wrist = the twist helpers of the
+	-- forearm (citizens have them), fingers, left = a left arm.
+	function Z.skeleton(with)
+		local bones = {}
+		local function add(name, parent, x, y, z)
+			bones[#bones + 1] = { "ValveBiped.Bip01_" .. name, parent, x, y, z }
+			return #bones - 1
+		end
+		local pelvis = add("Pelvis", -1, 0, 0, 38)
+		local spine = add("Spine4", pelvis, 0, 0, 16)
+		add("Head1", spine, 0, 0, 12)
+		for _, side in ipairs({ "L", "R" }) do
+			local y = side == "L" and 1 or -1
+			if side == "R" or with.left ~= false then
+				local clavicle = add(side .. "_Clavicle", spine, 0, 2 * y, 2)
+				local upperarm = add(side .. "_UpperArm", clavicle, 0, 6 * y, 0)
+				local forearm = add(side .. "_Forearm", upperarm, 12, 0, 0)
+				if with.wrist then
+					add(side .. "_Ulna", forearm, 6, 0, 0)
+					add(side .. "_Wrist", forearm, 11.5, 0, 0)
+				end
+				local hand = add(side .. "_Hand", forearm, 11.5, 0, 0)
+				if with.fingers then
+					local finger = add(side .. "_Finger1", hand, 3.7, 0, 1.4 * y)
+					add(side .. "_Finger11", finger, 1.2, 0, 0)
+				end
+			end
+		end
+		return bones
+	end
+
 	-- what Entity:GetMaterials() returns for the player models (1-based, slot = index - 1)
-	M.models[Z.MALE] = { materials = {
+	M.models[Z.MALE] = { bones = Z.skeleton({ wrist = true, fingers = true }), materials = {
 		"models/humans/male/group01/players_sheet", "models/humans/male/group01/pants",
 		"models/humans/male/group01/boots", "models/humans/male/face", "distac/gloves/hands", "models/humans/eyeball",
 	} }
-	M.models[Z.FEMALE] = { materials = {
+	M.models[Z.FEMALE] = { bones = Z.skeleton({ wrist = true, fingers = true }), materials = {
 		"models/humans/female/face", "models/humans/female/group01/players_sheet", "distac/gloves/hands",
 		"models/humans/female/group01/pants", "models/humans/female/group01/boots",
 	} }
-	M.models[Z.COMBINE] = { materials = { "models/combine_soldier/combinesoldiersheet" } }
+	-- a class model: hands, but neither the wrist helpers nor finger bones
+	M.models[Z.COMBINE] = { bones = Z.skeleton({}), materials = { "models/combine_soldier/combinesoldiersheet" } }
 
 	function Z.install()
 		hg = hg or {}
@@ -71,11 +104,35 @@ return function(M)
 		for k, v in pairs(appearance) do ply.CurAppearance[k] = v end
 	end
 
-	-- hg.renderOverride: the two hooks around the draw of a player / ragdoll
+	-- hg.renderOverride: how Z-City draws a player / ragdoll
 	function Z.draw(ent, owner)
+		-- DrawPlayerRagdoll: the animation, then the arms are written onto the weapon (TPIK)
+		ent:SetupBones()
+		if ent.tpik then ent.tpik(ent) end
+
 		hook.Run("CoolPostDrawAppearance", ent, owner or ent)
 		ent:DrawModel()
+
+		-- In the game a glove that was bone-merged and drawn from here on had the pose of the
+		-- animation alone, without the arm placement (version 1.0.0; why exactly is not known).
+		-- The imitation makes that explicit, so that a test fails if the drawing moves back here.
+		M.engineSetup(ent)
 		hook.Run("PostDrawAppearance", ent, owner or ent)
+	end
+
+	-- the arm placement of Z-City, reduced to "the arms are somewhere else than the animation
+	-- put them": every bone from the forearm down is moved and turned
+	function Z.tpik(ent)
+		for _, side in ipairs({ "L", "R" }) do
+			local shift = side == "L" and 5 or -5
+			for _, part in ipairs({ "Forearm", "Ulna", "Wrist", "Hand", "Finger1", "Finger11" }) do
+				local bone = ent:LookupBone("ValveBiped.Bip01_" .. side .. "_" .. part)
+				if bone then
+					local at = ent:GetBoneMatrix(bone):GetTranslation()
+					ent:SetBoneMatrix(bone, M.matrix(at.x + 7, at.y + shift, at.z - 9, part == "Forearm" and 20 or 50))
+				end
+			end
+		end
 	end
 
 	-- ------------------------------------------------------------------ the appearance editor
@@ -129,6 +186,7 @@ return function(M)
 
 			function viewer:PostDrawModel(Entity)
 				main.accessoriesDrawn = (main.accessoriesDrawn or 0) + 1
+				Entity:SetupBones()
 			end
 
 			local other = vgui.Create("DButton", viewer)
