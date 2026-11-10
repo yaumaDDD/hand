@@ -17,7 +17,7 @@ unpacks the archives and puts everything where the game expects it:
 Needs Python 3.7+ and one of
     * the py7zr module          (python -m pip install py7zr)
     * 7-Zip / p7zip             (7z, 7za, 7zr or 7zz in PATH, or installed in Program Files)
-About 1 GB of free disk space is used while building; the result is about 190 MB.
+About 1.5 GB of free disk space is used while building; the result is about 270 MB.
 """
 import argparse
 import os
@@ -31,13 +31,17 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, 'tools'))
 
+import make_lua_data  # noqa: E402
 import make_vmts  # noqa: E402
 import mdl_lite  # noqa: E402
 import patch_models  # noqa: E402
 import vmt  # noqa: E402
 import zcg_layout as L  # noqa: E402
 
-OPTIMIZED = 'optimized_textures.7z'
+# reduced versions of the oversized textures (tools/optimize_textures.py), in the addon layout;
+# the second archive came with the Driver and Specialist gloves
+OPTIMIZED = ('optimized_textures.7z', 'optimized_textures2.7z')
+OVERSIZED = 6 * 1024 * 1024  # as in tools/optimize_textures.py
 MARKER = '.zcg_extracted'
 # file date inside the zip: fixed, so that the same sources always give the very same zip
 ZIP_TIME = (2026, 11, 10, 12, 0, 0)
@@ -256,20 +260,27 @@ def step_textures(idx, out):
 
 
 def step_optimized(extractor, temp, out, wanted):
-    archive = os.path.join(HERE, OPTIMIZED)
-    if not os.path.isfile(archive):
-        raise BuildError('%s is missing (use --original-textures to build without it)' % archive)
-    dest = os.path.join(temp, '_optimized')
-    extract(extractor, archive, dest)
     replaced, saved = 0, 0
-    for rel, full in walk_files(dest):
-        rel = rel.lower()
-        if not rel.endswith('.vtf') or rel not in wanted:
-            continue
-        target = os.path.join(out, rel)
-        saved += os.path.getsize(target) - os.path.getsize(full)
-        copy(full, target)
-        replaced += 1
+    for number, name in enumerate(OPTIMIZED, 1):
+        archive = os.path.join(HERE, name)
+        if not os.path.isfile(archive):
+            raise BuildError('%s is missing (use --original-textures to build without it)' % archive)
+        dest = os.path.join(temp, '_optimized' + (str(number) if number > 1 else ''))
+        extract(extractor, archive, dest)
+        for rel, full in walk_files(dest):
+            rel = rel.lower()
+            if not rel.endswith('.vtf') or rel not in wanted:
+                continue
+            target = os.path.join(out, rel)
+            saved += os.path.getsize(target) - os.path.getsize(full)
+            copy(full, target)
+            replaced += 1
+    # a texture that was forgotten here would quietly add 16 MB to the addon
+    left = sorted(rel for rel in wanted if os.path.getsize(os.path.join(out, rel)) > OVERSIZED)
+    if left:
+        raise BuildError('no reduced version in %s for:\n    %s\n'
+                         'run tools/optimize_textures.py and pack its output, or build with --original-textures'
+                         % (' / '.join(OPTIMIZED), '\n    '.join(left)))
     return replaced, saved
 
 
@@ -324,6 +335,16 @@ def step_verify(out):
                 models[v['model']] = None
             if models[v['model']]:
                 stem = os.path.join(out, L.MODELS_DIR, v['model'])
+                # The three files of a model may come from different archives; the game refuses
+                # a model whose files do not carry the same checksum.
+                sums = []
+                for ext, offset in (('.mdl', 8), ('.vvd', 8), ('.dx90.vtx', 16)):
+                    if os.path.isfile(stem + ext):
+                        with open(stem + ext, 'rb') as f:
+                            f.seek(offset)
+                            sums.append(f.read(4))
+                if len(set(sums)) > 1:
+                    problems.append('%s: the .mdl, .vvd and .dx90.vtx do not belong together (different checksums)' % v['model'])
                 for ext in L.MODEL_EXTS:
                     if not ext.endswith('.vtx') or not os.path.isfile(stem + ext):
                         continue
@@ -346,20 +367,23 @@ def step_verify(out):
         if not gloves or v['body'] >= len(gloves[0]['models']):
             problems.append('%s: no body group "gloves" value %d' % (rel, v['body']))
             continue
-        names = [t.lower() for t in info['textures']]
+        try:
+            materials = L.glove_materials(info, v)
+        except ValueError as err:
+            problems.append(str(err))
+            continue
         found = 0
-        for index in gloves[0]['models'][v['body']]['materials']:
-            name = names[index]
+        for _index, name, drawn in materials:
             if name.startswith(patch_models.BARE_PREFIX):
                 continue  # what is left of the arm inside the glove model: Lua sets its material
             hit = None
             for cd in info['cdtextures']:
-                cand = 'materials/' + cd + '/' + name + '.vmt'
+                cand = 'materials/' + cd + '/' + drawn + '.vmt'
                 if exists(cand):
                     hit = cand
                     break
             if not hit:
-                problems.append('%s (%s): material is missing: %s' % (v['id'], v['model'], name))
+                problems.append('%s (%s): material is missing: %s' % (v['id'], v['model'], drawn))
                 continue
             found += 1
             check_vmt(hit)
@@ -396,9 +420,16 @@ def step_verify(out):
     else:
         with open(data, 'r', encoding='utf-8') as f:
             text = f.read()
+        lines = set(line.strip() for line in text.splitlines())
         for v in variants:
-            if '"%s"' % v['id'] not in text or '"%s"' % v['name'] not in text:
-                problems.append('sh_data.lua does not know %s - run tools/make_lua_data.py' % v['id'])
+            # the very line the generator writes: model, body value and swapped materials included
+            try:
+                known = models.get(v['model']) and make_lua_data.variant_lua(v, models[v['model']], out) in lines
+            except ValueError as err:
+                problems.append(str(err))
+                continue
+            if not known:
+                problems.append('sh_data.lua does not know %s (as it is now) - run tools/make_lua_data.py' % v['id'])
         # ... and where it expects the removed arm, there must be a removed triangle
         cuts = dict(re.findall(r'\["([^"]+\.mdl)"\] = \{.*\bbare = \{.*\bcut = (\d+)', text))
         for model in L.MODELS:
@@ -458,7 +489,7 @@ def main():
     ap.add_argument('--keep-temp', action='store_true',
                     help='keep the unpacked archives (the scripts in tools/ work on that folder, and the next build is faster)')
     ap.add_argument('--original-textures', action='store_true',
-                    help='keep the original 4096 px (and uncompressed 2048 px) textures: about 540 MB instead of 190 MB')
+                    help='keep the original 4096 px (and uncompressed 2048 px) textures: about 840 MB instead of 270 MB')
     ap.add_argument('--zip', action='store_true', help='also pack the result into <out>.zip')
     args = ap.parse_args()
 

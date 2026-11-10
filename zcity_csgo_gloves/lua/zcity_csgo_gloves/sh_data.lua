@@ -5,6 +5,8 @@
 -- name  : the key stored in the players' appearance files (ABodygroups.HANDS), never changes
 -- label : only shown in the picker
 -- body  : value of the body group "gloves" of the model
+-- mats  : only where the model does not name the materials of a glove: sub-material index ->
+--         material that cl_render.lua puts there (Entity:SetSubMaterial)
 
 local ZCG = ZCGloves
 
@@ -26,6 +28,8 @@ ZCG.Models = {
 	["models/zcity_csgo_gloves/v_glove_ct_hardknuckle_black.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 632646 },
 	["models/zcity_csgo_gloves/v_glove_ct_hardknuckle_blue.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 632646 },
 	["models/zcity_csgo_gloves/v_glove_fullfinger.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 616194 },
+	["models/zcity_csgo_gloves/v_glove_slick.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 1108800 },
+	["models/zcity_csgo_gloves/v_glove_ct_specialist.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 1563943 },
 }
 
 ZCG.Families = {
@@ -111,6 +115,40 @@ ZCG.Families = {
 		id = "leather", title = "Leather", fingerless = false,
 		variants = {
 			{ id = "leather_1", name = "CS:GO Leather", label = "Black leather", model = "models/zcity_csgo_gloves/v_glove_fullfinger.mdl", body = 0 },
+		},
+	},
+	{
+		id = "driver", title = "Driver", fingerless = false,
+		variants = {
+			{ id = "driver_1", name = "CS:GO Driver 01", label = "Tan leather", model = "models/zcity_csgo_gloves/v_glove_slick.mdl", body = 0 },
+			{ id = "driver_2", name = "CS:GO Driver 02", label = "Lunar Weave", model = "models/zcity_csgo_gloves/v_glove_slick.mdl", body = 1 },
+			{ id = "driver_3", name = "CS:GO Driver 03", label = "Crimson Weave", model = "models/zcity_csgo_gloves/v_glove_slick.mdl", body = 2 },
+			{ id = "driver_4", name = "CS:GO Driver 04", label = "Black Tie", model = "models/zcity_csgo_gloves/v_glove_slick.mdl", body = 3 },
+			{ id = "driver_5", name = "CS:GO Driver 05", label = "King Snake", model = "models/zcity_csgo_gloves/v_glove_slick.mdl", body = 4 },
+			{ id = "driver_6", name = "CS:GO Driver 06", label = "Racing Green", model = "models/zcity_csgo_gloves/v_glove_slick.mdl", body = 5 },
+			{ id = "driver_7", name = "CS:GO Driver 07", label = "Queen Jaguar", model = "models/zcity_csgo_gloves/v_glove_slick.mdl", body = 6 },
+			{ id = "driver_8", name = "CS:GO Driver 08", label = "Diamondback", model = "models/zcity_csgo_gloves/v_glove_slick.mdl", body = 7 },
+			{ id = "driver_9", name = "CS:GO Driver 09", label = "Imperial Plaid", model = "models/zcity_csgo_gloves/v_glove_slick.mdl", body = 8 },
+			{ id = "driver_10", name = "CS:GO Driver 10", label = "Rezan the Red", model = "models/zcity_csgo_gloves/v_glove_slick.mdl", body = 9 },
+			{ id = "driver_11", name = "CS:GO Driver 11", label = "Convoy", model = "models/zcity_csgo_gloves/v_glove_slick.mdl", body = 10 },
+			{ id = "driver_12", name = "CS:GO Driver 12", label = "Overtake", model = "models/zcity_csgo_gloves/v_glove_slick.mdl", body = 11 },
+			{ id = "driver_13", name = "CS:GO Driver 13", label = "Snow Leopard", model = "models/zcity_csgo_gloves/v_glove_slick.mdl", body = 12 },
+		},
+	},
+	{
+		id = "specialist", title = "Specialist", fingerless = false,
+		variants = {
+			{ id = "specialist_1", name = "CS:GO Specialist 01", label = "Tiger Strike", model = "models/zcity_csgo_gloves/v_glove_ct_specialist.mdl", body = 0 },
+			{ id = "specialist_2", name = "CS:GO Specialist 02", label = "Buckshot", model = "models/zcity_csgo_gloves/v_glove_ct_specialist.mdl", body = 1 },
+			{ id = "specialist_3", name = "CS:GO Specialist 03", label = "Forest DDPAT", model = "models/zcity_csgo_gloves/v_glove_ct_specialist.mdl", body = 2 },
+			{ id = "specialist_4", name = "CS:GO Specialist 04", label = "Mogul", model = "models/zcity_csgo_gloves/v_glove_ct_specialist.mdl", body = 3 },
+			{ id = "specialist_5", name = "CS:GO Specialist 05", label = "Foundation", model = "models/zcity_csgo_gloves/v_glove_ct_specialist.mdl", body = 4, mats = { [9] = "models/weapons/v_models/arms/glove_specialist/glove_specialist_right_5", [10] = "models/weapons/v_models/arms/glove_specialist/glove_specialist_left_5" } },
+			{ id = "specialist_6", name = "CS:GO Specialist 06", label = "Crimson Web", model = "models/zcity_csgo_gloves/v_glove_ct_specialist.mdl", body = 5 },
+			{ id = "specialist_7", name = "CS:GO Specialist 07", label = "Emerald Web", model = "models/zcity_csgo_gloves/v_glove_ct_specialist.mdl", body = 6 },
+			{ id = "specialist_8", name = "CS:GO Specialist 08", label = "Lt. Commander", model = "models/zcity_csgo_gloves/v_glove_ct_specialist.mdl", body = 7 },
+			{ id = "specialist_9", name = "CS:GO Specialist 09", label = "Field Agent", model = "models/zcity_csgo_gloves/v_glove_ct_specialist.mdl", body = 8 },
+			{ id = "specialist_10", name = "CS:GO Specialist 10", label = "Marble Fade", model = "models/zcity_csgo_gloves/v_glove_ct_specialist.mdl", body = 9 },
+			{ id = "specialist_11", name = "CS:GO Specialist 11", label = "Crimson Kimono", model = "models/zcity_csgo_gloves/v_glove_ct_specialist.mdl", body = 10 },
 		},
 	},
 }

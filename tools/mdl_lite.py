@@ -10,13 +10,15 @@ def _cstr(buf, off):
 
 def read(path):
     """returns dict(textures=[...], cdtextures=[...], bones=[{name, parent, pose_to_bone}],
-    bodyparts=[{name, models:[{name, materials:[idx], vertexindex, meshes:[{material, numverts, vertoffset}]}]}])"""
+    bodyparts=[{name, models:[{name, materials:[idx], vertexindex, meshes:[{material, numverts, vertoffset}]}]}],
+    skins=[[texture index for each material index of a mesh] for each skin])"""
     b = open(path, 'rb').read()
     ident, version = struct.unpack_from('<4si', b, 0)
     if ident != b'IDST' or not 44 <= version <= 49:
         raise ValueError('%s: not a supported studio model (ident %r, version %d)' % (path, ident, version))
     numbones, boneindex = struct.unpack_from('<2i', b, 156)
     numtextures, textureindex, numcdtextures, cdtextureindex = struct.unpack_from('<4i', b, 204)
+    numskinref, numskinfamilies, skinindex = struct.unpack_from('<3i', b, 220)
     numbodyparts, bodypartindex = struct.unpack_from('<2i', b, 232)
 
     textures = []
@@ -49,4 +51,7 @@ def read(path):
                 meshes.append(dict(material=material, numverts=numverts, vertoffset=vertoffset))
             models.append(dict(name=name, materials=[m['material'] for m in meshes], vertexindex=vertexindex, meshes=meshes))
         bodyparts.append(dict(name=_cstr(b, bo + sznameindex), models=models))
-    return dict(version=version, textures=textures, cdtextures=cdtextures, bones=bones, bodyparts=bodyparts)
+    skins = [list(struct.unpack_from('<%dh' % numskinref, b, skinindex + f * numskinref * 2))
+             for f in range(numskinfamilies)]
+    return dict(version=version, textures=textures, cdtextures=cdtextures, bones=bones, bodyparts=bodyparts,
+                skins=skins)

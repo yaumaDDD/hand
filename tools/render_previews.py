@@ -14,7 +14,7 @@ triangle those files still hold, so it shows what tools/patch_models.py did to t
 
 This is a small software rasteriser, not the game: it reads the .mdl/.vvd/.vtx files and the
 VTF textures directly, poses nothing (bind pose) and shades with a simple lambert + specular
-model.  It is good enough to tell the 44 variants apart, which is all the icons are for.
+model.  It is good enough to tell the gloves apart, which is all the icons are for.
 The fingers of the fingerless gloves are drawn the way the addon draws them: what
 tools/patch_models.py leaves of the bare arm inside the model, with the skin made by
 tools/make_skin.py (run that one first).
@@ -151,19 +151,23 @@ class Assets:
 
     def model(self, name):
         if name not in self._models:
-            p = self.idx[L.MODELS_DIR + '/' + name + '.mdl'][:-4]
-            verts, tang = read_vvd(p + '.vvd')
-            self._models[name] = (mdl_lite.read(p + '.mdl'), verts, tang, read_vtx(p + '.dx90.vtx'))
+            # the three files of a model may come from different archives
+            mdl, vvd, vtx = (self.idx[L.MODELS_DIR + '/' + name + ext] for ext in ('.mdl', '.vvd', '.dx90.vtx'))
+            verts, tang = read_vvd(vvd)
+            self._models[name] = (mdl_lite.read(mdl), verts, tang, read_vtx(vtx))
         return self._models[name]
 
-    def meshes(self, name, body):
-        """meshes of body group "gloves" = body (LOD 0)"""
+    def meshes(self, name, body, mats=None):
+        """meshes of body group "gloves" = body (LOD 0); mats: {material of the model: material
+        drawn instead} (zcg_layout: "materials")"""
         info, verts, tang, vtx = self.model(name)
         bi = [i for i, bp in enumerate(info['bodyparts']) if bp['name'] == 'gloves'][0]
         m = info['bodyparts'][bi]['models'][body]
+        swaps = {old.lower(): new for old, new in (mats or {}).items()}
         out = []
         for ki, me in enumerate(m['meshes']):
             tex = info['textures'][me['material']]
+            tex = swaps.get(tex.lower(), tex)
             vids, tris = vtx[bi][body][ki]
             base = m['vertexindex'] // 48 + me['vertoffset']
             v = verts[base + vids]
@@ -422,7 +426,7 @@ def make_closeup(assets, built, path, tile=236):
     sheet = Image.new('RGB', (pad + len(shown) * (tile + pad), pad + 2 * tile + label_h + pad), bg)
     d = ImageDraw.Draw(sheet)
     for col, v in enumerate(shown):
-        info, meshes = assets.meshes(v['model'], v['body'])
+        info, meshes = assets.meshes(v['model'], v['body'], v['mats'])
         _select, view = hand_view(info, 'R')
         names = [bn['name'] for bn in info['bones']]
         on_side = np.array(['_R_' in n for n in names])
@@ -474,7 +478,7 @@ def main():
     for v in variants:
         if args.only and v['id'] not in args.only:
             continue
-        info, meshes = assets.meshes(v['model'], v['body'])
+        info, meshes = assets.meshes(v['model'], v['body'], v['mats'])
         select, view = hand_view(info, 'R')
         big = render(assets, meshes, view, select, size=512)
         tiles[v['id']] = downscale(big, 256)

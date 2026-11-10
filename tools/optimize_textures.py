@@ -6,8 +6,9 @@ mipmaps, 16.8 MB each) as 1024x1024 DXT5 with a full mip chain (1.4 MB each).
     python tools/optimize_textures.py <extracted_root> <out_dir>
 
 <extracted_root> has one sub-folder per source archive (as produced by build_addon.py
---keep-temp); <out_dir> receives the files in the final addon layout so it can be packed
-into optimized_textures.7z.  Requires: numpy, etcpak.
+--keep-temp); <out_dir> receives the files in the final addon layout so they can be packed
+into the archives the build reads (OPTIMIZED in build_addon.py: optimized_textures.7z and,
+for the gloves added later, optimized_textures2.7z).  Requires: numpy, etcpak.
 """
 import os
 import sys

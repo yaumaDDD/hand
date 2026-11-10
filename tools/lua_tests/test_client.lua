@@ -913,7 +913,7 @@ return function(testdir, luaroot)
 	for _, panel in ipairs(M.panels) do
 		if not panel.removed and panel.zcg_variant then tiles[#tiles + 1] = panel end
 	end
-	eq(#tiles, 44, "one tile per glove")
+	eq(#tiles, 68, "one tile per glove")
 	local px, py = picker:GetPos()
 	check(px >= 0 and px + picker:GetWide() <= 1920, "picker inside the window (x)")
 	check(py >= 0 and py + picker:GetTall() <= 1080, "picker inside the window (y)")
@@ -1038,7 +1038,7 @@ return function(testdir, luaroot)
 			check(panel.zcg_variant.family.id ~= "moto", "moto hidden by the hook")
 		end
 	end
-	eq(shown, 44 - 13 - 1, "CanSelect hook removes tiles")
+	eq(shown, 68 - 13 - 1, "CanSelect hook removes tiles")
 	main.zcg_picker:Remove() M.flushPanels()
 	hook.Remove("ZCityCSGOGloves_CanSelect", "test")
 
@@ -1160,6 +1160,141 @@ return function(testdir, luaroot)
 		Z.paintViewer(win3.viewer) -- AppearanceTable is nil: the preview must cope
 		eq(#M.errors, 1, "preview copes with a missing appearance table")
 		M.errors = {}
+	end
+
+	-- ---------------------------------------------------------------- a glove that brings its own materials
+	-- The Specialist model names only ten pairs of materials for its eleven gloves: the fifth
+	-- one gets its materials from sh_data.lua ("mats").
+	do
+		local SPECIALIST = "models/zcity_csgo_gloves/v_glove_ct_specialist.mdl"
+		local RIGHT5 = "models/weapons/v_models/arms/glove_specialist/glove_specialist_right_5"
+		local LEFT5 = "models/weapons/v_models/arms/glove_specialist/glove_specialist_left_5"
+		-- the materials of the model as the game lists them: no "_5" between "_4" and "_6"
+		local DIR = "models/weapons/v_models/arms/glove_specialist/"
+		local materials = { "models/weapons/v_models/arms/bare/bare_arm_133" }
+		for _, suffix in ipairs({ "", "_2", "_3", "_4", "_6", "_7", "_8", "_9", "_10", "_11" }) do
+			materials[#materials + 1] = DIR .. "glove_specialist_right" .. suffix
+			materials[#materials + 1] = DIR .. "glove_specialist_left" .. suffix
+		end
+		M.files[SPECIALIST] = true
+		M.models[SPECIALIST] = { bones = gloveBones(), materials = materials }
+		eq(materials[9 + 1], DIR .. "glove_specialist_right_6", "(the imitation: material 9 of the model)")
+		eq(materials[10 + 1], DIR .. "glove_specialist_left_6", "(the imitation: material 10 of the model)")
+
+		local five = ZCG.ByID["specialist_5"]
+		check(five ~= nil and istable(five.mats), "specialist_5 brings materials")
+		eq(five.mats[9], RIGHT5, "its right hand material")
+		eq(five.mats[10], LEFT5, "its left hand material")
+		eq(table.Count(five.mats), 2, "and nothing else")
+		local swapping = 0
+		for _, v in ipairs(ZCG.Variants) do
+			if v.mats then swapping = swapping + 1 end
+		end
+		eq(swapping, 1, "no other glove swaps materials")
+		eq(ZCG.ByID["specialist_5"].body, 4, "the fifth glove is body value 4")
+		eq(ZCG.ByID["specialist_6"].body, 5, "the sixth one is body value 5")
+
+		local eve = M.newPlayer("eve", Z.MALE)
+		dress(eve)
+		eve.nw.zcg_glove = "specialist_5"
+		frame() Z.draw(eve)
+		local glove = ZCG.States[eve].mdl
+		eq(glove.model, SPECIALIST, "specialist model")
+		eq(glove:GetBodygroup(0), 4, "body group of the fifth glove")
+		eq(glove:GetSubMaterial(9), RIGHT5, "right hand: the material the model does not name")
+		eq(glove:GetSubMaterial(10), LEFT5, "left hand: the material the model does not name")
+		eq(glove:GetSubMaterial(0), "null", "the bare arm inside the model is hidden as always")
+		eq(glove:GetSubMaterial(1), "", "the other materials are left alone")
+		eq(eve:GetSubMaterial(HANDS_SLOT), "null", "the wearer's hands are hidden")
+		local draws = glove.draws
+		frame() Z.draw(eve)
+		eq(glove.draws, draws + 1, "drawn every frame")
+		eq(glove:GetSubMaterial(9), RIGHT5, "the material stays")
+
+		-- the next glove of the same model keeps the model: the swapped materials must go
+		eve.nw.zcg_glove = "specialist_6"
+		frame() Z.draw(eve)
+		eq(ZCG.States[eve].mdl, glove, "the model is kept for another glove of the family")
+		eq(glove:GetBodygroup(0), 5, "body group of the sixth glove")
+		eq(glove:GetSubMaterial(9), "", "right hand: the material of the model again")
+		eq(glove:GetSubMaterial(10), "", "left hand: the material of the model again")
+		eq(glove:GetSubMaterial(0), "null", "the bare arm stays hidden")
+
+		-- and back
+		eve.nw.zcg_glove = "specialist_5"
+		frame() Z.draw(eve)
+		eq(ZCG.States[eve].mdl, glove, "still the same model")
+		eq(glove:GetBodygroup(0), 4, "the fifth glove again")
+		eq(glove:GetSubMaterial(9), RIGHT5, "right hand swapped again")
+		eq(glove:GetSubMaterial(10), LEFT5, "left hand swapped again")
+
+		-- a glove of another model in between: every model starts without swapped materials
+		eve.nw.zcg_glove = "moto_1"
+		frame() Z.draw(eve)
+		local moto = ZCG.States[eve].mdl
+		check(moto ~= glove and glove.removed == true, "the specialist model is removed for another model")
+		eq(moto:GetSubMaterial(9), "", "nothing is swapped on the other model (9)")
+		eq(moto:GetSubMaterial(10), "", "nothing is swapped on the other model (10)")
+		eve.nw.zcg_glove = "specialist_5"
+		frame() Z.draw(eve)
+		local again = ZCG.States[eve].mdl
+		check(again ~= glove and again ~= moto, "a new specialist model")
+		eq(again:GetSubMaterial(9), RIGHT5, "the new model gets the material (right)")
+		eq(again:GetSubMaterial(10), LEFT5, "the new model gets the material (left)")
+
+		-- the same glove on a model made anew: after the engine dropped the model ...
+		again:Remove()
+		frame() Z.draw(eve)
+		local third = ZCG.States[eve].mdl
+		check(third ~= again and not third.removed, "a model the engine removed is made again")
+		eq(third:GetBodygroup(0), 4, "the new model shows the fifth glove")
+		eq(third:GetSubMaterial(9), RIGHT5, "and has its material (right)")
+		eq(third:GetSubMaterial(10), LEFT5, "and has its material (left)")
+		-- ... and after the way of drawing changed
+		M.setConVar("zcg_bonemerge", 1)
+		frame() Z.draw(eve)
+		local merged = ZCG.States[eve].mdl
+		check(merged ~= third and third.removed == true, "another model for the bone-merged glove")
+		eq(merged:GetSubMaterial(9), RIGHT5, "the bone-merged model has the material (right)")
+		eq(merged:GetSubMaterial(10), LEFT5, "the bone-merged model has the material (left)")
+		M.setConVar("zcg_bonemerge", 0)
+		frame() Z.draw(eve)
+		again = ZCG.States[eve].mdl
+		eq(again:GetSubMaterial(9), RIGHT5, "and so has the one made after switching back")
+
+		-- zcg_preview shows the glove on the local player with the same code
+		M.command("zcg_preview", me, "specialist_5")
+		frame() Z.draw(me)
+		local mine = ZCG.States[me] and ZCG.States[me].mdl
+		check(mine ~= nil and mine.model == SPECIALIST, "zcg_preview shows the specialist glove")
+		if mine then
+			eq(mine:GetSubMaterial(9), RIGHT5, "preview: material (right)")
+			eq(mine:GetSubMaterial(10), LEFT5, "preview: material (left)")
+		end
+		-- zcg_debug tells what the model names, what the glove wants and what is set
+		M.log = {}
+		M.command("zcg_debug", me)
+		local report = table.concat(M.log, "\n")
+		check(report:find("glove material [ 9]  : " .. DIR .. "glove_specialist_right_6 -> wanted \"" .. RIGHT5
+			.. "\", set \"" .. RIGHT5 .. "\"", 1, true) ~= nil, "zcg_debug reports the swapped material (right)")
+		check(report:find("glove material [10]  : " .. DIR .. "glove_specialist_left_6 -> wanted \"" .. LEFT5
+			.. "\", set \"" .. LEFT5 .. "\"", 1, true) ~= nil, "zcg_debug reports the swapped material (left)")
+		M.command("zcg_preview", me, "specialist_6")
+		frame() Z.draw(me)
+		M.log = {}
+		M.command("zcg_debug", me)
+		check(table.concat(M.log, "\n"):find("glove material [", 1, true) == nil, "no such lines for a glove that swaps nothing")
+		frame() Z.draw(me) -- (prints the bone report zcg_debug asked for)
+		M.command("zcg_preview", me, "off")
+		frame() Z.draw(me)
+
+		-- taken off: the model goes, nothing is left behind
+		eve.nw.zcg_glove = "none"
+		frame() Z.draw(eve)
+		eq(eve:GetSubMaterial(HANDS_SLOT), CLOTHES, "hands back when the glove is taken off")
+		M.advance(17)
+		check(again.removed == true, "the unused model is removed")
+		check(ZCG.States[eve] == nil, "state forgotten")
 	end
 
 	eq(#M.errors, 0, "no errors at the end: " .. table.concat(M.errors, " | "))

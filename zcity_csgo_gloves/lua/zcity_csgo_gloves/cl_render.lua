@@ -188,6 +188,7 @@ end
 --   mdl, path, body  clientside glove model, its model path and current "gloves" body value
 --   skin             material on what is left of the bare arm in that model: the skin of the
 --                    fingers, or the "draw nothing" material
+--   mats             the "mats" of the glove whose materials are on the model right now
 --   merge            the model was set up for zcg_bonemerge 1
 --   copied, total    bones taken from the wearer / bones of the glove (zcg_bonemerge 0)
 --   hide             { slot, old } while this addon hides the wearer's hands
@@ -207,7 +208,7 @@ end
 
 local function removeModel(state)
 	if IsValid(state.mdl) then state.mdl:Remove() end
-	state.mdl, state.path, state.body, state.merge, state.skin = nil, nil, nil, nil, nil
+	state.mdl, state.path, state.body, state.merge, state.skin, state.mats = nil, nil, nil, nil, nil, nil
 	state.drawn = false
 end
 
@@ -272,12 +273,28 @@ local function gloveModel(ent, state, variant, fingers)
 		mdl:DrawShadow(false)
 
 		mdl:SetBodygroup(info.sleeves, 0) -- the models also contain CS:GO sleeves
-		state.mdl, state.path, state.body, state.merge, state.skin = mdl, variant.model, nil, merge, nil
+		state.mdl, state.path, state.body, state.merge, state.skin, state.mats = mdl, variant.model, nil, merge, nil, nil
 	end
 
 	if state.body ~= variant.body then
 		mdl:SetBodygroup(info.gloves, variant.body)
 		state.body = variant.body
+	end
+
+	-- A glove whose model does not name its materials brings them along ("mats" in sh_data.lua).
+	-- The model is kept from glove to glove, so the materials of the previous one go first.
+	if state.mats ~= variant.mats then
+		if state.mats then
+			for index in pairs(state.mats) do
+				mdl:SetSubMaterial(index, nil)
+			end
+		end
+		if variant.mats then
+			for index, name in pairs(variant.mats) do
+				mdl:SetSubMaterial(index, name)
+			end
+		end
+		state.mats = variant.mats
 	end
 
 	-- What the build left of the bare arm inside the model - the fingers of a fingerless glove,
@@ -811,6 +828,18 @@ concommand.Add("zcg_debug", function()
 		print("  state                : model " .. tostring(state.mdl) .. ", body " .. tostring(state.body)
 			.. ", bare arm material \"" .. tostring(state.skin) .. "\""
 			.. ", hands hidden " .. tostring(state.hide ~= nil) .. ", last try " .. string.format("%.1f", RealTime() - (state.seen or 0)) .. " s ago")
+		if variant and variant.mats then
+			-- the glove brings materials the model does not name: what is on the model right now?
+			local slots = {}
+			for index in pairs(variant.mats) do slots[#slots + 1] = index end
+			table.sort(slots)
+			local names = IsValid(state.mdl) and state.mdl:GetMaterials() or {}
+			for _, index in ipairs(slots) do
+				print(string.format("  glove material [%2d]  : %s", index, tostring(names[index + 1]))
+					.. " -> wanted \"" .. variant.mats[index] .. "\", set \""
+					.. (IsValid(state.mdl) and state.mdl:GetSubMaterial(index) or "") .. "\"")
+			end
+		end
 		if state.drawn then
 			print("  drawn                : yes" .. (state.merge and ", bone-merged by the engine"
 				or (", " .. tostring(state.copied) .. " of " .. tostring(state.total) .. " bones taken from the wearer")))

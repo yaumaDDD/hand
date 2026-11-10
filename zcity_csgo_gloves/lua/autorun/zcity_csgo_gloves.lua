@@ -1,11 +1,11 @@
 -- Z-City CS:GO Gloves
--- Adds 44 CS:GO gloves to the "Gloves" slot of the Z-City appearance editor.
+-- Adds 68 CS:GO gloves to the "Gloves" slot of the Z-City appearance editor.
 -- https://github.com/yaumaDDD/hand
 
 if SERVER then AddCSLuaFile() end
 
 ZCGloves = ZCGloves or {}
-ZCGloves.Version = "1.1.0"
+ZCGloves.Version = "1.2.0"
 
 local DIR = "zcity_csgo_gloves/"
 

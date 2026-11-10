@@ -29,10 +29,33 @@ def lua_str(s):
     return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
+def variant_lua(v, info, addon=ADDON):
+    """the line of sh_data.lua for one glove. info: its model as read by mdl_lite;
+    addon: the addon folder that holds the materials (the skeleton, or a finished build)"""
+    line = '{ id = %s, name = %s, label = %s, model = %s, body = %d' % (
+        lua_str(v['id']), lua_str(v['name']), lua_str(v['label']),
+        lua_str(L.MODELS_DIR + '/' + v['model'] + '.mdl'), v['body'])
+    swaps = []
+    for index, name, drawn in L.glove_materials(info, v):
+        if drawn == name:
+            continue
+        if index > 31:
+            raise ValueError('%s: material index %d, Entity:SetSubMaterial only reaches 0..31' % (v['id'], index))
+        for cd in info['cdtextures']:
+            if os.path.exists(os.path.join(addon, 'materials', cd, drawn + '.vmt')):
+                swaps.append('[%d] = %s' % (index, lua_str(cd + '/' + drawn)))
+                break
+        else:
+            raise ValueError('%s: material "%s" has no VMT in the addon - run tools/make_vmts.py first' % (v['id'], drawn))
+    if swaps:
+        line += ', mats = { %s }' % ', '.join(swaps)
+    return line + ' },'
+
+
 def model_info(idx, name):
     """returns (index of body group "gloves", index of "sleeves", number of glove variants,
     sorted indices of the bare-arm materials used by the "gloves" body group, offset in the
-    .dx90.vtx of the first triangle that the build removes)"""
+    .dx90.vtx of the first triangle that the build removes, the model as read by mdl_lite)"""
     mdl_path = idx[L.MODELS_DIR + '/' + name + '.mdl']
     info = mdl_lite.read(mdl_path)
     names = [bp['name'] for bp in info['bodyparts']]
@@ -51,6 +74,11 @@ def model_info(idx, name):
         raise SystemExit('%s: no bare arm in this model - is it a glove model?' % name)
     if any(i > 31 for i in bare):
         raise SystemExit('%s: the bare arm has a material index > 31, Entity:SetSubMaterial cannot reach it' % name)
+    # The glove is drawn with skin 0 and the Lua code addresses materials by their place in the
+    # list of the model, so skin 0 must not shuffle that list (the other skins are the skin
+    # tones of the CS:GO arm).
+    if not info['skins'] or info['skins'][0] != list(range(len(info['skins'][0]))):
+        raise SystemExit('%s: skin 0 of this model replaces materials, the material indices in sh_data.lua would be wrong' % name)
 
     with open(idx[L.MODELS_DIR + '/' + name + '.vvd'], 'rb') as f:
         vvd = f.read()
@@ -60,7 +88,7 @@ def model_info(idx, name):
     cut = stats['first']
     if cut is None or patch_models.is_removed(vtx, cut) or not patch_models.is_removed(patched, cut):
         raise SystemExit('%s: no arm to remove in this model (the archives must hold the original models)' % name)
-    return gloves, sleeves, len(info['bodyparts'][gloves]['models']), sorted(bare), cut
+    return gloves, sleeves, len(info['bodyparts'][gloves]['models']), sorted(bare), cut, info
 
 
 def main():
@@ -80,6 +108,8 @@ def main():
         '-- name  : the key stored in the players\' appearance files (ABodygroups.HANDS), never changes',
         '-- label : only shown in the picker',
         '-- body  : value of the body group "gloves" of the model',
+        '-- mats  : only where the model does not name the materials of a glove: sub-material index ->',
+        '--         material that cl_render.lua puts there (Entity:SetSubMaterial)',
         '',
         'local ZCG = ZCGloves',
         '',
@@ -93,7 +123,7 @@ def main():
         'ZCG.Models = {',
     ]
     for m in L.MODELS:
-        gloves, sleeves, count, bare, cut = infos[m]
+        gloves, sleeves, count, bare, cut, _info = infos[m]
         out.append('\t[%s] = { gloves = %d, sleeves = %d, bare = { %s }, cut = %d },' % (
             lua_str(L.MODELS_DIR + '/' + m + '.mdl'), gloves, sleeves, ', '.join(str(i) for i in bare), cut))
     out += ['}', '', 'ZCG.Families = {']
@@ -106,9 +136,10 @@ def main():
                 continue
             if v['body'] >= infos[v['model']][2]:
                 raise SystemExit('%s: model %s has no glove variant %d' % (v['id'], v['model'], v['body']))
-            out.append('\t\t\t{ id = %s, name = %s, label = %s, model = %s, body = %d },' % (
-                lua_str(v['id']), lua_str(v['name']), lua_str(v['label']),
-                lua_str(L.MODELS_DIR + '/' + v['model'] + '.mdl'), v['body']))
+            try:
+                out.append('\t\t\t' + variant_lua(v, infos[v['model']][5]))
+            except ValueError as err:
+                raise SystemExit(str(err))
         out.append('\t\t},')
         out.append('\t},')
     out += ['}', '']

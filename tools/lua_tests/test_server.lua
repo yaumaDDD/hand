@@ -19,6 +19,7 @@ return function(testdir, luaroot)
 		"v_glove_bloodhound", "v_glove_bloodhound_fingerless_brokenfang", "v_glove_bloodhound_fingerless_hydra",
 		"v_glove_handwrap_leathery", "v_glove_fingerless", "v_glove_motorcycle", "v_glove_ct_hardknuckle",
 		"v_glove_ct_hardknuckle_black", "v_glove_ct_hardknuckle_blue", "v_glove_fullfinger",
+		"v_glove_slick", "v_glove_ct_specialist",
 	}
 	for _, name in ipairs(models) do
 		for _, ext in ipairs({ ".mdl", ".vvd", ".dx90.vtx" }) do
@@ -37,10 +38,11 @@ return function(testdir, luaroot)
 	include("autorun/zcity_csgo_gloves.lua")
 	local ZCG = ZCGloves
 	check(ZCG ~= nil, "ZCGloves table exists")
-	eq(#ZCG.Variants, 44, "number of gloves")
+	eq(#ZCG.Variants, 68, "number of gloves")
+	eq(#ZCG.Families, 10, "number of glove families")
 	eq(ZCG.Ready, nil, "not registered while Z-City is missing")
 	eq(#M.csfiles, 6, "files sent to clients")
-	eq(#util.precached, 10, "precached models")
+	eq(#util.precached, 12, "precached models")
 	eq(#resource.files, 0, "nothing in FastDL by default")
 	eq(#resource.workshop, 0, "no workshop download by default")
 
@@ -65,7 +67,7 @@ return function(testdir, luaroot)
 
 	local hands = hg.Appearance.Bodygroups.HANDS
 	for sex = 1, 2 do
-		eq(table.Count(hands[sex]), 3 + 44, "entries in HANDS[" .. sex .. "]")
+		eq(table.Count(hands[sex]), 3 + 68, "entries in HANDS[" .. sex .. "]")
 		local entry = hands[sex]["CS:GO Moto 05"]
 		check(entry ~= nil, "moto 05 registered for sex " .. sex)
 		eq(entry[1], "hands", "our gloves keep the bare hands submodel")
@@ -206,7 +208,7 @@ return function(testdir, luaroot)
 	hands[1] = { ["None"] = { "hands", false } }
 	hands[2]["CS:GO Moto 05"] = nil
 	M.advance(21)
-	eq(table.Count(hands[1]), 1 + 44, "re-registered after a rebuild")
+	eq(table.Count(hands[1]), 1 + 68, "re-registered after a rebuild")
 	check(hands[2]["CS:GO Moto 05"] ~= nil, "single missing entry restored")
 
 	-- ---------------------------------------------------------------- status command

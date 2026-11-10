@@ -16,7 +16,8 @@ work in plain Garry's Mod:
     the base texture alpha) and rely on that envmap to give them a colour back - without
     it the studs and emblems are just black, so the black tint is dropped as well;
   * texture paths use mixed case (breaks on Linux servers / clients);
-  * a few files are truncated or have stray braces.
+  * a few files are truncated or have stray braces;
+  * the Specialist VMTs name bump maps that are not there (zcg_layout.VMT_FIXES puts it right).
 Only the materials really used by the shipped models are generated.
 """
 import argparse
@@ -56,14 +57,27 @@ def build_index(src_root):
 def used_vmts(idx):
     """addon-relative vmt path -> list of models that use it"""
     used = {}
+    infos = {}
     for m in L.MODELS:
-        info = mdl_lite.read(idx[L.MODELS_DIR + '/' + m + '.mdl'])
+        info = infos[m] = mdl_lite.read(idx[L.MODELS_DIR + '/' + m + '.mdl'])
         for tex in info['textures']:
             for cd in info['cdtextures']:
                 key = 'materials/' + cd + '/' + tex.lower() + '.vmt'
                 if key in idx:
                     used.setdefault(key, []).append(m)
                     break
+    # materials that a model does not name but a glove is given by Lua (zcg_layout: "materials")
+    for v in L.variants():
+        for _index, name, drawn in L.glove_materials(infos[v['model']], v):
+            if drawn == name:
+                continue
+            for cd in infos[v['model']]['cdtextures']:
+                key = 'materials/' + cd + '/' + drawn + '.vmt'
+                if key in idx:
+                    used.setdefault(key, []).append(v['model'])
+                    break
+            else:
+                raise SystemExit('%s: material "%s" is not in the archives' % (v['id'], drawn))
     return used
 
 
@@ -84,6 +98,11 @@ def is_black(value):
 
 def convert(text, idx, keep_envmap, name, keep_black_tint=False):
     shader, items = vmt.parse(text)
+    fixes = dict(L.VMT_FIXES.get(name.lower(), {}))
+    if fixes:
+        items = [(key, fixes.pop(key.lower(), val)) for key, val in items]
+        if fixes:
+            raise SystemExit('%s: nothing to correct, the file has no %s' % (name, ', '.join(sorted(fixes))))
     black_tint = any(k.lower() == '$color2' and is_black(v) for k, v in items)
     out = []
     for key, val in items:
