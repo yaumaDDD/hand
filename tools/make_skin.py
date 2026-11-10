@@ -2,32 +2,39 @@
 # -*- coding: utf-8 -*-
 """Make the skin of the bare fingers that the fingerless gloves are drawn with.
 
-    python tools/make_skin.py <extracted_root> [--hands hands.zip] [--out DIR] [--preview DIR]
+    python tools/make_skin.py <extracted_root> [--skin hands2.zip] [--hands hands.zip] [--out DIR] [--preview DIR]
 
-The fingers are inside the glove models (see patch_models.py), their skin is not. hands.zip
-holds the arm material of the first CS:GO versions (v_model_base_arms), which uses the very
-same texture layout, and this script turns it into
+The fingers are inside the glove models (see patch_models.py), their skin is not. It is put
+together from two archives:
 
     materials/zcity_csgo_gloves/skin/fingers.vmt
-                                     fingers_color.vtf
-                                     fingers_normal.vtf
-                                     fingers_exp.vtf     (unchanged)
+                                     fingers_color.vtf   bare_arm_135 of hands2.zip, as it is
+                                     fingers_normal.vtf  v_model_base_arms of hands.zip, shine repaired
+                                     fingers_exp.vtf     v_model_base_arms of hands.zip, unchanged
 
-That material was painted for one glove only: everything that glove covers - the hand up to
-the middle of the fingers - is darkened in the colour texture and has no shine at all (alpha of
-the normal map), as if it were in the shadow of the glove. The other fingerless gloves are
-shorter there, the hand wraps leave the whole thumb free, and they would show that paint as
-dirty, dull fingers. So it is taken out again wherever a finger of any glove model uses the
-texture. The skin that shows through the cut-out on the back of the "Fingerless" glove is the
-one place that is left exactly as it was painted.
+bare_arm_135 is a bare arm of the kind the glove models were made for (they name bare_arm_133,
+of the same folder): clean skin all over, in the very texture layout of the fingers. Only its
+colour texture is there; the normal and exponent maps its material names are not. Those come
+from v_model_base_arms, the arm material of the first CS:GO versions, which has the same layout
+and the same hand painted on it.
 
-How: the paint is found as the dark zone of the (blurred) colour texture. For every finger the
-profile across the edge of that zone is measured - how much darker, where exactly, how soft -
-and the same edge is put on again the other way round. Around the fingers a margin of a few
-pixels continues their colours, because texture filtering reads there. Nothing else is touched,
-and the files are not compressed again as a whole: only the 4x4 blocks in which something
-changes are replaced, in every mip level, so that the rest keeps the quality it came with (the
-tool stops if anything outside the fingers differs afterwards).
+That older material was painted for one glove only: everything that glove covers - the hand up
+to the middle of the fingers - is darkened in its colour texture and has no shine at all (alpha
+of its normal map), as if it were in the shadow of the glove. The colour texture is therefore no
+longer used (up to 1.2.0 it was, with the darkening taken out of the fingers again); it is only
+looked at, because the dark zone shows where the shine is missing. The other fingerless gloves
+are shorter there, the hand wraps leave the whole thumb free, and they would show dull fingers
+next to shiny ones. So the shine is put back wherever a finger of any glove model uses the
+texture. The skin that shows through the cut-out on the back of the "Fingerless" glove keeps
+the shine it was painted with.
+
+How: the zone is found as the dark part of the (blurred) old colour texture. For every finger
+the profile across the edge of that zone is measured - how much duller, where exactly, how
+soft - and the same edge is put on again the other way round. Around the fingers a margin of a
+few pixels continues their values, because texture filtering reads there. Nothing else is
+touched, and the normal map is not compressed again as a whole: only the 4x4 blocks in which
+something changes are replaced, in every mip level, so that the rest keeps the quality it came
+with (the tool stops if anything outside the fingers differs afterwards).
 
 <extracted_root> has one sub-folder per source archive (build_addon.py --keep-temp leaves such
 a tree in build/_extract). Needs numpy and pillow. The result is committed, so building the
@@ -54,6 +61,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, '..'))
 
 SOURCE = 'v_model_base_arms'  # .vmt, _color.vtf, _normal.vtf, _exp.vtf inside hands.zip
+COLOR = 'bare_arm_135'        # .vtf inside hands2.zip: the colour texture that is shipped
 SKIN_DIR, SKIN_NAME = L.FINGER_MATERIAL.rsplit('/', 1)  # folder below materials/, name of the material
 # texture of the source material -> ours
 TEXTURES = {SOURCE + '_color': SKIN_NAME + '_color', SOURCE + '_normal': SKIN_NAME + '_normal',
@@ -65,8 +73,7 @@ LUMA = np.array([0.299, 0.587, 0.114])
 ZONE_BLUR = 5.0     # the shadow is found on a blurred picture: wrinkles and hair must not count
 DIST_BLUR = 6.0     # blur used to measure distances from the edge of the zone
 FIT_RANGE = 12      # pixels on both sides of that edge that are looked at
-MARGIN = 8          # pixels around the fingers that get their colours (texture filtering reads there)
-TONE_BLUR = 2.0     # see fix_color
+MARGIN = 8          # pixels around the fingers that get their values (texture filtering reads there)
 
 _PHI_X = np.linspace(-6.0, 6.0, 2401)
 _PHI = np.array([0.5 * (1.0 + math.erf(x / math.sqrt(2.0))) for x in _PHI_X])
@@ -343,22 +350,6 @@ def repaint(image, fixed, fingers, shade):
     return out, margin & (around[:, :, -1] > 0.0025)
 
 
-def fix_color(color, fingers, a):
-    """the colours without the darkening: (H, W, 3) float, and the margin that was repainted"""
-    rgb = color[:, :, :3].astype(np.float64)
-    shade = a['shade'][:, :, None]
-    fixed = rgb / (1.0 - shade * (1.0 - a['factor']))
-    # The dark zone is stored in few colour steps and brightening makes them twice as large, which
-    # shows as pink and yellow blotches. So there the tone of the colour is taken from a slightly
-    # blurred picture (of the finger alone) and only the brightness from the sharp one.
-    if TONE_BLUR:
-        on = fingers[:, :, None].astype(np.float64)
-        tone = gauss(fixed * on, TONE_BLUR) / np.maximum(gauss(on, TONE_BLUR), 1e-6)
-        tone *= ((fixed @ LUMA) / np.maximum(tone @ LUMA, 1e-6))[:, :, None]
-        fixed += (tone - fixed) * shade
-    return repaint(rgb, fixed, fingers, a['shade'])
-
-
 def fix_shine(normal, fingers, a):
     """alpha of the normal map = how much the skin shines; it is zero inside the zone.
     returns it as it should be, (H, W) float, and the margin that was repainted"""
@@ -411,6 +402,7 @@ def convert_vmt(text):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('src_root')
+    ap.add_argument('--skin', default=os.path.join(ROOT, 'hands2.zip'), help='archive (or folder) with %s.vtf' % COLOR)
     ap.add_argument('--hands', default=os.path.join(ROOT, 'hands.zip'), help='archive (or folder) with %s.*' % SOURCE)
     ap.add_argument('--out', default=os.path.join(ROOT, L.ADDON_DIRNAME))
     ap.add_argument('--preview', help='folder for pictures of what was done (before / after / masks)')
@@ -426,6 +418,14 @@ def main():
     h, w = color.shape[:2]
     if normal.shape[:2] != (h, w):
         raise SystemExit('colour texture and normal map differ in size')
+
+    skin_vtf = open_source(args.skin).get(COLOR + '.vtf')
+    if skin_vtf is None:
+        raise SystemExit('%s.vtf is not in %s' % (COLOR, args.skin))
+    skin_hdr, skin_table = vtflib.mip_table(skin_vtf)
+    _hdr, skin = vtflib.decode_top_mip(skin_vtf)
+    if skin_hdr['format'] != vtflib.FMT_DXT5 or skin.shape[:2] != (h, w):
+        raise SystemExit('%s.vtf is expected to be a DXT5 texture of %d x %d' % (COLOR, w, h))
 
     idx = make_vmts.build_index(args.src_root)
     fingers, under = np.zeros((h, w), bool), np.zeros((h, w), bool)
@@ -443,9 +443,7 @@ def main():
         print('%-44s %5d finger triangles, %4d of skin under the glove' % (model, len(uv_fingers), len(uv_under)))
 
     a = analyse(color, normal, fingers, under)
-    new_rgb, margin = fix_color(color, fingers, a)
-    new_alpha, margin_n = fix_shine(normal, fingers, a)
-    margin |= margin_n
+    new_alpha, margin = fix_shine(normal, fingers, a)
     print('the fingers use %.1f%% of the texture, %.0f%% of that is in the darkened zone:'
           % (fingers.mean() * 100, a['zone'][fingers].mean() * 100))
     for i in sorted(a['islands'], key=lambda i: i['x']):
@@ -456,51 +454,45 @@ def main():
     if a['unmeasured']:
         print('    %d more pixels were too few to be measured and got the average' % a['unmeasured'])
     dark, light = fingers & (a['shade'] > 0.9), fingers & (a['shade'] < 0.1)
-    print('fingers, mean colour: darkened part %s -> %s, the rest %s' % (
-        np.round(color[:, :, :3][dark].mean(axis=0)), np.round(new_rgb[dark].mean(axis=0)),
-        np.round(color[:, :, :3][light].mean(axis=0))))
+    print('fingers, mean colour: %s in %s; %s had %s in its darkened part and %s in the rest' % (
+        np.round(skin[:, :, :3][fingers].mean(axis=0)), COLOR, SOURCE,
+        np.round(color[:, :, :3][dark].mean(axis=0)), np.round(color[:, :, :3][light].mean(axis=0))))
 
-    # Both textures stay the files they are: only the 4x4 blocks in which something changes are
+    # The normal map stays the file it is: only the 4x4 blocks in which something changes are
     # compressed again (in every mip), so nothing else loses quality a second time.
-    want = color.astype(np.float64)
-    want[:, :, :3] = new_rgb
-    color_vtf, blocks = vtflib.patch_dxt5(src[SOURCE + '_color.vtf'], color, want)
     want_n = normal.astype(np.float64)
     want_n[:, :, 3] = new_alpha
     normal_vtf, blocks_n = vtflib.patch_dxt5(src[SOURCE + '_normal.vtf'], normal, want_n, alpha=True)
-    hdr, table = vtflib.mip_table(color_vtf)
-    _hdr, shipped = vtflib.decode_top_mip(color_vtf)
     _hdr, shipped_n = vtflib.decode_top_mip(normal_vtf)
 
-    differs = (shipped[:, :, :3] != color[:, :, :3]).any(axis=2) | (shipped_n[:, :, 3] != normal[:, :, 3])
+    differs = shipped_n[:, :, 3] != normal[:, :, 3]
     _, allowed = spread(np.zeros((h, w, 1)), fingers | margin, 3)  # a block may reach 3 pixels further
-    print('changed: %d pixels on the fingers, %d around them, %d elsewhere, %d of the skin under the glove'
+    print('shine changed: %d pixels on the fingers, %d around them, %d elsewhere, %d of the skin under the glove'
           % ((differs & fingers).sum(), (differs & allowed & ~fingers).sum(), (differs & ~allowed).sum(), (differs & under).sum()))
-    if (differs & (under | ~allowed)).any() or (shipped_n[:, :, :3] != normal[:, :, :3]).any() \
-            or (shipped[:, :, 3] != color[:, :, 3]).any():
-        raise SystemExit('the textures were changed outside the fingers')
+    if (differs & (under | ~allowed)).any() or (shipped_n[:, :, :3] != normal[:, :, :3]).any():
+        raise SystemExit('the normal map was changed outside the fingers')
     touched = fingers | margin
-    print('blocks compressed again per mip: colour %s, shine %s' % (blocks, blocks_n))
-    print('compression error where it was changed: colour %.2f, shine %.2f (of 255, rms)' % (
-        np.sqrt(((shipped[:, :, :3][touched] - new_rgb[touched]) ** 2).mean()),
+    print('blocks compressed again per mip: %s' % (blocks_n,))
+    print('compression error where it was changed: %.2f (of 255, rms)' % (
         np.sqrt(((shipped_n[:, :, 3][touched] - new_alpha[touched]) ** 2).mean())))
 
     out_dir = os.path.join(args.out, 'materials', SKIN_DIR.replace('/', os.sep))
     os.makedirs(out_dir, exist_ok=True)
-    # the colour texture carried a mask for reflections in its alpha, which the material no longer
-    # uses: stored as DXT1 it is half the size and shows exactly the same colours
+    # The colour texture carries a mask in its alpha (where a tint would go: next to nowhere) that
+    # the material does not use: stored as DXT1 it is half the size and shows exactly the same
+    # colours, block for block.
     path = os.path.join(out_dir, SKIN_NAME + '_color.vtf')
-    thumb = vtflib.thumbnail(color_vtf)
+    thumb = vtflib.thumbnail(skin_vtf)
     if thumb is None:
-        raise SystemExit('%s_color.vtf has no thumbnail' % SOURCE)
+        raise SystemExit('%s.vtf has no thumbnail' % COLOR)
     vtflib.write_container(path, w, h, vtflib.FMT_DXT1, 0,
-                           [vtflib.dxt5_to_dxt1(color_vtf[off:off + vtflib.mip_bytes(vtflib.FMT_DXT5, mw, mh)])
-                            for off, mw, mh in table], thumb, hdr['reflectivity'])
+                           [vtflib.dxt5_to_dxt1(skin_vtf[off:off + vtflib.mip_bytes(vtflib.FMT_DXT5, mw, mh)])
+                            for off, mw, mh in skin_table], thumb, skin_hdr['reflectivity'])
     with open(path, 'rb') as f:
         stored = f.read()
-    for (off, mw, mh), (off1, _, _) in zip(table, vtflib.mip_table(stored)[1]):
+    for (off, mw, mh), (off1, _, _) in zip(skin_table, vtflib.mip_table(stored)[1]):
         if (vtflib.decode_mip(stored, vtflib.FMT_DXT1, off1, mw, mh)[:, :, :3] !=
-                vtflib.decode_mip(color_vtf, vtflib.FMT_DXT5, off, mw, mh)[:, :, :3]).any():
+                vtflib.decode_mip(skin_vtf, vtflib.FMT_DXT5, off, mw, mh)[:, :, :3]).any():
             raise SystemExit('the DXT1 copy of the colour texture differs')
     with open(os.path.join(out_dir, SKIN_NAME + '_normal.vtf'), 'wb') as f:
         f.write(normal_vtf)
@@ -509,7 +501,8 @@ def main():
 
     items, dropped = convert_vmt(src[SOURCE + '.vmt'].decode('latin-1'))
     header = ('Z-City CS:GO gloves - skin of the bare fingers inside the fingerless glove models.\n'
-              'Generated by tools/make_skin.py from %s (hands.zip), do not edit by hand.' % SOURCE)
+              'Generated by tools/make_skin.py from %s (hands2.zip) and %s (hands.zip), do not edit by hand.'
+              % (COLOR, SOURCE))
     with open(os.path.join(out_dir, SKIN_NAME + '.vmt'), 'w', encoding='ascii', newline='\n') as f:
         f.write(vmt.dump('VertexLitGeneric', items, header))
     print('left out of the material: %s' % ', '.join(dropped))
@@ -520,8 +513,8 @@ def main():
     if args.preview:
         from PIL import Image
         os.makedirs(args.preview, exist_ok=True)
-        Image.fromarray(color[:, :, :3]).save(os.path.join(args.preview, 'skin_before.png'))
-        Image.fromarray(shipped[:, :, :3]).save(os.path.join(args.preview, 'skin_after.png'))
+        Image.fromarray(color[:, :, :3]).save(os.path.join(args.preview, 'skin_old.png'))
+        Image.fromarray(skin[:, :, :3]).save(os.path.join(args.preview, 'skin.png'))
         Image.fromarray(normal[:, :, 3]).save(os.path.join(args.preview, 'shine_before.png'))
         Image.fromarray(shipped_n[:, :, 3]).save(os.path.join(args.preview, 'shine_after.png'))
         masks = color[:, :, :3].astype(np.float64) * 0.45
