@@ -54,12 +54,12 @@ end
 local function editorLayout(main, ent)
 	if not IsValid(ent) then return end
 	local variant = editorVariant(main)
-	if not variant or not ZCG.HidesHands(variant) or not ZCG.HasModel(variant.model) then return end
+	if not variant or not ZCG.HasModel(variant.model) then return end
 	-- only while a glove really is drawn over the hands; it is drawn after the model, so the
 	-- hands go one frame after the glove came
 	local state = ZCG.States[ent]
 	if not state or not state.drawn then return end
-	local slot = ZCG.HandsSlot(ent)
+	local slot = ZCG.Wearing(ent, variant)
 	if slot then ent:SetSubMaterial(slot, ZCG.HideMaterial()) end
 end
 
@@ -69,7 +69,8 @@ local function editorDraw(main, ent)
 	if not IsValid(ent) then return end
 	local variant = editorVariant(main)
 	if variant then
-		ZCG.DrawGlove(ent, variant)
+		local _, fingers = ZCG.Wearing(ent, variant)
+		ZCG.DrawGlove(ent, variant, fingers)
 	else
 		ZCG.ClearGlove(ent)
 	end

@@ -18,8 +18,10 @@
 -- matrix of the wearer's bone of the same name, so the glove cannot be anywhere else than on the
 -- hands that get drawn. "zcg_bonemerge 1" leaves that to the engine (EF_BONEMERGE) instead.
 --
--- In the same hook the wearer's own hands are hidden (full-finger gloves only, otherwise the
--- skin pokes through the glove) - but only while a glove really is drawn over them.
+-- In the same hook the wearer's own hands are hidden, because they would poke through the glove -
+-- but only while a glove really is drawn over them. A fingerless glove is then drawn with fingers
+-- of its own: every glove model contains the bare CS:GO arm it was made for, the build of this
+-- addon cuts that arm down to the fingers (tools/patch_models.py), and here they get their skin.
 
 local ZCG = ZCGloves
 local Config = ZCG.Config
@@ -55,6 +57,40 @@ function ZCG.HideMaterial()
 end
 
 -- ---------------------------------------------------------------------------------------------
+-- the skin of the fingers inside the fingerless glove models
+-- ---------------------------------------------------------------------------------------------
+local fingerSkin = { checked = -1000 } -- name: the material, once it is known to be there; tint
+
+-- name of the material, nil while it is not installed on this client (looked for every 10 s)
+function ZCG.FingerMaterial()
+	if fingerSkin.name then return fingerSkin.name end
+	local now = RealTime()
+	if now - fingerSkin.checked < 10 then return nil end
+	fingerSkin.checked = now
+
+	local name = Config.FingerMaterial
+	if not isstring(name) or name == "" then return nil end
+	-- ("!name" is a material made by Lua: no file to look for)
+	if string.sub(name, 1, 1) ~= "!" and not file.Exists("materials/" .. name .. ".vmt", "GAME") then return nil end
+
+	fingerSkin.name = name
+	if isvector(Config.FingerTint) then ZCG.SetFingerTint(Config.FingerTint) end
+	return name
+end
+
+-- Multiplies the skin with a colour (a Vector, 1 1 1 = as it is) on this client.
+-- Returns false when the material is not installed.
+function ZCG.SetFingerTint(tint)
+	local name = ZCG.FingerMaterial()
+	if not name then return false end
+	local mat = Material(name)
+	if not mat or mat:IsError() then return false end
+	mat:SetVector("$color2", tint)
+	fingerSkin.tint = tint
+	return true
+end
+
+-- ---------------------------------------------------------------------------------------------
 -- is the content (models) installed on this client?
 -- ---------------------------------------------------------------------------------------------
 local content = {} -- model path -> { ok = bool, time = last check }
@@ -71,6 +107,42 @@ function ZCG.HasModel(path)
 		warned = true
 		ZCG.Print("the glove models are not installed on this client (" .. path .. "), gloves will not be drawn. "
 			.. "Install the addon content or ask the server owner to set Config.WorkshopID.")
+	end
+	return ok
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- are the models on this client the ones this version was built with?
+-- ---------------------------------------------------------------------------------------------
+-- Up to version 1.0.1 the models were shipped with the whole bare arm in them, and nothing
+-- replaces them when only a part of the addon is updated (the Lua files come from the server
+-- anyway, and FastDL never downloads a file a second time). Skin on such a model would show a
+-- second pair of arms. The build notes where in the .dx90.vtx file the first triangle it removed
+-- is stored (ZCG.Models[path].cut): a removed triangle has the same corner three times.
+local armRemoved = {} -- model path -> true / false, once the file could be looked at
+
+function ZCG.ArmRemoved(path)
+	local known = armRemoved[path]
+	if known ~= nil then return known end
+	if not ZCG.HasModel(path) then return false end -- (asked again when the model is there)
+
+	local ok = true -- a file that cannot be read is given the benefit of the doubt
+	local info = ZCG.Models[path]
+	local f = info and info.cut and file.Open(string.sub(path, 1, -5) .. ".dx90.vtx", "rb", "GAME")
+	if f then
+		f:Seek(info.cut)
+		local data = f:Read(6)
+		f:Close()
+		if isstring(data) and #data == 6 then
+			local a1, a2, b1, b2, c1, c2 = string.byte(data, 1, 6)
+			ok = a1 == b1 and a2 == b2 and a1 == c1 and a2 == c2
+		end
+	end
+	armRemoved[path] = ok
+	if not ok then
+		ZCG.Print("the glove models on this client are from an older version of the addon (" .. path .. "): "
+			.. "fingerless gloves are drawn without their own fingers. Install the whole addon again "
+			.. "(or delete garrysmod/download/models/zcity_csgo_gloves if the server sent the files).")
 	end
 	return ok
 end
@@ -114,6 +186,8 @@ end
 --   seen             RealTime of the last attempt to draw
 --   drawn, why       was the glove drawn at that attempt; if not, the reason (for zcg_debug)
 --   mdl, path, body  clientside glove model, its model path and current "gloves" body value
+--   skin             material on what is left of the bare arm in that model: the skin of the
+--                    fingers, or the "draw nothing" material
 --   merge            the model was set up for zcg_bonemerge 1
 --   copied, total    bones taken from the wearer / bones of the glove (zcg_bonemerge 0)
 --   hide             { slot, old } while this addon hides the wearer's hands
@@ -133,7 +207,7 @@ end
 
 local function removeModel(state)
 	if IsValid(state.mdl) then state.mdl:Remove() end
-	state.mdl, state.path, state.body, state.merge = nil, nil, nil, nil
+	state.mdl, state.path, state.body, state.merge, state.skin = nil, nil, nil, nil, nil
 	state.drawn = false
 end
 
@@ -180,7 +254,7 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- the glove model
 -- ---------------------------------------------------------------------------------------------
-local function gloveModel(ent, state, variant)
+local function gloveModel(ent, state, variant, fingers)
 	local merge = cvBonemerge:GetBool()
 	local mdl = state.mdl
 	if mdl and (not IsValid(mdl) or state.path ~= variant.model or state.merge ~= merge) then
@@ -197,19 +271,24 @@ local function gloveModel(ent, state, variant)
 		mdl:SetNoDraw(true) -- drawn by hand, in step with its wearer
 		mdl:DrawShadow(false)
 
-		-- the models still contain CS:GO sleeves and a bare arm: only the glove is wanted
-		mdl:SetBodygroup(info.sleeves, 0)
-		local invisible = ZCG.HideMaterial()
-		for _, index in ipairs(info.hide) do
-			mdl:SetSubMaterial(index, invisible)
-		end
-
-		state.mdl, state.path, state.body, state.merge = mdl, variant.model, nil, merge
+		mdl:SetBodygroup(info.sleeves, 0) -- the models also contain CS:GO sleeves
+		state.mdl, state.path, state.body, state.merge, state.skin = mdl, variant.model, nil, merge, nil
 	end
 
 	if state.body ~= variant.body then
 		mdl:SetBodygroup(info.gloves, variant.body)
 		state.body = variant.body
+	end
+
+	-- What the build left of the bare arm inside the model - the fingers of a fingerless glove,
+	-- nothing at all in the other ones - has a material of its own. The fingers get their skin
+	-- when the glove replaces the wearer's hands and are not drawn otherwise.
+	local skin = fingers and ZCG.FingerMaterial() or ZCG.HideMaterial()
+	if state.skin ~= skin then
+		for _, index in ipairs(info.bare) do
+			mdl:SetSubMaterial(index, skin)
+		end
+		state.skin = skin
 	end
 
 	-- zcg_bonemerge 1 only; otherwise the model has no parent and its bones are written by hand
@@ -462,8 +541,10 @@ end
 
 -- Draws a glove on any entity with a ValveBiped skeleton (players, ragdolls, the model of the
 -- appearance editor). The glove takes the pose the entity's bones have at this very moment:
--- call it where the entity is drawn. Returns true when the glove was drawn.
-function ZCG.DrawGlove(ent, variant)
+-- call it where the entity is drawn. fingers = true: a fingerless glove is drawn with the fingers
+-- of its model (only useful when the entity's own hands are hidden, see ZCG.Wearing).
+-- Returns true when the glove was drawn.
+function ZCG.DrawGlove(ent, variant, fingers)
 	local state = getState(ent)
 	state.seen = RealTime()
 	state.drawn = false
@@ -472,7 +553,7 @@ function ZCG.DrawGlove(ent, variant)
 		state.why = "the glove model is not installed"
 		return false
 	end
-	local mdl = gloveModel(ent, state, variant)
+	local mdl = gloveModel(ent, state, variant, fingers)
 	if not mdl then
 		state.why = "the glove model could not be created"
 		return false
@@ -548,6 +629,18 @@ local function armsGone(ent)
 	return istable(organism) and organism.larmamputated and organism.rarmamputated
 end
 
+-- What a glove does to the hands of its wearer. Returns the sub-material slot of the hands
+-- that the glove hides (nil: they stay), and whether the glove is drawn with its own fingers.
+-- A fingerless glove hides the hands only when it can show fingers instead, and shows them only
+-- when it can hide the hands: two sets of fingers in one glove would be worse than either.
+function ZCG.Wearing(ent, variant)
+	if not ZCG.HidesHands(variant) then return nil, false end
+	if variant.fingerless and not (ZCG.FingerMaterial() and ZCG.ArmRemoved(variant.model)) then return nil, false end
+	local slot = ZCG.HandsSlot(ent)
+	if not slot then return nil, false end
+	return slot, variant.fingerless and true or false
+end
+
 -- ---------------------------------------------------------------------------------------------
 -- hooks
 -- ---------------------------------------------------------------------------------------------
@@ -570,11 +663,8 @@ local function drawHook(ent)
 	state.variant = variant
 
 	-- The glove first: the hands are only hidden while a glove really is drawn over them.
-	local slot
-	if ZCG.DrawGlove(ent, variant) and ZCG.HidesHands(variant) then
-		slot = ZCG.HandsSlot(ent)
-	end
-	if slot then
+	local slot, fingers = ZCG.Wearing(ent, variant)
+	if ZCG.DrawGlove(ent, variant, fingers) and slot then
 		hide(ent, state, slot)
 	else
 		unhide(ent, state)
@@ -657,6 +747,22 @@ end, function(cmd, argStr)
 	return out
 end, "CS:GO gloves: show a glove on yourself (this client only). zcg_preview <id> / zcg_preview off")
 
+concommand.Add("zcg_finger_tint", function(_, _, args)
+	local r, g, b = tonumber(args[1]), tonumber(args[2]), tonumber(args[3])
+	if r and not args[2] then g, b = r, r end -- one number: all three
+	if not (r and g and b) then
+		ZCG.Print("usage: zcg_finger_tint <red> <green> <blue>   (1 1 1 = the skin as it is, 0.8 0.8 0.8 = darker)")
+		return
+	end
+	r, g, b = math.Clamp(r, 0, 4), math.Clamp(g, 0, 4), math.Clamp(b, 0, 4)
+	if not ZCG.SetFingerTint(Vector(r, g, b)) then
+		ZCG.Print("the skin of the glove fingers (" .. tostring(Config.FingerMaterial) .. ") is not installed on this client")
+		return
+	end
+	ZCG.Print(string.format("finger tint %.2f %.2f %.2f on this client until the game is restarted. To keep it for everybody: "
+		.. "FingerTint = Vector(%.2f, %.2f, %.2f) in lua/zcity_csgo_gloves/sh_config.lua", r, g, b, r, g, b))
+end, nil, "CS:GO gloves: try a colour for the skin of the glove fingers (this client only). zcg_finger_tint <r> <g> <b>")
+
 concommand.Add("zcg_debug", function()
 	local me = LocalPlayer()
 	local ent = me
@@ -672,15 +778,25 @@ concommand.Add("zcg_debug", function()
 	print("[CS:GO Gloves] version " .. ZCG.Version)
 	print("  registered in Z-City : " .. tostring(ZCG.Ready == true))
 	print("  zcg_enable " .. cvEnable:GetString() .. ", zcg_bonemerge " .. cvBonemerge:GetString()
-		.. ", zcg_hide_hands " .. ZCG.cvHideHands:GetString() .. ", zcg_any_model " .. ZCG.cvAnyModel:GetString())
+		.. ", zcg_hide_hands " .. ZCG.cvHideHands:GetString() .. ", zcg_fingers " .. ZCG.cvFingers:GetString()
+		.. ", zcg_any_model " .. ZCG.cvAnyModel:GetString())
 	print("  hide material        : " .. ZCG.HideMaterial())
+	local tint = fingerSkin.tint
+	print("  finger material      : " .. tostring(Config.FingerMaterial)
+		.. (ZCG.FingerMaterial() and "" or " - NOT installed on this client")
+		.. (tint and string.format(", tint %.2f %.2f %.2f", tint.x, tint.y, tint.z) or ""))
 	print("  draw errors          : " .. failures)
 	print("  entity               : " .. tostring(ent))
 	print("  model                : " .. model)
 	print("  networked glove      : \"" .. ent:GetNWString(NW, "") .. "\"")
 	print("  glove                : " .. (variant and (variant.id .. " / " .. variant.name .. " / " .. variant.model) or "none"))
 	if variant then
-		print("  glove model installed: " .. tostring(ZCG.HasModel(variant.model)))
+		print("  glove model installed: " .. tostring(ZCG.HasModel(variant.model))
+			.. (ZCG.HasModel(variant.model) and not ZCG.ArmRemoved(variant.model) and " - but it is the model of an OLDER version of the addon" or ""))
+		local hidden, fingers = ZCG.Wearing(ent, variant)
+		print("  this glove           : " .. (variant.fingerless and "fingerless" or "full-finger")
+			.. ", hides the hands of this model: " .. tostring(hidden ~= nil)
+			.. ", drawn with its own fingers: " .. tostring(fingers))
 	end
 	print("  hands material       : " .. ZCG.HandsMaterialName(model) .. " -> slot " .. tostring(slot)
 		.. (slot and (", currently \"" .. ent:GetSubMaterial(slot) .. "\"") or ""))
@@ -693,6 +809,7 @@ concommand.Add("zcg_debug", function()
 
 	if state then
 		print("  state                : model " .. tostring(state.mdl) .. ", body " .. tostring(state.body)
+			.. ", bare arm material \"" .. tostring(state.skin) .. "\""
 			.. ", hands hidden " .. tostring(state.hide ~= nil) .. ", last try " .. string.format("%.1f", RealTime() - (state.seen or 0)) .. " s ago")
 		if state.drawn then
 			print("  drawn                : yes" .. (state.merge and ", bone-merged by the engine"

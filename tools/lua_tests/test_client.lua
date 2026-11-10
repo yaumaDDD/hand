@@ -49,6 +49,10 @@ return function(testdir, luaroot)
 		M.models[path] = { bones = gloveBones() }
 	end
 	M.files["materials/zcity_csgo_gloves/icons/moto_5.png"] = true -- the other icons are "missing"
+	-- the skin of the fingers inside the fingerless glove models
+	local SKIN = "zcity_csgo_gloves/skin/fingers"
+	local SKIN_FILE = "materials/" .. SKIN .. ".vmt"
+	M.files[SKIN_FILE] = true
 
 	local CLOTHES = "models/humans/male/group01/normal"
 	local HANDS_SLOT = 4 -- "distac/gloves/hands" is the 5th material of the male mock model
@@ -176,7 +180,7 @@ return function(testdir, luaroot)
 	eq(#M.csmodels, 1, "same model for another colour")
 	eq(glove:GetBodygroup(0), 6, "body group follows the variant")
 
-	-- a fingerless glove: other model, the hands come back with the latest server value
+	-- a fingerless glove: other model, and it comes with fingers of its own
 	alice.nw.zcg_glove = "bloodhound_2"
 	frame() Z.draw(alice)
 	eq(#M.csmodels, 2, "a new model for another family")
@@ -184,15 +188,20 @@ return function(testdir, luaroot)
 	glove = lastModel()
 	eq(glove.model, BLOODHOUND, "bloodhound model")
 	eq(glove:GetBodygroup(0), 1, "bloodhound variant")
-	eq(alice:GetSubMaterial(HANDS_SLOT), "models/humans/male/group01/other", "hands restored for fingerless gloves")
+	eq(glove:GetSubMaterial(0), SKIN, "the fingers inside a fingerless glove get their skin")
+	eq(alice:GetSubMaterial(HANDS_SLOT), "null", "and the wearer's own hands stay hidden under it")
+	local skinWrites = glove.submatWrites
+	for _ = 1, 5 do frame() Z.draw(alice) end
+	eq(glove.submatWrites, skinWrites, "the skin is set once, not in every frame")
 
-	-- hydra hides material 1, not 0
+	-- in the hydra model the bare arm is material 1, not 0
 	alice.nw.zcg_glove = "hydra_3"
 	frame() Z.draw(alice)
 	glove = lastModel()
 	eq(glove.model, HYDRA, "hydra model")
-	eq(glove:GetSubMaterial(1), "null", "hydra: bare arm is material 1")
+	eq(glove:GetSubMaterial(1), SKIN, "hydra: the fingers are material 1")
 	eq(glove:GetSubMaterial(0), "", "hydra: material 0 is the glove")
+	eq(alice:GetSubMaterial(HANDS_SLOT), "null", "hydra: hands hidden")
 
 	-- gloves off
 	alice.nw.zcg_glove = "moto_1"
@@ -277,6 +286,15 @@ return function(testdir, luaroot)
 	check(M.sameMatrix(daveGlove.shown[bone("R", "Finger1")], dave.shown[bone("R", "Hand")] * M.matrix(3.7, -0.2, -1.4)),
 		"the pose of the glove model is remembered, not read from bones that were written")
 
+	-- its hands cannot be hidden, so a fingerless glove must not add a second set of fingers
+	dave.nw.zcg_glove = "bloodhound_1"
+	frame() Z.draw(dave)
+	daveGlove = lastModel()
+	eq(daveGlove.model, BLOODHOUND, "a fingerless glove on a foreign model")
+	eq(daveGlove.draws, 1, "is drawn")
+	eq(daveGlove:GetSubMaterial(0), "null", "without its own fingers: the model's hands cannot be hidden")
+	eq(dave.submatWrites, nil, "still nothing written on the foreign model")
+
 	-- ---------------------------------------------------------------- convars
 	alice:SetModel(Z.MALE)
 	dress(alice)
@@ -286,14 +304,39 @@ return function(testdir, luaroot)
 	frame() Z.draw(alice)
 	eq(alice:GetSubMaterial(HANDS_SLOT), CLOTHES, "zcg_hide_hands 0 gives the hands back")
 	check(lastModel().draws >= 1, "the glove is still drawn")
+	alice.nw.zcg_glove = "handwrap_2"
+	frame() Z.draw(alice)
+	eq(lastModel().model, HANDWRAP, "(a fingerless glove)")
+	eq(alice:GetSubMaterial(HANDS_SLOT), CLOTHES, "zcg_hide_hands 0 keeps the hands under a fingerless glove too")
+	eq(lastModel():GetSubMaterial(0), "null", "which is then drawn without its own fingers: one pair is enough")
 	M.setConVar("zcg_hide_hands", 1)
+	local sameModel = lastModel()
+	frame() Z.draw(alice)
+	eq(lastModel(), sameModel, "(no new model for that)")
+	eq(sameModel:GetSubMaterial(0), SKIN, "zcg_hide_hands 1: the fingers of the glove are back")
+	eq(alice:GetSubMaterial(HANDS_SLOT), "null", "and the wearer's hands are hidden again")
 
-	ZCG.Config.HideHands = { moto = false, bloodhound = true }
+	-- zcg_fingers 0: fingerless gloves as in version 1.0.1
+	M.setConVar("zcg_fingers", 0)
+	frame() Z.draw(alice)
+	eq(sameModel:GetSubMaterial(0), "null", "zcg_fingers 0: the fingers of the glove are not drawn")
+	eq(alice:GetSubMaterial(HANDS_SLOT), CLOTHES, "zcg_fingers 0: the wearer's own fingers are")
+	alice.nw.zcg_glove = "moto_2"
+	frame() Z.draw(alice)
+	eq(alice:GetSubMaterial(HANDS_SLOT), "null", "zcg_fingers 0 does not touch full-finger gloves")
+	M.setConVar("zcg_fingers", 1)
+
+	ZCG.Config.HideHands = { moto = false, handwrap = false }
 	frame() Z.draw(alice)
 	eq(alice:GetSubMaterial(HANDS_SLOT), CLOTHES, "Config.HideHands can keep the hands of a family")
+	alice.nw.zcg_glove = "handwrap_2"
+	frame() Z.draw(alice)
+	eq(alice:GetSubMaterial(HANDS_SLOT), CLOTHES, "of a fingerless family as well")
+	eq(lastModel():GetSubMaterial(0), "null", "its gloves are then drawn without their own fingers")
 	alice.nw.zcg_glove = "bloodhound_1"
 	frame() Z.draw(alice)
-	eq(alice:GetSubMaterial(HANDS_SLOT), "null", "Config.HideHands can hide the hands of a family")
+	eq(alice:GetSubMaterial(HANDS_SLOT), "null", "the other families are not affected")
+	eq(lastModel():GetSubMaterial(0), SKIN, "and keep their fingers")
 	ZCG.Config.HideHands = {}
 	alice.nw.zcg_glove = "moto_2"
 	frame() Z.draw(alice)
@@ -327,6 +370,8 @@ return function(testdir, luaroot)
 	eq(ZCG.States[rag].mdl, lastModel(), "a dead body keeps its glove without an owner")
 	eq(lastModel().model, HANDWRAP, "the dead body's own glove")
 	eq(lastModel():GetBodygroup(0), 3, "the dead body's own variant")
+	eq(lastModel():GetSubMaterial(0), SKIN, "a fingerless glove has its fingers on a ragdoll too")
+	eq(rag:GetSubMaterial(HANDS_SLOT), "null", "and the ragdoll's own hands are hidden")
 
 	local stray = M.newEntity("prop_ragdoll", Z.MALE)
 	count = #M.csmodels
@@ -490,6 +535,12 @@ return function(testdir, luaroot)
 	check(#M.log > 8, "zcg_debug prints a report")
 	local report = table.concat(M.log, "\n")
 	check(report:find("zcg_bonemerge 0", 1, true) ~= nil, "the report names the method")
+	check(report:find("zcg_fingers 1", 1, true) ~= nil, "and the finger setting")
+	check(report:find("finger material      : " .. SKIN, 1, true) ~= nil and report:find("NOT installed", 1, true) == nil,
+		"the report names the skin of the fingers")
+	check(report:find("full-finger, hides the hands of this model: true, drawn with its own fingers: false", 1, true) ~= nil,
+		"the report says what the glove does to the hands")
+	check(report:find('bare arm material "null"', 1, true) ~= nil, "and what is on the rest of the bare arm")
 	check(report:find("15 of 15 bones taken from the wearer", 1, true) ~= nil, "the report says how many bones were copied")
 	check(report:find("R_Wrist 15", 1, true) ~= nil, "the report lists the bones of the wearer that matter")
 	M.log = {}
@@ -537,6 +588,181 @@ return function(testdir, luaroot)
 		include("autorun/zcity_csgo_gloves.lua")
 		ZCG = ZCGloves
 		eq(ZCG.HideMaterial(), "null", "null again")
+	end
+
+	-- ---------------------------------------------------------------- fingerless gloves that cannot show their fingers
+	do
+		local function reload()
+			ZCGloves = nil
+			include("autorun/zcity_csgo_gloves.lua")
+			ZCG = ZCGloves
+		end
+		local function wearer(name, id)
+			local ply = M.newPlayer(name, Z.MALE)
+			ply.tpik = Z.tpik
+			dress(ply)
+			ply.nw.zcg_glove = id
+			return ply
+		end
+		local function logged(text)
+			local n = 0
+			for _, line in ipairs(M.log) do
+				if line:find(text, 1, true) then n = n + 1 end
+			end
+			return n
+		end
+
+		-- the content of version 1.0.x under this Lua: there is no skin for the fingers
+		M.files[SKIN_FILE] = nil
+		reload()
+		local hank = wearer("hank", "handwrap_3")
+		Z.draw(hank)
+		local g = ZCG.States[hank].mdl
+		eq(ZCG.FingerMaterial(), nil, "(the finger skin is not installed)")
+		eq(g.draws, 1, "without the finger skin the glove is drawn all the same")
+		eq(g:GetSubMaterial(0), "null", "without its fingers")
+		eq(hank:GetSubMaterial(HANDS_SLOT), CLOTHES, "over the wearer's own hands, as in version 1.0.1")
+		hank.nw.zcg_glove = "moto_1"
+		frame() Z.draw(hank)
+		eq(hank:GetSubMaterial(HANDS_SLOT), "null", "full-finger gloves do not need the skin")
+		M.log = {}
+		M.command("zcg_finger_tint", me, "0.8")
+		eq(logged("is not installed on this client"), 1, "zcg_finger_tint says that the skin is missing")
+		me.lookat = hank
+		M.log = {}
+		M.command("zcg_debug", me)
+		eq(logged("NOT installed on this client"), 1, "and so does zcg_debug")
+		me.lookat = nil
+
+		-- the content arrives while the game runs
+		hank.nw.zcg_glove = "handwrap_3"
+		frame() Z.draw(hank)
+		g = ZCG.States[hank].mdl
+		M.files[SKIN_FILE] = true
+		frame() Z.draw(hank)
+		eq(g:GetSubMaterial(0), "null", "the skin is not looked for in every frame")
+		for _ = 1, 600 do frame() Z.draw(hank) end -- 12 seconds
+		eq(ZCG.States[hank].mdl, g, "(still the same glove model)")
+		eq(g:GetSubMaterial(0), SKIN, "but it is found once it is installed")
+		eq(hank:GetSubMaterial(HANDS_SLOT), "null", "and then the wearer's hands go")
+
+		-- the models of version 1.0.x with the rest of this version: the whole bare arm is in them
+		local vtx = HANDWRAP:sub(1, -5) .. ".dx90.vtx"
+		local cut = ZCG.Models[HANDWRAP].cut
+		check(isnumber(cut) and cut > 0, "(the catalogue knows where the build removed the arm)")
+		M.filedata[vtx] = { [cut] = "\7\0\8\0\9\0" } -- a triangle with three corners: it is still drawn
+		reload()
+		M.log = {}
+		M.opened = 0
+		local ivy = wearer("ivy", "handwrap_1")
+		Z.draw(ivy)
+		for _ = 1, 3 do frame() Z.draw(ivy) end
+		g = ZCG.States[ivy].mdl
+		eq(g.draws, 4, "a glove model of an older version is drawn")
+		eq(g:GetSubMaterial(0), "null", "but gets no skin: the arm that is still in it must not show")
+		eq(ivy:GetSubMaterial(HANDS_SLOT), CLOTHES, "the wearer keeps the hands instead")
+		eq(logged("from an older version"), 1, "the player is told once")
+		eq(M.opened, 1, "the model file is looked at once")
+		eq(M.openNow, 0, "and closed again")
+		eq(ZCG.ArmRemoved(HANDWRAP), false, "ZCG.ArmRemoved tells")
+		me.lookat = ivy
+		M.log = {}
+		M.command("zcg_debug", me)
+		eq(logged("OLDER version"), 1, "zcg_debug names the old model")
+		eq(logged("fingerless, hides the hands of this model: false, drawn with its own fingers: false"), 1,
+			"and what follows from it")
+		me.lookat = nil
+		frame() Z.draw(ivy) -- (the bone report zcg_debug asked for)
+		ivy.nw.zcg_glove = "bloodhound_1"
+		frame() Z.draw(ivy)
+		eq(ZCG.States[ivy].mdl:GetSubMaterial(0), SKIN, "every model is judged on its own (a file that cannot be read is trusted)")
+		eq(ivy:GetSubMaterial(HANDS_SLOT), "null", "so that glove has its fingers")
+		ivy.nw.zcg_glove = "moto_1"
+		frame() Z.draw(ivy)
+		eq(ivy:GetSubMaterial(HANDS_SLOT), "null", "(full-finger gloves hide the hands whatever the files are)")
+
+		-- two equal corners are a triangle, too
+		M.filedata[vtx] = { [cut] = "\7\0\7\0\7\1" }
+		reload()
+		eq(ZCG.ArmRemoved(HANDWRAP), false, "three equal corners are asked for, not two")
+
+		-- the file as the build makes it
+		M.filedata[vtx] = { [cut] = "\7\2\7\2\7\2" }
+		reload()
+		M.log = {}
+		local june = wearer("june", "handwrap_1")
+		Z.draw(june)
+		eq(ZCG.States[june].mdl:GetSubMaterial(0), SKIN, "a model without the arm gets the skin")
+		eq(june:GetSubMaterial(HANDS_SLOT), "null", "and replaces the hands")
+		eq(logged("from an older version"), 0, "nothing to complain about")
+		M.filedata[vtx] = nil
+
+		-- a model that is not installed has no answer yet
+		local FANG = ZCG.ByID.brokenfang_1.model
+		M.filedata[FANG:sub(1, -5) .. ".dx90.vtx"] = { [ZCG.Models[FANG].cut] = "\1\0\1\0\1\0" }
+		eq(ZCG.ArmRemoved(FANG), false, "a model that is not installed cannot have fingers")
+		M.files[FANG] = true
+		eq(ZCG.ArmRemoved(FANG), false, "(the files are not looked for in every frame)")
+		M.advance(11)
+		eq(ZCG.ArmRemoved(FANG), true, "it is asked again once the model is there")
+		M.files[FANG] = nil
+		M.filedata[FANG:sub(1, -5) .. ".dx90.vtx"] = nil
+
+		-- Config.FingerTint and zcg_finger_tint
+		reload()
+		M.materialObjects[SKIN] = nil
+		local kim = wearer("kim", "hydra_1")
+		Z.draw(kim)
+		check(M.materialObjects[SKIN] == nil or M.materialObjects[SKIN].vectors["$color2"] == nil,
+			"the skin keeps its colour unless the config asks for another one")
+
+		reload()
+		ZCG.Config.FingerTint = Vector(0.8, 0.7, 0.6)
+		frame() Z.draw(kim)
+		local skin = M.materialObjects[SKIN]
+		eq(skin and skin.vectors["$color2"], Vector(0.8, 0.7, 0.6), "Config.FingerTint is put on the skin")
+		M.log = {}
+		M.command("zcg_finger_tint", me, "1.1", "1", "0.9")
+		eq(skin.vectors["$color2"], Vector(1.1, 1, 0.9), "zcg_finger_tint changes it")
+		eq(logged("FingerTint = Vector(1.10, 1.00, 0.90)"), 1, "and prints the line for the config")
+		M.command("zcg_finger_tint", me, "0.5")
+		eq(skin.vectors["$color2"], Vector(0.5, 0.5, 0.5), "one number is taken for all three")
+		M.command("zcg_finger_tint", me, "7", "-1", "1")
+		eq(skin.vectors["$color2"], Vector(4, 0, 1), "numbers out of range are clamped")
+		M.log = {}
+		M.command("zcg_finger_tint", me)
+		M.command("zcg_finger_tint", me, "a", "b", "c")
+		M.command("zcg_finger_tint", me, "1", "2")
+		eq(logged("usage: zcg_finger_tint"), 3, "anything else prints how to use it")
+		eq(skin.vectors["$color2"], Vector(4, 0, 1), "and changes nothing")
+		me.lookat = kim
+		M.log = {}
+		M.command("zcg_debug", me)
+		eq(logged("tint 4.00 0.00 1.00"), 1, "zcg_debug shows the tint")
+		eq(logged("fingerless, hides the hands of this model: true, drawn with its own fingers: true"), 1,
+			"and that the glove is drawn with its fingers")
+		eq(logged('bare arm material "' .. SKIN .. '"'), 1, "and their material")
+		me.lookat = nil
+		frame() Z.draw(kim)
+		skin.vectors["$color2"] = nil
+
+		-- the fingers can be switched off in the config, or get another material
+		reload()
+		ZCG.Config.FingerMaterial = false
+		local mona = wearer("mona", "hydra_1")
+		Z.draw(mona)
+		eq(ZCG.States[mona].mdl:GetSubMaterial(1), "null", "Config.FingerMaterial = false: no fingers in the gloves")
+		eq(mona:GetSubMaterial(HANDS_SLOT), CLOTHES, "the wearer's own instead")
+
+		reload()
+		ZCG.Config.FingerMaterial = "!my_skin"
+		local nora = wearer("nora", "hydra_1")
+		Z.draw(nora)
+		eq(ZCG.States[nora].mdl:GetSubMaterial(1), "!my_skin", "a material made by Lua needs no file")
+		eq(nora:GetSubMaterial(HANDS_SLOT), "null", "and replaces the hands like the shipped one")
+
+		eq(#M.errors, 0, "no errors with the fingers: " .. table.concat(M.errors, " | "))
+		reload()
 	end
 
 	-- ---------------------------------------------------------------- errors do not repeat forever
@@ -598,11 +824,31 @@ return function(testdir, luaroot)
 	eq(#M.csmodels, count, "no new models while the editor repaints")
 	eq(preview:GetSubMaterial(HANDS_SLOT), "null", "hidden in every frame although the editor resets the materials")
 
-	-- a fingerless one keeps the hands
+	-- a fingerless one: its own fingers instead of the hands of the editor model
 	main.AppearanceTable.ABodygroups.HANDS = "CS:GO Bloodhound 03"
 	frame() Z.paintViewer(viewer)
-	eq(preview:GetSubMaterial(HANDS_SLOT), CLOTHES, "fingerless: hands visible in the editor")
 	eq(lastModel().model, BLOODHOUND, "fingerless glove drawn in the editor")
+	eq(lastModel():GetSubMaterial(0), SKIN, "with its fingers")
+	frame() Z.paintViewer(viewer)
+	eq(preview:GetSubMaterial(HANDS_SLOT), "null", "fingerless: the hands of the editor model are hidden as well")
+	M.setConVar("zcg_fingers", 0)
+	frame() Z.paintViewer(viewer)
+	eq(preview:GetSubMaterial(HANDS_SLOT), CLOTHES, "zcg_fingers 0 in the editor: the hands stay")
+	eq(lastModel():GetSubMaterial(0), "null", "zcg_fingers 0 in the editor: no fingers in the glove")
+	M.setConVar("zcg_fingers", 1)
+	frame() Z.paintViewer(viewer)
+	eq(preview:GetSubMaterial(HANDS_SLOT), "null", "and back")
+	eq(lastModel():GetSubMaterial(0), SKIN, "with the fingers")
+
+	-- glove models of an older version (the whole bare arm is in them): no skin, and the hands stay
+	M.filedata[HYDRA:sub(1, -5) .. ".dx90.vtx"] = { [ZCG.Models[HYDRA].cut] = "\1\0\2\0\3\0" }
+	main.AppearanceTable.ABodygroups.HANDS = "CS:GO Hydra 01"
+	frame() Z.paintViewer(viewer)
+	frame() Z.paintViewer(viewer)
+	eq(lastModel().model, HYDRA, "an old glove model is drawn in the editor")
+	eq(lastModel():GetSubMaterial(1), "null", "without skin on its arm")
+	eq(preview:GetSubMaterial(HANDS_SLOT), CLOTHES, "and the hands of the editor model stay")
+	M.filedata[HYDRA:sub(1, -5) .. ".dx90.vtx"] = nil
 
 	-- a stock glove: ours disappears
 	local editorGlove = lastModel()
@@ -709,7 +955,8 @@ return function(testdir, luaroot)
 	M.paint(picker)
 	frame() Z.paintViewer(viewer)
 	eq(lastModel().model, BLOODHOUND, "preview follows the cursor")
-	eq(preview:GetSubMaterial(HANDS_SLOT), CLOTHES, "hands back for a fingerless preview")
+	eq(lastModel():GetSubMaterial(0), SKIN, "a fingerless preview has its fingers")
+	eq(preview:GetSubMaterial(HANDS_SLOT), "null", "and hides the hands of the editor model")
 
 	M.hovered = picker
 	M.paint(picker)

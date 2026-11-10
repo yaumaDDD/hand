@@ -3,13 +3,21 @@
 """Render the glove icons used by the in-game picker and the catalogue picture for the README.
 
     python tools/render_previews.py <extracted_root> [--icons DIR] [--sheet FILE] [--only ID ...]
+    python tools/render_previews.py <extracted_root> --closeup FILE [--built DIR]
 
 <extracted_root> has one sub-folder per source archive (build_addon.py --keep-temp leaves such
 a tree in build/_extract).  Needs numpy and pillow.
 
+--closeup draws no icons but one picture: a glove of every fingerless family, back and palm,
+from the model files of a built addon (--built, default build/zcity_csgo_gloves) - every
+triangle those files still hold, so it shows what tools/patch_models.py did to them.
+
 This is a small software rasteriser, not the game: it reads the .mdl/.vvd/.vtx files and the
 VTF textures directly, poses nothing (bind pose) and shades with a simple lambert + specular
 model.  It is good enough to tell the 44 variants apart, which is all the icons are for.
+The fingers of the fingerless gloves are drawn the way the addon draws them: what
+tools/patch_models.py leaves of the bare arm inside the model, with the skin made by
+tools/make_skin.py (run that one first).
 The pictures are committed, so the tool only has to be re-run when gloves are added or changed.
 """
 import argparse
@@ -23,13 +31,14 @@ from PIL import Image, ImageDraw, ImageFont
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import make_vmts  # noqa: E402
 import mdl_lite  # noqa: E402
+import patch_models  # noqa: E402
 import vmt  # noqa: E402
 import vtflib  # noqa: E402
 import zcg_layout as L  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ADDON = os.path.normpath(os.path.join(HERE, '..', L.ADDON_DIRNAME))
-SKIN = np.array([0.30, 0.30, 0.32])  # neutral "mannequin" colour for the bare fingers (linear)
+SKIN = np.array([0.30, 0.30, 0.32])  # "mannequin" colour for the bare fingers when their skin is missing (linear)
 EXPOSURE = 1.9
 
 VVD_VERTEX = np.dtype([('w', '<f4', 3), ('b', 'u1', 3), ('nb', 'u1'), ('pos', '<f4', 3), ('nrm', '<f4', 3), ('uv', '<f4', 2)])
@@ -115,7 +124,10 @@ class Assets:
     def texture(self, rel):
         """'models/weapons/...' (no extension) -> float32 RGBA 0..1"""
         if rel not in self._tex:
-            _hdr, img = vtflib.read_top_mip(self.idx['materials/' + rel + '.vtf'])
+            path = self.idx.get('materials/' + rel + '.vtf')
+            if path is None:  # not from the archives: a texture that is kept in the addon folder
+                path = os.path.join(ADDON, 'materials', rel.replace('/', os.sep) + '.vtf')
+            _hdr, img = vtflib.read_top_mip(path)
             h, w = img.shape[:2]
             f = img.astype(np.float32) / 255.0
             if w > self.tex_size:
@@ -125,11 +137,16 @@ class Assets:
         return self._tex[rel]
 
     def material(self, cds, texname):
-        for cd in cds:
-            p = os.path.join(ADDON, 'materials', cd, texname.lower() + '.vmt')
+        """VMT of a material as a dict, None if the addon has none"""
+        if texname.lower().startswith(patch_models.BARE_PREFIX):
+            # the bare arm: the addon puts the skin of the fingers on what is left of it
+            paths = [os.path.join(ADDON, 'materials', L.FINGER_MATERIAL.replace('/', os.sep) + '.vmt')]
+        else:
+            paths = [os.path.join(ADDON, 'materials', cd, texname.lower() + '.vmt') for cd in cds]
+        for p in paths:
             if os.path.exists(p):
                 _shader, items = vmt.parse(open(p).read())
-                return {k: v for k, v in items if isinstance(v, str)}
+                return {k.lower(): v for k, v in items if isinstance(v, str)}
         return None
 
     def model(self, name):
@@ -151,7 +168,8 @@ class Assets:
             base = m['vertexindex'] // 48 + me['vertoffset']
             v = verts[base + vids]
             mat = self.material(info['cdtextures'], tex)
-            out.append(dict(tex=tex, mat=mat, pos=v['pos'].astype(np.float64), nrm=v['nrm'].astype(np.float64),
+            out.append(dict(tex=tex, mat=mat, bare=tex.lower().startswith(patch_models.BARE_PREFIX),
+                            pos=v['pos'].astype(np.float64), nrm=v['nrm'].astype(np.float64),
                             uv=v['uv'].astype(np.float64), bones=v['b'], w=v['w'], tris=tris,
                             tang=tang[base + vids] if tang is not None else None))
         return info, out
@@ -168,12 +186,12 @@ def hand_view(info, side='R'):
     m = np.linalg.inv(m)  # bone -> model space in the bind pose
     x, y = m[:3, 0], m[:3, 1]  # x: along the hand towards the fingers
     on_side = np.array([('_%s_' % side) in n for n in names])
-    on_hand = np.array([('_%s_Hand' % side) in n or ('_%s_Finger' % side) in n for n in names])
+    on_hand = np.array([('_%s_' % side) in n and patch_models.is_hand_bone(n) for n in names])
 
     def select(mesh):
         dom = mesh['bones'][np.arange(len(mesh['bones'])), np.argmax(mesh['w'], axis=1)]
-        # of the bare arm keep only the hand itself: the forearm would just shrink the picture
-        return (on_hand if mesh['mat'] is None else on_side)[dom]
+        # of the bare arm only the hand and the fingers are left in the addon (patch_models.py)
+        return (on_hand if mesh['bare'] else on_side)[dom]
 
     fwd = -y if side == 'R' else y  # looking at the back of the hand
     right = np.cross(fwd, x)
@@ -242,7 +260,7 @@ def render(assets, meshes, view, select, size=512, margin=1.06, light=(-0.45, -0
     kept = []
     for m in meshes:
         m['_keep'] = select(m)
-        if m['mat'] is not None and m['_keep'].any():
+        if not m['bare'] and m['_keep'].any():
             kept.append(m['pos'][m['_keep']])
     scr = np.concatenate(kept) @ view.T  # framing ignores the bare hand
     lo, hi = scr.min(0), scr.max(0)
@@ -274,7 +292,7 @@ def render(assets, meshes, view, select, size=512, margin=1.06, light=(-0.45, -0
         n = (m['nrm'][tv] * bc[:, :, None]).sum(axis=1)
         n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-6)
         mat = m['mat']
-        if mat is None:  # bare hand of the fingerless gloves
+        if mat is None:  # no material: the fingers before tools/make_skin.py was run
             alb = np.tile(SKIN, (len(tv), 1))
             spec_mask = np.zeros(len(tv))
         else:
@@ -380,6 +398,58 @@ def make_sheet(variants, tiles, path, tile=168, cols=8):
     sheet.save(path, quality=88, optimize=True)
 
 
+# ----------------------------------------------------------------------------------------------
+# close-up of the fingerless gloves as a built addon holds them
+# ----------------------------------------------------------------------------------------------
+def make_closeup(assets, built, path, tile=236):
+    for model in L.MODELS:
+        for ext in L.MODEL_EXTS:
+            rel = L.MODELS_DIR + '/' + model + ext
+            full = os.path.join(built, rel.replace('/', os.sep))
+            if not os.path.isfile(full):
+                raise SystemExit('%s is missing - build the addon first (python build_addon.py --keep-temp)' % full)
+            assets.idx[rel] = full
+    assets._models.clear()
+
+    shown = []
+    for fam in L.FAMILIES:
+        if fam['fingerless']:
+            shown.append([v for v in L.variants() if v['family'] is fam][0])
+
+    pad, label_h = 10, 24
+    bg, panel, text = (24, 24, 28), (38, 38, 46), (235, 235, 235)
+    font = ImageFont.load_default(size=13)
+    sheet = Image.new('RGB', (pad + len(shown) * (tile + pad), pad + 2 * tile + label_h + pad), bg)
+    d = ImageDraw.Draw(sheet)
+    for col, v in enumerate(shown):
+        info, meshes = assets.meshes(v['model'], v['body'])
+        _select, view = hand_view(info, 'R')
+        names = [bn['name'] for bn in info['bones']]
+        on_side = np.array(['_R_' in n for n in names])
+        bare = 0
+        for m in meshes:
+            t = m['tris']
+            t = t[(t[:, 0] != t[:, 1]) | (t[:, 1] != t[:, 2])]  # a removed triangle has one corner three times
+            dom = m['bones'][np.arange(len(m['bones'])), np.argmax(m['w'], axis=1)]
+            t = t[on_side[dom][t].all(axis=1)]
+            used = np.zeros(len(m['pos']), bool)
+            used[t.ravel()] = True
+            if m['bare']:
+                bare += len(t)
+            # everything that is drawn counts for the framing, the bare skin included
+            m['tris'], m['_used'], m['bare'] = t, used, False
+        x = pad + col * (tile + pad)
+        d.rounded_rectangle((x, pad, x + tile, pad + 2 * tile + label_h), 8, fill=panel)
+        for row, flip in enumerate((1.0, -1.0)):  # back of the hand, palm
+            big = render(assets, meshes, view * np.array([[flip], [1.0], [flip]]), lambda m: m['_used'], size=tile * 4, margin=1.12)
+            im = Image.fromarray(downscale(big, tile), 'RGBA')
+            sheet.paste(im, (x, pad + row * tile), im)
+        d.text((x + 8, pad + 2 * tile + 3), v['family']['title'], font=font, fill=text)
+        print('%-16s %5d triangles of bare skin on this hand' % (v['id'], bare), flush=True)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    sheet.save(path, quality=90, optimize=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('src_root')
@@ -387,7 +457,15 @@ def main():
     ap.add_argument('--sheet', default=os.path.normpath(os.path.join(HERE, '..', 'docs', 'gloves.jpg')))
     ap.add_argument('--size', type=int, default=128, help='icon size in pixels (power of two)')
     ap.add_argument('--only', nargs='*', help='render only these variant ids (no catalogue)')
+    ap.add_argument('--closeup', metavar='FILE', help='draw only the close-up of the fingerless gloves of a built addon')
+    ap.add_argument('--built', default=os.path.normpath(os.path.join(HERE, '..', 'build', L.ADDON_DIRNAME)),
+                    help='the built addon --closeup looks at (default: build/%s)' % L.ADDON_DIRNAME)
     args = ap.parse_args()
+
+    if args.closeup:
+        make_closeup(Assets(args.src_root, tex_size=1024), args.built, args.closeup)
+        print('close-up: %s' % args.closeup)
+        return
 
     assets = Assets(args.src_root)
     variants = L.variants()

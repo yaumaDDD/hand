@@ -77,6 +77,7 @@ return function(realm)
 	VEC.__add = function(a, b) return Vector(a.x + b.x, a.y + b.y, a.z + b.z) end
 	VEC.__sub = function(a, b) return Vector(a.x - b.x, a.y - b.y, a.z - b.z) end
 	VEC.__eq = function(a, b) return a.x == b.x and a.y == b.y and a.z == b.z end
+	function isvector(v) return getmetatable(v) == VEC end
 	function VEC:Distance(o) return math.sqrt((self.x - o.x) ^ 2 + (self.y - o.y) ^ 2 + (self.z - o.z) ^ 2) end
 
 	function Angle(p, y, r) return { p = p or 0, y = y or 0, r = r or 0 } end
@@ -156,6 +157,38 @@ return function(realm)
 	M.included, M.csfiles = {}, {}
 	file = {}
 	function file.Exists(path, where) return M.files[path] == true end
+
+	-- Reading: M.filedata[path] = { [offset] = "bytes", ... } - what the file holds at some
+	-- places, zero bytes everywhere else. A path without an entry cannot be opened.
+	M.filedata, M.opened, M.openNow = {}, 0, 0
+	function file.Open(path, mode, where)
+		assert(mode == "rb" and where == "GAME", "file.Open: only reading from GAME is imitated")
+		local data = M.filedata[path]
+		if not data then return nil end
+		M.opened, M.openNow = M.opened + 1, M.openNow + 1
+		local f = { pos = 0 }
+		function f:Seek(pos) assert(not self.closed, "Seek on a closed file") self.pos = pos end
+		function f:Read(count)
+			assert(not self.closed, "Read on a closed file")
+			local out = {}
+			for i = 0, count - 1 do
+				local byte = 0
+				for at, bytes in pairs(data) do
+					local k = self.pos + i - at
+					if k >= 0 and k < #bytes then byte = bytes:byte(k + 1) end
+				end
+				out[#out + 1] = string.char(byte)
+			end
+			self.pos = self.pos + count
+			return table.concat(out)
+		end
+		function f:Close()
+			assert(not self.closed, "file closed twice")
+			self.closed = true
+			M.openNow = M.openNow - 1
+		end
+		return f
+	end
 	function file.Find(pattern, where)
 		local dir = pattern:gsub("/%*$", "")
 		local files, dirs, seen = {}, {}, {}
@@ -485,9 +518,23 @@ return function(realm)
 	function render.GetBlend() return M.blend end
 	function render.SetBlend(blend) M.blend = blend end
 
+	-- one object per name, as in the game: what is set on it is set for everybody
+	M.materialObjects = {}
 	function Material(name, flags)
 		local exists = M.materials[name] == true or M.files["materials/" .. name] == true
-		return { name = name, IsError = function() return not exists end }
+			or M.files["materials/" .. name .. ".vmt"] == true
+		local mat = M.materialObjects[name]
+		if not mat then
+			mat = { name = name, vectors = {} }
+			function mat:SetVector(key, value)
+				assert(type(key) == "string" and isvector(value), "IMaterial:SetVector(name, Vector)")
+				assert(not self:IsError(), "SetVector on the error material")
+				self.vectors[key] = value
+			end
+			M.materialObjects[name] = mat
+		end
+		mat.IsError = function() return not exists end
+		return mat
 	end
 
 	surface = {}

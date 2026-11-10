@@ -1,5 +1,5 @@
 -- Z-City CS:GO gloves - settings for the server owner.
--- Console variables (zcg_any_model, zcg_hide_hands, zcg_enable) are described in the README.
+-- Console variables (zcg_any_model, zcg_hide_hands, zcg_fingers, zcg_enable) are described in the README.
 
 ZCGloves.Config = {
 	-- Steam Workshop ID (as a string) of the built addon if you uploaded it to the Workshop:
@@ -18,17 +18,30 @@ ZCGloves.Config = {
 	-- how often (seconds) the server checks which glove every player wears
 	PollInterval = 0.3,
 
-	-- Full-finger gloves (moto, hardknuckle, leather) hide the hands of the player model, because
-	-- the skin would poke through; fingerless gloves keep them, because the fingers are needed.
-	-- Override per glove family here if a family looks wrong on your player models:
-	--   HideHands = { leather = false }   -- keep the hands under the "Leather" glove
+	-- A glove hides the hands of the player model. Under a full-finger glove (moto, hardknuckle,
+	-- leather) the skin would poke through; a fingerless glove brings fingers of its own: they
+	-- are part of the glove models and fit them exactly, which the fingers of a player model
+	-- do not.
+	-- Set a family to false to keep the wearer's own hands under it (a fingerless glove is then
+	-- drawn without its fingers, as up to version 1.0.1):
+	--   HideHands = { handwrap = false }
 	-- Families: bloodhound, brokenfang, hydra, handwrap, fingerless, moto, hardknuckle, leather.
-	-- (zcg_hide_hands 0 switches the hiding off for every glove.)
+	-- (zcg_hide_hands 0 does this for every glove, zcg_fingers 0 for all fingerless ones.)
 	HideHands = {},
 
-	-- material used to hide things (the wearer's own hands under full-finger gloves and the
-	-- bare arm inside the glove models). nil = "null" if the game has it, otherwise the
-	-- material shipped with this addon.
+	-- skin of the fingers inside the fingerless glove models (a material name; false = the
+	-- same as zcg_fingers 0)
+	FingerMaterial = "zcity_csgo_gloves/skin/fingers",
+
+	-- Colour that skin is multiplied with, to bring it closer to the skin of your player models:
+	-- Vector(1, 1, 1) changes nothing, Vector(0.8, 0.8, 0.8) is darker, Vector(1.15, 1.05, 1) is
+	-- lighter and warmer. Find the numbers in game with the console command
+	-- "zcg_finger_tint 1.15 1.05 1" (it only changes your own screen) and write them down here.
+	FingerTint = nil,
+
+	-- material used to hide things (the wearer's own hands under a glove and what is left of the
+	-- bare arm inside the glove models). nil = "null" if the game has it, otherwise the material
+	-- shipped with this addon.
 	HideMaterial = nil,
 
 	-- text of the extra entry in the "Gloves" menu of the appearance editor

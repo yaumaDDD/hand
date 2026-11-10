@@ -10,6 +10,9 @@ ADDON_DIRNAME = "zcity_csgo_gloves"
 ARMS_MAT_DIR = "materials/models/weapons/v_models/arms"
 # where the addon keeps the models (free to choose, Lua refers to it)
 MODELS_DIR = "models/zcity_csgo_gloves"
+# Skin of the fingers inside the fingerless glove models: material name below materials/.
+# Made by tools/make_skin.py, used by cl_render.lua (Config.FingerMaterial in sh_config.lua).
+FINGER_MATERIAL = ADDON_DIRNAME + "/skin/fingers"
 
 # archive (without .7z) -> list of (folder inside the archive, destination)
 # destination for textures is relative to ARMS_MAT_DIR, "@models" means MODELS_DIR

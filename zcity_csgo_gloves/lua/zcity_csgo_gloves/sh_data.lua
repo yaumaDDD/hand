@@ -10,19 +10,22 @@ local ZCG = ZCGloves
 
 ZCG.ModelDir = "models/zcity_csgo_gloves/"
 
--- per model: body group indices and the sub-materials that are not gloves (the bare arm
--- that is baked into every model); they are made invisible
+-- per model: body group indices, and the sub-materials of the bare CS:GO arm that is part of
+-- every glove model. The build removes that arm except for the fingers of the fingerless
+-- gloves (tools/patch_models.py); cl_render.lua gives them their skin, or hides them.
+-- cut: where in the .dx90.vtx file the first triangle that the build removed is stored. There
+-- cl_render.lua sees whether a client has these models or still those of version 1.0.x.
 ZCG.Models = {
-	["models/zcity_csgo_gloves/v_glove_bloodhound.mdl"] = { gloves = 0, sleeves = 1, hide = { 0 } },
-	["models/zcity_csgo_gloves/v_glove_bloodhound_fingerless_brokenfang.mdl"] = { gloves = 0, sleeves = 1, hide = { 0 } },
-	["models/zcity_csgo_gloves/v_glove_bloodhound_fingerless_hydra.mdl"] = { gloves = 0, sleeves = 1, hide = { 1 } },
-	["models/zcity_csgo_gloves/v_glove_handwrap_leathery.mdl"] = { gloves = 0, sleeves = 1, hide = { 0 } },
-	["models/zcity_csgo_gloves/v_glove_fingerless.mdl"] = { gloves = 0, sleeves = 1, hide = { 0 } },
-	["models/zcity_csgo_gloves/v_glove_motorcycle.mdl"] = { gloves = 0, sleeves = 1, hide = { 0 } },
-	["models/zcity_csgo_gloves/v_glove_ct_hardknuckle.mdl"] = { gloves = 0, sleeves = 1, hide = { 0 } },
-	["models/zcity_csgo_gloves/v_glove_ct_hardknuckle_black.mdl"] = { gloves = 0, sleeves = 1, hide = { 0 } },
-	["models/zcity_csgo_gloves/v_glove_ct_hardknuckle_blue.mdl"] = { gloves = 0, sleeves = 1, hide = { 0 } },
-	["models/zcity_csgo_gloves/v_glove_fullfinger.mdl"] = { gloves = 0, sleeves = 1, hide = { 0 } },
+	["models/zcity_csgo_gloves/v_glove_bloodhound.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 1084650 },
+	["models/zcity_csgo_gloves/v_glove_bloodhound_fingerless_brokenfang.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 923845 },
+	["models/zcity_csgo_gloves/v_glove_bloodhound_fingerless_hydra.mdl"] = { gloves = 0, sleeves = 1, bare = { 1 }, cut = 1299258 },
+	["models/zcity_csgo_gloves/v_glove_handwrap_leathery.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 1523586 },
+	["models/zcity_csgo_gloves/v_glove_fingerless.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 634983 },
+	["models/zcity_csgo_gloves/v_glove_motorcycle.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 1542350 },
+	["models/zcity_csgo_gloves/v_glove_ct_hardknuckle.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 632646 },
+	["models/zcity_csgo_gloves/v_glove_ct_hardknuckle_black.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 632646 },
+	["models/zcity_csgo_gloves/v_glove_ct_hardknuckle_blue.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 632646 },
+	["models/zcity_csgo_gloves/v_glove_fullfinger.mdl"] = { gloves = 0, sleeves = 1, bare = { 0 }, cut = 616194 },
 }
 
 ZCG.Families = {

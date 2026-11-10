@@ -6,8 +6,10 @@ the model files, so that the Lua side and the build tools can never disagree.
     python tools/make_lua_data.py <extracted_root>
 
 <extracted_root> has one sub-folder per source archive (build_addon.py --keep-temp leaves such
-a tree in build/_extract).  Run tools/make_vmts.py first: materials without a generated VMT
-(the bare arm that ships inside every glove model) are the ones Lua has to hide.
+a tree in build/_extract).  Run tools/make_vmts.py first: every material of a glove must have
+its generated VMT.  The one material without - "bare_arm_*", the bare arm that ships inside
+every glove model - is the one Lua takes care of: tools/patch_models.py leaves only the fingers
+of that arm, Lua gives them their skin or hides them.
 """
 import argparse
 import os
@@ -16,6 +18,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import make_vmts  # noqa: E402
 import mdl_lite  # noqa: E402
+import patch_models  # noqa: E402
 import zcg_layout as L  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -28,21 +31,36 @@ def lua_str(s):
 
 def model_info(idx, name):
     """returns (index of body group "gloves", index of "sleeves", number of glove variants,
-    sorted material indices used by the gloves that have no VMT in the addon)"""
-    info = mdl_lite.read(idx[L.MODELS_DIR + '/' + name + '.mdl'])
+    sorted indices of the bare-arm materials used by the "gloves" body group, offset in the
+    .dx90.vtx of the first triangle that the build removes)"""
+    mdl_path = idx[L.MODELS_DIR + '/' + name + '.mdl']
+    info = mdl_lite.read(mdl_path)
     names = [bp['name'] for bp in info['bodyparts']]
     gloves, sleeves = names.index('gloves'), names.index('sleeves')
     if info['bodyparts'][sleeves]['models'][0]['meshes']:
         raise SystemExit('%s: sleeves submodel 0 is expected to be empty' % name)
-    hide = set()
+    bare = set()
     for model in info['bodyparts'][gloves]['models']:
         for mat in model['materials']:
             tex = info['textures'][mat].lower()
-            if not any(os.path.exists(os.path.join(ADDON, 'materials', cd, tex + '.vmt')) for cd in info['cdtextures']):
-                hide.add(mat)
-    if any(i > 31 for i in hide):
-        raise SystemExit('%s: a material to hide has index > 31, Entity:SetSubMaterial cannot reach it' % name)
-    return gloves, sleeves, len(info['bodyparts'][gloves]['models']), sorted(hide)
+            if tex.startswith(patch_models.BARE_PREFIX):
+                bare.add(mat)
+            elif not any(os.path.exists(os.path.join(ADDON, 'materials', cd, tex + '.vmt')) for cd in info['cdtextures']):
+                raise SystemExit('%s: material "%s" has no VMT in the addon - run tools/make_vmts.py first' % (name, tex))
+    if not bare:
+        raise SystemExit('%s: no bare arm in this model - is it a glove model?' % name)
+    if any(i > 31 for i in bare):
+        raise SystemExit('%s: the bare arm has a material index > 31, Entity:SetSubMaterial cannot reach it' % name)
+
+    with open(idx[L.MODELS_DIR + '/' + name + '.vvd'], 'rb') as f:
+        vvd = f.read()
+    with open(idx[L.MODELS_DIR + '/' + name + '.dx90.vtx'], 'rb') as f:
+        vtx = f.read()
+    patched, stats = patch_models.fingers_only(mdl_path, vvd, vtx)
+    cut = stats['first']
+    if cut is None or patch_models.is_removed(vtx, cut) or not patch_models.is_removed(patched, cut):
+        raise SystemExit('%s: no arm to remove in this model (the archives must hold the original models)' % name)
+    return gloves, sleeves, len(info['bodyparts'][gloves]['models']), sorted(bare), cut
 
 
 def main():
@@ -67,14 +85,17 @@ def main():
         '',
         'ZCG.ModelDir = %s' % lua_str(L.MODELS_DIR + '/'),
         '',
-        '-- per model: body group indices and the sub-materials that are not gloves (the bare arm',
-        '-- that is baked into every model); they are made invisible',
+        '-- per model: body group indices, and the sub-materials of the bare CS:GO arm that is part of',
+        '-- every glove model. The build removes that arm except for the fingers of the fingerless',
+        '-- gloves (tools/patch_models.py); cl_render.lua gives them their skin, or hides them.',
+        '-- cut: where in the .dx90.vtx file the first triangle that the build removed is stored. There',
+        '-- cl_render.lua sees whether a client has these models or still those of version 1.0.x.',
         'ZCG.Models = {',
     ]
     for m in L.MODELS:
-        gloves, sleeves, count, hide = infos[m]
-        out.append('\t[%s] = { gloves = %d, sleeves = %d, hide = { %s } },' % (
-            lua_str(L.MODELS_DIR + '/' + m + '.mdl'), gloves, sleeves, ', '.join(str(i) for i in hide)))
+        gloves, sleeves, count, bare, cut = infos[m]
+        out.append('\t[%s] = { gloves = %d, sleeves = %d, bare = { %s }, cut = %d },' % (
+            lua_str(L.MODELS_DIR + '/' + m + '.mdl'), gloves, sleeves, ', '.join(str(i) for i in bare), cut))
     out += ['}', '', 'ZCG.Families = {']
     for fam in L.FAMILIES:
         out.append('\t{')

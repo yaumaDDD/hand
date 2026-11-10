@@ -21,6 +21,7 @@ About 1 GB of free disk space is used while building; the result is about 190 MB
 """
 import argparse
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -32,6 +33,7 @@ sys.path.insert(0, os.path.join(HERE, 'tools'))
 
 import make_vmts  # noqa: E402
 import mdl_lite  # noqa: E402
+import patch_models  # noqa: E402
 import vmt  # noqa: E402
 import zcg_layout as L  # noqa: E402
 
@@ -200,8 +202,16 @@ def step_skeleton(out):
     shutil.copytree(skeleton, out)
 
 
+def read_bytes(path):
+    with open(path, 'rb') as f:
+        return f.read()
+
+
 def step_models(idx, out):
-    count = 0
+    """copies the models and takes the bare CS:GO arm out of them, except for the hands and
+    fingers of the fingerless gloves (see tools/patch_models.py).
+    returns (files, triangles of the arm that stay, triangles removed)"""
+    count, kept, removed = 0, 0, 0
     for model in L.MODELS:
         for ext in L.MODEL_EXTS:
             rel = L.MODELS_DIR + '/' + model + ext
@@ -210,7 +220,22 @@ def step_models(idx, out):
                 raise BuildError('model file is not in the archives: %s' % rel)
             copy(src, os.path.join(out, rel.lower()))
             count += 1
-    return count
+        stem = os.path.join(out, L.MODELS_DIR, model)
+        for ext in L.MODEL_EXTS:
+            if not ext.endswith('.vtx'):
+                continue
+            original = read_bytes(stem + ext)
+            try:
+                patched, stats = patch_models.fingers_only(stem + '.mdl', read_bytes(stem + '.vvd'), original)
+            except (patch_models.PatchError, ValueError, IndexError, KeyError, struct.error) as err:
+                raise BuildError('%s%s: cannot remove the bare arm: %s' % (model, ext, err))
+            if len(patched) != len(original):
+                raise BuildError('%s%s: patching changed the file size' % (model, ext))
+            with open(stem + ext, 'wb') as f:
+                f.write(patched)
+            kept += stats['kept']
+            removed += stats['removed']
+    return count, kept, removed
 
 
 def shipped_vmts(out):
@@ -278,6 +303,13 @@ def step_verify(out):
             except BuildError as err:
                 problems.append(str(err))
 
+    # which models belong to fingerless gloves: those must have fingers, the others must not
+    with_fingers = {v['model']: v['family']['fingerless'] for v in variants}
+    for fam in L.FAMILIES:
+        for model, _body, _label in fam['variants']:
+            if with_fingers[model] != fam['fingerless']:
+                problems.append('%s: used by fingerless and by full-finger gloves at once' % model)
+
     models = {}
     for v in variants:
         rel = L.MODELS_DIR + '/' + v['model'] + '.mdl'
@@ -290,6 +322,22 @@ def step_verify(out):
             except Exception as err:  # noqa: BLE001
                 problems.append('%s: %s' % (rel, err))
                 models[v['model']] = None
+            if models[v['model']]:
+                stem = os.path.join(out, L.MODELS_DIR, v['model'])
+                for ext in L.MODEL_EXTS:
+                    if not ext.endswith('.vtx') or not os.path.isfile(stem + ext):
+                        continue
+                    try:
+                        drawn, wrong = patch_models.count_bare(stem + '.mdl', read_bytes(stem + '.vvd'), read_bytes(stem + ext))
+                    except Exception as err:  # noqa: BLE001
+                        problems.append('%s%s: %s' % (v['model'], ext, err))
+                        continue
+                    if wrong:
+                        problems.append('%s%s: %d triangles of the bare CS:GO arm are still in the model' % (v['model'], ext, wrong))
+                    if with_fingers[v['model']] and not drawn:
+                        problems.append('%s%s: a fingerless glove without fingers' % (v['model'], ext))
+                    if not with_fingers[v['model']] and drawn:
+                        problems.append('%s%s: %d triangles of bare skin in a full-finger glove' % (v['model'], ext, drawn))
         info = models[v['model']]
         if not info:
             continue
@@ -302,8 +350,8 @@ def step_verify(out):
         found = 0
         for index in gloves[0]['models'][v['body']]['materials']:
             name = names[index]
-            if name.startswith('bare_arm'):
-                continue  # the arm inside the glove model, hidden by the addon
+            if name.startswith(patch_models.BARE_PREFIX):
+                continue  # what is left of the arm inside the glove model: Lua sets its material
             hit = None
             for cd in info['cdtextures']:
                 cand = 'materials/' + cd + '/' + name + '.vmt'
@@ -321,6 +369,20 @@ def step_verify(out):
         if not exists('materials/%s/icons/%s.png' % (L.ADDON_DIRNAME, v['id'])):
             problems.append('%s: icon is missing' % v['id'])
 
+    # the skin of those fingers, and the Lua side must ask for this very material
+    skin = 'materials/' + L.FINGER_MATERIAL + '.vmt'
+    if exists(skin):
+        check_vmt(skin)
+    else:
+        problems.append('the skin of the glove fingers is missing: %s - run tools/make_skin.py' % skin)
+    config = os.path.join(out, 'lua', L.ADDON_DIRNAME, 'sh_config.lua')
+    if not os.path.isfile(config):
+        problems.append('lua/%s/sh_config.lua is missing' % L.ADDON_DIRNAME)
+    else:
+        with open(config, 'r', encoding='utf-8') as f:
+            if 'FingerMaterial = "%s"' % L.FINGER_MATERIAL not in f.read():
+                problems.append('sh_config.lua: FingerMaterial is expected to be "%s"' % L.FINGER_MATERIAL)
+
     # everything that is shipped must be usable (no stray upper-case names, no orphans)
     for path in shipped_vmts(out):
         check_vmt(os.path.relpath(path, out).replace('\\', '/'))
@@ -337,6 +399,15 @@ def step_verify(out):
         for v in variants:
             if '"%s"' % v['id'] not in text or '"%s"' % v['name'] not in text:
                 problems.append('sh_data.lua does not know %s - run tools/make_lua_data.py' % v['id'])
+        # ... and where it expects the removed arm, there must be a removed triangle
+        cuts = dict(re.findall(r'\["([^"]+\.mdl)"\] = \{.*\bbare = \{.*\bcut = (\d+)', text))
+        for model in L.MODELS:
+            rel = L.MODELS_DIR + '/' + model
+            vtx = os.path.join(out, rel + '.dx90.vtx')
+            if rel + '.mdl' not in cuts:
+                problems.append('sh_data.lua does not know the model %s - run tools/make_lua_data.py' % model)
+            elif os.path.isfile(vtx) and not patch_models.is_removed(read_bytes(vtx), int(cuts[rel + '.mdl'])):
+                problems.append('sh_data.lua does not fit %s.dx90.vtx - run tools/make_lua_data.py' % model)
 
     return problems, len(checked_vmts)
 
@@ -406,9 +477,11 @@ def main():
 
     print('Assembling %s' % out)
     step_skeleton(out)
-    models = step_models(idx, out)
+    models, fingers, arm = step_models(idx, out)
     wanted = step_textures(idx, out)
     print('  %d model files, %d textures' % (models, len(wanted)))
+    print('  the bare CS:GO arm inside the glove models: %d triangles removed, %d kept '
+          '(hands and fingers of the fingerless gloves)' % (arm, fingers))
     if args.original_textures:
         print('  original textures kept (--original-textures)')
     else:

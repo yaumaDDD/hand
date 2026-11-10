@@ -27,6 +27,8 @@ return function(testdir, luaroot)
 	end
 	M.files["materials/zcity_csgo_gloves/invisible.vmt"] = true
 	M.files["materials/zcity_csgo_gloves/icons/moto_1.png"] = true
+	M.files["materials/zcity_csgo_gloves/skin/fingers.vmt"] = true
+	M.files["materials/zcity_csgo_gloves/skin/fingers_color.vtf"] = true
 	M.files["materials/models/weapons/v_models/arms/glove_motorcycle/glove_motorcycle_left.vmt"] = true
 	M.files["materials/models/weapons/v_models/arms/glove_motorcycle/right/1/glove_motorcycle_right.vtf"] = true
 	M.files["materials/models/weapons/v_models/arms/bare/unrelated.vmt"] = true
@@ -211,6 +213,7 @@ return function(testdir, luaroot)
 	M.log = {}
 	M.command("zcg_status", NULL)
 	check(#M.log >= 2, "zcg_status prints something")
+	check(M.log[1]:find("zcg_hide_hands 1, zcg_fingers 1", 1, true) ~= nil, "zcg_status shows the settings that are the server's")
 	local found = false
 	for _, line in ipairs(M.log) do
 		if line:find("alice", 1, true) and line:find("leather_1", 1, true) then found = true end
@@ -248,6 +251,8 @@ return function(testdir, luaroot)
 	check(sent["models/zcity_csgo_gloves/v_glove_motorcycle.mdl"], "FastDL: model")
 	check(sent["models/zcity_csgo_gloves/v_glove_motorcycle.dx90.vtx"], "FastDL: vtx")
 	check(sent["materials/zcity_csgo_gloves/icons/moto_1.png"], "FastDL: icon")
+	check(sent["materials/zcity_csgo_gloves/skin/fingers.vmt"] and sent["materials/zcity_csgo_gloves/skin/fingers_color.vtf"],
+		"FastDL: the skin of the fingers")
 	check(sent["materials/models/weapons/v_models/arms/glove_motorcycle/right/1/glove_motorcycle_right.vtf"], "FastDL: nested texture")
 	check(not sent["materials/models/weapons/v_models/arms/bare/unrelated.vmt"], "FastDL: foreign folders are left alone")
 

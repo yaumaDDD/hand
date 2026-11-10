@@ -153,7 +153,8 @@ concommand.Add("zcg_status", function(caller)
 	end
 
 	out("[CS:GO Gloves] version " .. ZCG.Version .. ", registered in Z-City: " .. tostring(ZCG.Ready == true)
-		.. ", zcg_any_model " .. ZCG.cvAnyModel:GetString() .. ", zcg_hide_hands " .. ZCG.cvHideHands:GetString())
+		.. ", zcg_any_model " .. ZCG.cvAnyModel:GetString() .. ", zcg_hide_hands " .. ZCG.cvHideHands:GetString()
+		.. ", zcg_fingers " .. ZCG.cvFingers:GetString())
 	for _, ply in ipairs(player.GetAll()) do
 		local appearance = ply.CurAppearance
 		local groups = istable(appearance) and appearance.ABodygroups

@@ -38,7 +38,12 @@ ZCG.cvAnyModel = CreateConVar("zcg_any_model", "0", FLAGS,
 	.. "1 = also on models set by player classes, the model selector etc.", 0, 1)
 
 ZCG.cvHideHands = CreateConVar("zcg_hide_hands", "1", FLAGS,
-	"CS:GO gloves: hide the player model's own hands under full-finger gloves (they would poke through).", 0, 1)
+	"CS:GO gloves: 1 = a glove hides the player model's own hands (they would poke through it; "
+	.. "fingerless gloves have fingers of their own), 0 = never hide them.", 0, 1)
+
+ZCG.cvFingers = CreateConVar("zcg_fingers", "1", FLAGS,
+	"CS:GO gloves: 1 = fingerless gloves are drawn with the fingers that are part of the glove models, "
+	.. "0 = with the player model's own hands, as up to version 1.0.1.", 0, 1)
 
 -- ---------------------------------------------------------------------------------------------
 -- helpers
@@ -84,12 +89,15 @@ function ZCG.HandsMaterialName(modelPath)
 	return found or DEFAULT_HANDS
 end
 
--- should the wearer's own hands be hidden under this glove?
+-- Do the settings want the wearer's own hands hidden under this glove? (For a fingerless glove
+-- that also means: drawn with its own fingers - see ZCG.Wearing in cl_render.lua, which knows
+-- whether that is possible.)
 function ZCG.HidesHands(variant)
 	if not ZCG.cvHideHands:GetBool() then return false end
+	if variant.fingerless and not ZCG.cvFingers:GetBool() then return false end
 	local override = ZCG.Config.HideHands and ZCG.Config.HideHands[variant.family.id]
 	if override ~= nil then return override and true or false end
-	return not variant.fingerless
+	return true
 end
 
 -- ---------------------------------------------------------------------------------------------
