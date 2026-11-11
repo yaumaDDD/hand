@@ -491,7 +491,8 @@ local MOD_TILE_ICONS = { "moto_2", "sport_5", "specialist_10", "handwrap_12" }
 -- calls fn(...) while the CS:GO gloves are not in the list of hand bodygroups;
 -- returns true and the first result of fn, or false and the error
 local function withoutGloves(fn, ...)
-	local hands = hg.Appearance.Bodygroups.HANDS
+	local groups = istable(hg) and istable(hg.Appearance) and hg.Appearance.Bodygroups
+	local hands = istable(groups) and groups.HANDS
 	local taken = {}
 	for sex = 1, 2 do
 		local list = istable(hands) and hands[sex]
