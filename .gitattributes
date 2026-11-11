@@ -7,3 +7,9 @@
 *.jpg binary
 *.vtf binary
 *.mdl binary
+*.vvd binary
+*.vtx binary
+*.phy binary
+*.ani binary
+# the parts of an archive split by 7-Zip: content.7z.001, content.7z.002 ...
+*.[0-9][0-9][0-9] binary

@@ -1,11 +1,19 @@
-Сюда кладутся материалы и текстуры (.vmt, .vtf, .png) - с теми же вложенными папками, что в
-аддоне, из которого они взяты. Например:
+Сюда кладутся материалы и текстуры (.vmt, .vtf, .png).
+
+Игра сама ничего не ищет: каждый файл должен лежать точно по тому пути, что в аддоне, из
+которого он взят. Например:
 
     materials/models/humans/male/group01/bib.vmt  ->  эта папка/models/humans/male/group01/bib.vmt
     materials/models/gate/shirt.vmt               ->  эта папка/models/gate/shirt.vmt
+    materials/zcbands41/band_team.vmt             ->  эта папка/zcbands41/band_team.vmt
 
 Внимание: внутри materials тоже бывает папка models - это материалы моделей, она остаётся здесь,
-в materials, а не в соседней папке models.
+в materials, а не в соседней папке models. Чаще всего ошибаются как раз на этот уровень: папки
+gate, humans, roscoe, gregrogers, bloo_ltcom_zel должны лежать в "эта папка/models/", а не
+прямо здесь - иначе в игре чёрно-розовые клетки.
+
+Не хочется разбираться с папками - положите контент в репозиторий как есть (архивами в корень):
+сборка сама найдёт каждый файл по имени и положит на место. См. README, "Одежда и Appearance Mod".
 
 Материалы перчаток CS:GO уже лежат здесь (папки zcity_csgo_gloves и models/weapons/v_models/arms).
 

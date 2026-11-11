@@ -4,6 +4,7 @@
 Used by build_addon.py (repo root) and by the helper scripts in tools/.
 """
 import os
+import re
 
 ADDON_DIRNAME = "zcity_csgo_gloves"
 
@@ -68,28 +69,25 @@ for _n, _bump in SPECIALIST_BUMP.items():
         VMT_FIXES['%s/glove_specialist/%s.vmt' % (ARMS_MAT_DIR, _name)] = {
             '$bumpmap': 'models/weapons/v_models/arms/glove_specialist/right/%d/glove_specialist_normal_right' % _bump}
 
-# ---------------------------------------------------------------------------------------
-# Glove families. One entry = one group in the in-game picker.
-#   id          - stable internal id; a variant is "<id>_<n>" (networked, never rename)
-#   title       - used in the appearance key: "CS:GO <title> NN" (saved in players' appearance
-#                 files, never rename either)
-#   fingerless  - the wearer's own fingers must stay visible
-#   variants    - list of (model, bodygroup "gloves" value, label); the label is only a hint
-#                 shown in the picker / catalogue and may be changed freely
-#   materials   - optional, {variant number (1-based): {material of the model: material to use
-#                 instead}} for a glove whose model does not name its material. Lua swaps it
-#                 with Entity:SetSubMaterial (the "mats" of sh_data.lua).
-# ---------------------------------------------------------------------------------------
 # ---------------------------------------------------------------------------------------------
-# Drop-in archives
+# Drop-in sources
 # ---------------------------------------------------------------------------------------------
-# Every archive in the repository root that is not listed above is taken as a part of some other
-# addon - Lua that adds clothes to the appearance menu, materials, models - and its files go into
-# the build under the path they have in the game:
+# Whatever lies in the repository root and is not listed above is taken as a part of some other
+# addon - Lua that adds clothes to the appearance menu, materials, models:
+#     an archive               anything.zip, anything.7z
+#     a split archive          anything.7z.001, .002 ...  (7-Zip "split to volumes"; .zip alike)
+#     a folder                 any folder but the ones of the project (PROJECT_DIRS)
+# and so are the materials and models somebody put into the folders of the addon skeleton.
+#
+# Lua and everything else but content goes into the build under the path its folders give it:
 #     <anything>/lua/...                       -> lua/...
 #     <anything>/materials/...                 -> materials/...        (models, sound ... alike)
 #     <anything>/homigrad/...  (no lua folder) -> lua/homigrad/...     (autorun ... alike)
 # Whatever has no such folder above it (the addon.json of that addon, notes) is left out.
+#
+# Materials, textures and models (.vmt .vtf .mdl and the files of a model) are not trusted to
+# lie in the right folders. Each of them is put where the Lua, a model or a material that
+# names it looks for it: see tools/place_content.py.
 
 # read by the tools only, never shipped
 REFERENCE_ARCHIVES = ("z_city.zip", "hands.zip", "hands2.zip")
@@ -111,6 +109,62 @@ def dropin_archives(root):
             continue
         found.append(os.path.join(root, name))
     return found
+
+
+# a split archive: content.7z.001, content.7z.002 ... (7-Zip "split to volumes")
+VOLUME = re.compile(r'^(.+\.(?:7z|zip))\.(\d{3})$', re.I)
+# folders of the repository root that belong to the project; any other one is taken as content
+PROJECT_DIRS = (ADDON_DIRNAME, 'tools', 'docs', 'build')
+
+
+# Content the addon itself owns. Anything else that lies in the materials / models folders of
+# its skeleton was put there by hand and is treated like the content of a drop-in archive.
+OWN_CONTENT = ("materials/" + ADDON_DIRNAME + "/", ARMS_MAT_DIR + "/", MODELS_DIR + "/")
+
+
+def is_own_content(path):
+    return path.replace("\\", "/").lower().startswith(OWN_CONTENT)
+
+
+def _reserved(name):
+    """an archive name the glove build or the tools use for something else"""
+    stem = os.path.splitext(name)[0]
+    return stem in ARCHIVES or name in REFERENCE_ARCHIVES or name.startswith(OPTIMIZED_PREFIX)
+
+
+def dropin_sources(root):
+    """Everything in the repository root that brings files of other addons, in name order:
+    [(name, kind, paths)] with kind 'archive' (one .zip / .7z), 'volumes' (the parts of a split
+    archive, in order; name is the archive without its number) or 'folder'."""
+    found, volumes = [], {}
+    for name in sorted(os.listdir(root)):
+        full = os.path.join(root, name)
+        if os.path.isdir(full):
+            if not name.startswith(('.', '_')) and name not in PROJECT_DIRS:
+                found.append((name, 'folder', [full]))
+            continue
+        part = VOLUME.match(name)
+        if part:
+            if not _reserved(part.group(1)):
+                volumes.setdefault(part.group(1), []).append(full)
+            continue
+        if os.path.splitext(name)[1].lower() in ('.zip', '.7z') and not _reserved(name):
+            found.append((name, 'archive', [full]))
+    for name, parts in volumes.items():
+        found.append((name, 'volumes', sorted(parts)))
+    found.sort(key=lambda source: source[0])
+    return found
+
+
+# archives of other kinds: nothing here can read them, and saying nothing about one that was
+# uploaded would look as if its files were simply missing
+_OTHER_ARCHIVE = re.compile(r'\.(rar|r\d\d|z\d\d|tar|gz|tgz|bz2|xz|zst|cab|iso|gma|vpk)$', re.I)
+
+
+def unread_archives(root):
+    """files in the repository root that look like archives and are read by nobody"""
+    return sorted(name for name in os.listdir(root)
+                  if os.path.isfile(os.path.join(root, name)) and _OTHER_ARCHIVE.search(name))
 
 
 def dropin_destination(path):
@@ -146,6 +200,18 @@ def zip_name(info):
     return name
 
 
+# ---------------------------------------------------------------------------------------
+# Glove families. One entry = one group in the in-game picker.
+#   id          - stable internal id; a variant is "<id>_<n>" (networked, never rename)
+#   title       - used in the appearance key: "CS:GO <title> NN" (saved in players' appearance
+#                 files, never rename either)
+#   fingerless  - the wearer's own fingers must stay visible
+#   variants    - list of (model, bodygroup "gloves" value, label); the label is only a hint
+#                 shown in the picker / catalogue and may be changed freely
+#   materials   - optional, {variant number (1-based): {material of the model: material to use
+#                 instead}} for a glove whose model does not name its material. Lua swaps it
+#                 with Entity:SetSubMaterial (the "mats" of sh_data.lua).
+# ---------------------------------------------------------------------------------------
 def _same_model(model, labels):
     return [(model, i, label) for i, label in enumerate(labels)]
 

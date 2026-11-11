@@ -1,5 +1,7 @@
 # Builds the ready-to-install addon and attaches it to a GitHub release as
-# zcity_csgo_gloves.zip.  Publish a release and the zip appears on it a few minutes later.
+# zcity_csgo_gloves.zip.  Publish a release and the zip appears on it a few minutes later
+# (with content_report.txt next to it when the repository holds materials or models of other
+# addons: where each of them was put, and what is still missing).
 name: Release
 
 on:
@@ -35,6 +37,9 @@ jobs:
       - name: Test the Lua code
         run: python tools/test_lua.py
 
+      - name: Test the placing of drop-in content
+        run: python tools/test_content.py
+
       - name: Build the addon
         run: python build_addon.py --zip
 
@@ -45,3 +50,7 @@ jobs:
         run: |
           sha256sum build/zcity_csgo_gloves.zip
           gh release upload "$TAG" build/zcity_csgo_gloves.zip --clobber
+          # what the build did with the materials and models of other addons, when it found any
+          if [ -f build/content_report.txt ]; then
+            gh release upload "$TAG" build/content_report.txt --clobber
+          fi

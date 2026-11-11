@@ -20,6 +20,7 @@ Needs Python 3.7+ and one of
 About 1.5 GB of free disk space is used while building; the result is about 270 MB.
 """
 import argparse
+import collections
 import os
 import re
 import shutil
@@ -39,6 +40,7 @@ import patch_models  # noqa: E402
 import vmt  # noqa: E402
 import zcg_layout as L  # noqa: E402
 import list_content  # noqa: E402
+import place_content  # noqa: E402
 
 # reduced versions of the oversized textures (tools/optimize_textures.py), in the addon layout;
 # the second archive came with the Driver and Specialist gloves, the third with Sport
@@ -104,20 +106,45 @@ def pick_extractor():
         % (os.path.basename(sys.executable) or 'python'))
 
 
-def extract(extractor, archive, dest):
-    """unpack archive into dest unless that was already done for this very file"""
-    stamp = '%s:%d' % (os.path.basename(archive), os.path.getsize(archive))
+def extract_zip(archive, dest):
+    """ZipFile.extractall with the file names their authors meant (see zcg_layout.zip_name)"""
+    with zipfile.ZipFile(archive) as z:
+        for info in z.infolist():
+            if info.is_dir():
+                continue
+            parts = [p for p in L.zip_name(info).replace('\\', '/').split('/') if p not in ('', '.')]
+            if not parts or '..' in parts:
+                continue
+            target = os.path.join(dest, *parts)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with z.open(info) as src, open(target, 'wb') as f:
+                shutil.copyfileobj(src, f)
+
+
+def file_stamp(path):
+    info = os.stat(path)
+    return '%s:%d:%d' % (os.path.basename(path), info.st_size, info.st_mtime_ns)
+
+
+def is_extracted(dest, stamp):
     marker = os.path.join(dest, MARKER)
     if os.path.isfile(marker):
         with open(marker, 'r', encoding='utf-8') as f:
-            if f.read().strip() == stamp:
-                return False
+            return f.read().strip() == stamp
+    return False
+
+
+def extract(extractor, archive, dest, stamp=None):
+    """unpack archive into dest unless that was already done for this very file"""
+    stamp = stamp or file_stamp(archive)
+    marker = os.path.join(dest, MARKER)
+    if is_extracted(dest, stamp):
+        return False
     if os.path.isdir(dest):
         shutil.rmtree(dest)
     os.makedirs(dest)
     if archive.lower().endswith('.zip'):
-        with zipfile.ZipFile(archive) as z:
-            z.extractall(dest)
+        extract_zip(archive, dest)
     else:
         extractor(archive, dest)
     with open(marker, 'w', encoding='utf-8') as f:
@@ -229,49 +256,130 @@ def lower_case_content(out):
     return renamed
 
 
-def step_skeleton(out):
+def step_skeleton(out, by_name=False):
+    """The addon as it lies in the repository. With by_name the materials and models somebody put
+    into its folders by hand are not copied but returned as [(path in the skeleton, file)]:
+    step_dropins places them like the content of an archive."""
     skeleton = os.path.join(HERE, L.ADDON_DIRNAME)
     if not os.path.isfile(os.path.join(skeleton, 'addon.json')):
         raise BuildError('addon skeleton is missing: %s' % skeleton)
     check_out(out)
     if os.path.exists(out):
         shutil.rmtree(out)
-    shutil.copytree(skeleton, out)
-    return lower_case_content(out)
+    by_hand = []
+
+    def not_copied(folder, names):
+        skipped = []
+        for name in names:
+            full = os.path.join(folder, name)
+            rel = os.path.relpath(full, skeleton).replace('\\', '/')
+            if by_name and os.path.isfile(full) and rel.lower().startswith(('materials/', 'models/')) \
+                    and place_content.kind_of(name) and not L.is_own_content(rel):
+                by_hand.append((rel, full))
+                skipped.append(name)
+        return skipped
+
+    shutil.copytree(skeleton, out, ignore=not_copied)
+    # the folders those files were in are of no use empty (and may have upper-case names)
+    for rel, _full in by_hand:
+        folder = os.path.dirname(os.path.join(out, rel))
+        while os.path.dirname(folder) != out and os.path.isdir(folder) and not os.listdir(folder):
+            os.rmdir(folder)
+            folder = os.path.dirname(folder)
+    return lower_case_content(out), sorted(by_hand)
 
 
-def dropin_entries(extractor, temp, archive, number):
-    """(path inside the archive, function that returns the bytes) for every file of the archive"""
-    if archive.lower().endswith('.zip'):
-        with zipfile.ZipFile(archive) as z:
-            for info in z.infolist():
-                if not info.is_dir():
-                    yield L.zip_name(info), (lambda info=info: z.read(info))
+DROPIN_PREFIX = '_dropin_'
+
+
+def dropin_folder(temp, name):
+    """where a drop-in archive is unpacked: by its name, so that another archive never finds the
+    files of this one there"""
+    return os.path.join(temp, DROPIN_PREFIX + hashlib.sha1(name.encode('utf-8')).hexdigest()[:12])
+
+
+def join_volumes(name, parts, joined):
+    """a split archive (x.7z.001, x.7z.002 ...) back in one piece"""
+    numbers = [int(L.VOLUME.match(os.path.basename(part)).group(2)) for part in parts]
+    if numbers != list(range(1, len(parts) + 1)):
+        raise BuildError('%s: its parts must be .001, .002 ... without a gap, found %s'
+                         % (name, ', '.join('.%03d' % n for n in numbers)))
+    os.makedirs(os.path.dirname(joined), exist_ok=True)
+    with open(joined, 'wb') as whole:
+        for part in parts:
+            with open(part, 'rb') as f:
+                shutil.copyfileobj(f, whole, 1 << 20)
+
+
+def dropin_files(extractor, temp, name, kind, paths):
+    """[(path inside a drop-in source, file on the disk)]; an archive is unpacked for that"""
+    if kind == 'folder':
+        base = paths[0]
     else:
-        dest = os.path.join(temp, '_dropin%d' % number)
-        extract(extractor, archive, dest)
-        for rel, full in sorted(walk_files(dest)):
-            if rel != MARKER:
-                yield rel, (lambda full=full: read_bytes(full))
+        base = dropin_folder(temp, name)
+        stamp = '|'.join(file_stamp(path) for path in paths)
+        if not is_extracted(base, stamp):
+            archive, joined = paths[0], None
+            if kind == 'volumes':
+                archive = joined = base + os.path.splitext(name)[1].lower()
+                join_volumes(name, paths, joined)
+            try:
+                extract(extractor, archive, base, stamp)
+            except BuildError:
+                raise
+            except Exception as err:    # whatever the unpacker says about a broken archive
+                raise BuildError('%s cannot be unpacked: %s' % (name, err))
+            finally:
+                if joined and os.path.isfile(joined):
+                    os.remove(joined)
+    return [(rel, full) for rel, full in sorted(walk_files(base)) if rel != MARKER]
 
 
-def step_dropins(extractor, temp, out):
-    """The other archives of the repository root are parts of other addons - Lua that adds
-    clothes to the appearance menu, materials, models (see "Drop-in archives" in
-    tools/zcg_layout.py). Their files go into the build under the path they have in the game.
+def forget_old_dropins(temp, sources):
+    """unpacked archives that are not in the repository any more"""
+    used = set(os.path.basename(dropin_folder(temp, name)) for name, _kind, _paths in sources)
+    if not os.path.isdir(temp):
+        return
+    for entry in os.listdir(temp):
+        if entry.startswith('_dropin') and os.path.splitext(entry)[0] not in used:
+            full = os.path.join(temp, entry)
+            shutil.rmtree(full) if os.path.isdir(full) else os.remove(full)
+
+
+def step_dropins(extractor, temp, out, by_hand=()):
+    """The other archives and folders of the repository root are parts of other addons: Lua that
+    adds clothes to the appearance menu, materials, models (see "Drop-in archives" in
+    tools/zcg_layout.py).
+
+    Lua and the like go into the build under the path their folders give them. Materials,
+    textures and models are not trusted to lie in the right folders: tools/place_content.py puts
+    each of them where the Lua, a model or a material that names it looks for it.
+
     A file of this addon is never replaced; of two different files with one path the one from
-    the archive that comes later by name is used."""
-    report, placed = [], {}
-    for number, archive in enumerate(L.dropin_archives(HERE), 1):
-        name = os.path.basename(archive)
-        counts = {'lua': 0, 'materials': 0, 'models': 0, 'other': 0}
-        left_out, notes = 0, []
-        for inner, read in dropin_entries(extractor, temp, archive, number):
+    the source that comes later by name is used. by_hand - the materials and models that were put
+    into the folders of the addon itself (see step_skeleton) - come last.
+    Returns (a report for each source, the Report of place_content, the paths the Lua names)."""
+    report, placed, content, lua = [], {}, [], []
+    sources = L.dropin_sources(HERE)
+    names = [name for name, _kind, _paths in sources]
+    twice = sorted(set(name for name in names if names.count(name) > 1))
+    if twice:
+        raise BuildError('%s: the archive is in the repository both whole and in parts (.001, .002 ...); '
+                         'remove one of the two' % ', '.join(twice))
+    forget_old_dropins(temp, sources)
+    for number, (name, kind, paths) in enumerate(sources, 1):
+        counts = collections.Counter()
+        left_out, notes, no_place = 0, [], []
+        for inner, full in dropin_files(extractor, temp, name, kind, paths):
+            if place_content.kind_of(inner):
+                content.append(place_content.Item(name, inner, full, L.dropin_destination(inner), number))
+                continue
             dest = L.dropin_destination(inner)
             if dest is None:
                 left_out += 1
+                no_place.append(inner)
                 continue
-            data = read()
+            data = read_bytes(full)
             digest = hashlib.sha1(data).digest()
             target = os.path.join(out, dest)
             if dest in placed:
@@ -283,13 +391,85 @@ def step_dropins(extractor, temp, out):
                 continue
             else:
                 root = dest.split('/', 1)[0]
-                counts[root if root in counts else 'other'] += 1
+                counts[root if root in ('lua', 'materials', 'models') else 'other'] += 1
             os.makedirs(os.path.dirname(target), exist_ok=True)
             with open(target, 'wb') as f:
                 f.write(data)
             placed[dest] = (name, digest)
-        report.append((name, counts, left_out, notes))
-    return report
+            if dest.endswith('.lua'):
+                lua.append(data)
+        report.append(dict(name=name, kind=kind, parts=len(paths), counts=counts, left_out=left_out, notes=notes,
+                           no_place=no_place))
+    if by_hand:
+        name = L.ADDON_DIRNAME
+        for inner, full in by_hand:
+            content.append(place_content.Item(name, inner, full, L.dropin_destination(inner), len(sources) + 1))
+        report.append(dict(name=name, kind='folder', parts=1, counts=collections.Counter(), left_out=0, notes=[],
+                           no_place=[]))
+
+    # what that Lua wants to find in the materials and models folders
+    named = set()
+    for data in lua:
+        named |= list_content.names_in(data.decode('utf-8-sig', 'replace'))
+    if named:
+        named -= list_content.stock_names()
+
+    result = place_content.place(content, named, lambda path: os.path.isfile(os.path.join(out, path)))
+    by_name = dict((entry['name'], entry) for entry in report)
+    for dest, item in result.placed:
+        copy(item.path, os.path.join(out, dest))
+        by_name[item.source]['counts'][dest.split('/', 1)[0]] += 1
+    for item, _why in result.left_out:
+        by_name[item.source]['left_out'] += 1
+    return report, result, named
+
+
+def moved_from(sources, source, folder):
+    """the folder a file was moved out of, as somebody finds it: a folder of the repository with
+    its name in front, a folder of an archive as it is called there"""
+    kinds = dict((entry['name'], entry['kind']) for entry in sources)
+    if kinds.get(source) == 'folder':
+        return '/'.join(part for part in (source, folder) if part) + '/'
+    return (folder or '.') + '/'
+
+
+def write_content_report(path, sources, result, named):
+    """everything place_content decided, for reading after the build"""
+    # the second line, for the owner of the repository: "Build report about the materials and
+    # models of other addons; the sections are described in README.md."
+    lines = ['Content of the drop-in archives and folders: what went where.  (written by build_addon.py)',
+             u'\u041e\u0442\u0447\u0451\u0442 \u0441\u0431\u043e\u0440\u043a\u0438 \u043e '
+             u'\u043c\u0430\u0442\u0435\u0440\u0438\u0430\u043b\u0430\u0445 \u0438 '
+             u'\u043c\u043e\u0434\u0435\u043b\u044f\u0445 \u0434\u0440\u0443\u0433\u0438\u0445 '
+             u'\u0430\u0434\u0434\u043e\u043d\u043e\u0432; \u0440\u0430\u0437\u0434\u0435\u043b\u044b '
+             u'\u043e\u043f\u0438\u0441\u0430\u043d\u044b \u0432 README.md.', '']
+    for entry in sources:
+        if entry['no_place']:
+            lines.append('%s - %d files that are no part of an addon (no lua, materials, models ... folder above '
+                         'them) and were left out:' % (entry['name'], len(entry['no_place'])))
+            lines += ['    ' + name for name in entry['no_place'][:200]]
+            if len(entry['no_place']) > 200:
+                lines.append('    ... and %d more' % (len(entry['no_place']) - 200))
+            lines.append('')
+    moves = sorted(result.moves.items(), key=lambda kv: (kv[0][0], kv[0][1]))
+    lines.append('Found by name or moved with their folder - %d files:' % sum(result.moves.values()))
+    for (source, src, dst), count in moves:
+        lines.append('    %s  ->  %s/    %d files    [%s]' % (moved_from(sources, source, src), dst, count, source))
+    lines += ['', 'Left out - %d files:' % len(result.left_out)]
+    for item, why in result.left_out:
+        lines.append('    %s    (%s)' % (item, why))
+    lines += ['', 'Notes - %d:' % len(result.notes)] + ['    ' + note for note in result.notes]
+    lines += ['', 'Named by the Lua, no file - %d of %d (they may be a part of the game or of Z-City):'
+              % (len(result.missing_named), len(named))]
+    lines += ['    ' + name for name in result.missing_named]
+    lines += ['', 'Materials of the models, no file - %d of %d:' % (len(result.missing_materials), result.materials_wanted)]
+    for model, name, group in result.missing_materials:
+        lines.append('    %s  <-  %s' % (' | '.join(group), model))
+    lines += ['', 'Textures of the materials, no file - %d of %d:' % (len(result.missing_textures), result.textures_wanted)]
+    for material, key, texture in result.missing_textures:
+        lines.append('    %s  <-  %s  %s' % (texture, material, key))
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines) + '\n')
 
 
 def read_bytes(path):
@@ -370,9 +550,11 @@ def step_optimized(extractor, temp, out, wanted):
     return replaced, saved
 
 
-def step_verify(out):
-    """model -> material -> VMT -> texture, the Lua catalogue and the icons"""
+def step_verify(out, foreign=()):
+    """model -> material -> VMT -> texture, the Lua catalogue and the icons.
+    foreign: files of other addons (step_dropins) - they are reported there, not judged here"""
     problems = []
+    foreign = set(foreign)
     variants = L.variants()
 
     def exists(rel):
@@ -495,7 +677,9 @@ def step_verify(out):
 
     # everything that is shipped must be usable (no stray upper-case names, no orphans)
     for path in shipped_vmts(out):
-        check_vmt(os.path.relpath(path, out).replace('\\', '/'))
+        rel = os.path.relpath(path, out).replace('\\', '/')
+        if rel not in foreign:
+            check_vmt(rel)
     for rel, _full in walk_files(out):
         if rel != rel.lower():
             problems.append('upper-case file name (breaks on Linux): %s' % rel)
@@ -601,7 +785,7 @@ def main():
     idx = make_vmts.build_index(temp)
 
     print('Assembling %s' % out)
-    renamed = step_skeleton(out)
+    renamed, by_hand = step_skeleton(out, by_name=not args.gloves_only)
     if renamed:
         print('  %d files in the materials / models folders of the addon got lower-case paths' % renamed)
     models, fingers, arm = step_models(idx, out)
@@ -615,30 +799,59 @@ def main():
         replaced, saved = step_optimized(extractor, temp, out, wanted)
         print('  %d oversized textures replaced by their 1024 px DXT5 versions (saves %s)' % (replaced, mb(saved)))
 
+    foreign = ()
+    listing = os.path.join(os.path.dirname(out), 'content_report.txt')
+    if os.path.isfile(listing):
+        os.remove(listing)      # of an earlier build; written again below when there is content
+    for name in L.unread_archives(HERE):
+        print('  NOT USED: %s - only .zip and .7z archives are read (whole, or split by 7-Zip into .001 .002 ...)' % name)
     if args.gloves_only:
         print('  drop-in archives left out (--gloves-only)')
     else:
-        for name, counts, left_out, notes in step_dropins(extractor, temp, out):
+        sources, content, named = step_dropins(extractor, temp, out, by_hand)
+        foreign = [dest for dest, _item in content.placed]
+        for entry in sources:
+            counts = entry['counts']
             parts = ['%d %s' % (counts[key], label) for key, label in (
                 ('lua', 'Lua files'), ('materials', 'material files'), ('models', 'model files'), ('other', 'other files'))
                 if counts[key]]
-            print('  drop-in %s: %s%s' % (name, ', '.join(parts) or 'nothing for the addon',
-                                          ' (%d files without a place in an addon left out)' % left_out if left_out else ''))
-            for note in notes[:10]:
+            label = entry['name'] + ('/' if entry['kind'] == 'folder' else '')
+            if entry['kind'] == 'volumes':
+                label += ' (%d parts)' % entry['parts']
+            print('  drop-in %s: %s%s' % (label, ', '.join(parts) or 'nothing for the addon',
+                                          ' (%d files without a place in an addon left out)' % entry['left_out']
+                                          if entry['left_out'] else ''))
+            for note in entry['notes'][:10]:
                 print('      note: ' + note)
-            if len(notes) > 10:
-                print('      ... and %d more notes' % (len(notes) - 10))
-        # what that Lua wants to find in the materials and models folders
-        named = set()
-        for _archive, _title, wanted in list_content.collect()[0]:
-            named.update(wanted)
+            if len(entry['notes']) > 10:
+                print('      ... and %d more notes' % (len(entry['notes']) - 10))
         if named:
             present = sum(1 for name in named if os.path.isfile(os.path.join(out, name)))
             print('  the drop-in Lua names %d materials and models of its own: %d are in the addon, %d are not '
                   '(python tools/list_content.py)' % (len(named), present, len(named) - present))
+        if content.placed or content.left_out:
+            moves = sorted(content.moves.items(), key=lambda kv: (-kv[1], kv[0]))
+            if moves:
+                print('  %d content files were not where the game looks for them and were put there:'
+                      % sum(content.moves.values()))
+            for (source, src, dst), count in moves[:12]:
+                print('      %s  ->  %s/  (%d files)' % (moved_from(sources, source, src), dst, count))
+            if len(moves) > 12:
+                print('      ... and %d more folders' % (len(moves) - 12))
+            for note in content.notes[:10]:
+                print('      note: ' + note)
+            if len(content.notes) > 10:
+                print('      ... and %d more notes' % (len(content.notes) - 10))
+            materials = sum(1 for dest, _item in content.placed if dest.endswith('.vmt'))
+            print('  content: %d models name %d materials, %d of them have no file; '
+                  '%d materials name %d textures, %d of them have no file'
+                  % (content.models, content.materials_wanted, len(content.missing_materials),
+                     materials, content.textures_wanted, len(content.missing_textures)))
+            write_content_report(listing, sources, content, named)
+            print('      (a name without a file may be a part of the game or of Z-City; the lists are in %s)' % listing)
 
     print('Checking')
-    problems, vmts = step_verify(out)
+    problems, vmts = step_verify(out, foreign)
     if problems:
         for line in problems[:40]:
             print('  PROBLEM: ' + line)
