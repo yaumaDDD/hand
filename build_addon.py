@@ -413,15 +413,22 @@ def step_dropins(extractor, temp, out, by_hand=()):
     for number, name, kind, paths, files, titles in listed:
         counts = collections.Counter()
         left_out, notes, no_place, mine = 0, [], [], []
+
+        def as_seen(inner):
+            """(a folder of the repository root may itself be a numbered copy of materials/ or
+            models/ - "materials3": its name belongs to the path then)"""
+            return name + '/' + inner if kind == 'folder' else inner
+
+        # (the numbered folders that hold a tree: a file right in one of them is a file of its top)
+        trees = L.tree_roots(as_seen(inner) for inner, _full in files if place_content.kind_of(inner))
         for inner, full in files:
             title = titles[inner]
-            # (a folder of the repository root may itself be a numbered copy of materials/ or
-            # models/ - "materials3": its name belongs to the path then)
-            seen = name + '/' + inner if kind == 'folder' else inner
+            seen = as_seen(inner)
             if place_content.kind_of(inner):
                 # (of a version that is left out: before every other source, so that it replaces nothing)
                 content.append(place_content.Item(name, inner, full, L.dropin_destination(inner), 0 if title in left else number,
-                                                  L.merged_destination(seen), L.merged_destination(seen, mirror=True)))
+                                                  L.merged_destination(seen, trees=trees),
+                                                  L.merged_destination(seen, mirror=True, trees=trees), L.numbered_folder(seen)))
                 continue
             dest = L.dropin_destination(inner)
             if dest is None:
@@ -475,9 +482,11 @@ def step_dropins(extractor, temp, out, by_hand=()):
                            no_place=no_place, versions=mine))
     if by_hand:
         name = L.ADDON_DIRNAME
+        trees = L.tree_roots(inner for inner, _full in by_hand)
         for inner, full in by_hand:
             content.append(place_content.Item(name, inner, full, L.dropin_destination(inner), len(sources) + 1,
-                                              L.merged_destination(inner), L.merged_destination(inner, mirror=True)))
+                                              L.merged_destination(inner, trees=trees),
+                                              L.merged_destination(inner, mirror=True, trees=trees), L.numbered_folder(inner)))
         report.append(dict(name=name, kind='folder', parts=1, counts=collections.Counter(), left_out=0, notes=[],
                            no_place=[], versions=[]))
 

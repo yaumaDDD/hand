@@ -315,6 +315,19 @@ return function(testdir, luaroot)
 		eq(logged("this addon looks for the files of \"Mod\" and finds next to none of them"), 1, "versions: and zcg_content says so")
 		M.files["models/new/m/n2.mdl"], M.files["models/new/m/n3.mdl"] = true, true
 		eq(ZCG.OtherVersions()[1].other, false, "versions: with more of this one there is no verdict")
+		-- (the content of one version carries some files of the other: not more than one in four is few)
+		for i = 11, 20 do only["models/new/m/n" .. i .. ".mdl"] = "Mod OLD" end
+		M.files["models/new/m/n4.mdl"], M.files["models/new/m/n5.mdl"] = true, true
+		versions = ZCG.OtherVersions()
+		eq(versions[1].ownThere .. "/" .. versions[1].own .. " " .. tostring(versions[1].other), "5/20 true",
+			"versions: most files of the other version and one in four of this one - the content of the other version")
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("this addon looks for the files of \"Mod\" and finds only 5 of them"), 1, "versions: and zcg_content says how many")
+		M.files["models/new/m/n6.mdl"] = true
+		eq(ZCG.OtherVersions()[1].other, false, "versions: with more than one in four there is no verdict")
+		for i = 4, 6 do M.files["models/new/m/n" .. i .. ".mdl"] = nil end
+		for i = 11, 20 do only["models/new/m/n" .. i .. ".mdl"] = nil end
 		for i = 1, 10 do
 			M.files["models/new/m/n" .. i .. ".mdl"], M.files["models/old/m/o" .. i .. ".mdl"] = nil, nil
 		end

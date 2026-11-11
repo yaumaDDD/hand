@@ -80,10 +80,16 @@ def model(folders, names, name=''):
     return bytes(head + body + strings)
 
 
+def an_item(source, inner, full, order, trees=()):
+    """a file the way build_addon.py and sort_content.py hand it to place_content"""
+    return P.Item(source, inner, full, L.dropin_destination(inner), order, L.merged_destination(inner, trees=trees),
+                  L.merged_destination(inner, mirror=True, trees=trees), L.numbered_folder(inner))
+
+
 def scan(folder, source='content.zip', order=1):
-    return [P.Item(source, rel, full, L.dropin_destination(rel), order, L.merged_destination(rel),
-                   L.merged_destination(rel, mirror=True))
-            for rel, full in sorted(build_addon.walk_files(folder))]
+    files = sorted(build_addon.walk_files(folder))
+    trees = L.tree_roots(rel for rel, _full in files if P.kind_of(rel))
+    return [an_item(source, rel, full, order, trees) for rel, full in files]
 
 
 def run(folder, named=(), own=(), **kw):
@@ -822,14 +828,15 @@ def random_run(seed, tmp):
     # them for sort_content.py: once as they are, once with a file of the addon next to them that
     # lies where it belongs already. That file must not change where the others go.
     def in_the_addon(with_a_file_in_place):
-        files, names = [], set(named)
+        files, names, lying = [], set(named), []
         for upload in range(uploads):
             base = os.path.join(tmp, 's%d' % upload)
             if os.path.isdir(base):
                 for rel, full in sorted(build_addon.walk_files(base)):
-                    inner = 'materials/upload %d/%s' % (upload, rel)
-                    files.append(P.Item('zcity_csgo_gloves', inner, full, L.dropin_destination(inner), 1,
-                                        L.merged_destination(inner), L.merged_destination(inner, mirror=True)))
+                    lying.append(('materials/upload %d/%s' % (upload, rel), full))
+        trees = L.tree_roots(inner for inner, _full in lying if P.kind_of(inner))
+        for inner, full in lying:
+            files.append(an_item('zcity_csgo_gloves', inner, full, 1, trees))
         if with_a_file_in_place:
             full = os.path.join(tmp, 'in place.vmt')
             write(full, material('models/in_place/zz'))
@@ -2220,8 +2227,11 @@ def test_versions_of_a_pack(tmp):
     check(verdict(13, 15, 0, 85) and verdict(1, 15, 0, 85) and verdict(0, 15, 0, 85, taken=13), 'files of the other version and none of this one: the other version')
     check(verdict(84, 85, 2, 15) and verdict(13, 15, 2, 85) and verdict(8, 15, 1, 85),
           'most of the other version and a stray file or two of this one: the other version')
-    check(not verdict(13, 15, 84, 85) and not verdict(13, 15, 13, 85) and not verdict(13, 15, 3, 85) and not verdict(2, 15, 2, 85)
-          and not verdict(7, 15, 1, 85), 'files of both, or few of either: no verdict')
+    # (what the first content seen had: all 13 models of its own version, and 9 materials of the 85 files of the other)
+    check(verdict(13, 15, 9, 85) and verdict(13, 15, 21, 85) and verdict(60, 85, 3, 15),
+          'most of the other version and not more than one in four of this one: the other version')
+    check(not verdict(13, 15, 84, 85) and not verdict(13, 15, 22, 85) and not verdict(60, 85, 4, 15) and not verdict(2, 15, 2, 85)
+          and not verdict(7, 15, 1, 85) and not verdict(7, 15, 9, 85), 'files of both, or few of either: no verdict')
     check(not verdict(0, 15, 0, 85) and not verdict(0, 15, 84, 85) and not verdict(13, 15, 0, 0),
           'no file of the other version, or nothing known of the files of this one: no verdict')
     text = u'\n'.join(content_report.version_lines([dict(title='Mod OLD', instead='Mod', theirs=84, theirs_all=85, taken=0, ours=2, ours_all=15)]))
@@ -2651,6 +2661,35 @@ def thrown_roots():
             'props/crate.phy': b'phy of the crate',
             'props/readme.txt': b'a crate',
         }),
+        # What the folders of an owner turned out to hold (his report of 2.6.0, which scattered
+        # them): a pack of models that no Lua of the addon names, copied from pack to pack
+        # without being compiled again. Its models say another folder than the one they lie in -
+        # and the pack has that folder too, with other models of the same names; they look for
+        # materials under folders that are not there, while the pack has materials of those
+        # names in its own; and files lie right in the top of the tree.
+        ('materials3', {
+            'models/tnb/citizens/coat.vmt': material('models/tnb/citizens/coat'),
+            'models/tnb/citizens/coat.vtf': texture('coat'),
+            'models/tnb/cca/c13/visor.vmt': material('models/tnb/cca/c13/visor'),
+            'models/tnb/cca/c13/visor.vtf': texture('visor'),
+            'at_the_top.vtf': texture('at the top'),
+        }),
+        ('models3', {
+            'tnb/halflife/torso.mdl': model(['models/eternity/citizens', 'models/tnb/citizens'], ['coat'], 'tnb/halflife2/torso.mdl'),
+            'tnb/halflife/torso.vvd': b'vvd of the torso in halflife',
+            'tnb/halflife/legs.mdl': model(['models/tnb/citizens'], ['coat', 'gone'], 'tnb/halflife2/legs.mdl'),
+            'tnb/halflife/legs.vvd': b'vvd of the legs in halflife',
+            'tnb/halflife2/torso.mdl': model(['models/tnb/citizens', 'models/tnb/cca/c13'], ['coat', 'visor'], 'tnb/halflife2/torso.mdl'),
+            'tnb/halflife2/torso.vvd': b'vvd of the torso in halflife2',
+            'tnb/newcitizen/halflife2/torso.mdl': model(['models/breen'], ['breen_sheet'], 'tnb/halflife2/torso.mdl'),
+            'tnb/items/shared/bag.mdl': model(['models/ninja/bags', 'models/ninja/bags/shared'], ['visor'],
+                                              'tnb/items/shared/backpacks/bag.mdl'),
+            'tnb/items/shared/bag.vvd': b'vvd of the bag',
+            'tnb/wn_torso.mdl': model(['models/wn/citizens/torso'], ['coat'], 'wn/torso.mdl'),
+            'alyx_alt.mdl': model(['models/tnb/citizens'], ['coat'], 'alyx_alt.mdl'),
+            'alyx_alt.vvd': b'vvd of alyx',
+            'alyx_alt.phy': b'phy of alyx',
+        }),
     ])
 
 
@@ -2679,7 +2718,8 @@ def thrown(addon, how, outside=None):
         for rel, data in files.items():
             data = data if isinstance(data, bytes) else data.encode('utf-8')
             write(os.path.join(outside, root, rel) if where is None else os.path.join(addon, where(root), rel), data)
-            if '/' in rel:
+            if '/' in rel or P.kind_of(rel):
+                # (a material or a model right in a numbered folder that holds a tree: at the top of that tree)
                 want[top + '/' + rel.lower()] = data
             elif where is not None:
                 # a note right in a numbered folder: it has no place, and does not keep the folder there
@@ -2770,6 +2810,32 @@ def test_thrown_in_folders(tmp):
                        ('materials/materials3/models/a/x.vmt', 'materials/models/a/x.vmt')):
         check(L.merged_destination(path, real) == want,
               'a folder the game is known to have is what its path says: %r -> %r' % (path, L.merged_destination(path, real)))
+    # a file right in a numbered folder: a file of the top of the tree that folder holds - when it holds one
+    paths = ['materials/materials7/models/a.vmt', 'materials/materials7/top.vtf', 'materials/Models3/tnb/x.mdl',
+             'materials/models3/top.mdl', 'materials/materials5/heap.vmt', 'materials/materials0000/materials 1/x.vmt',
+             'materials/materials0000/also heap.vmt', 'models/models (2)/Sub/y.mdl']
+    trees = L.tree_roots(paths)
+    check(trees == {'materials/materials7', 'materials/models3', 'models/models (2)'},
+          'tree_roots(): the numbered folders with a folder of their own that is not numbered: %s' % sorted(trees))
+    for path, want in (('materials/materials7/top.vtf', 'materials/top.vtf'),
+                       ('materials/models3/top.mdl', 'models/top.mdl'),
+                       ('models/models (2)/top.vmt', 'materials/models/top.vmt'),
+                       ('materials/materials7/models/a.vmt', 'materials/models/a.vmt'),
+                       # (a numbered folder with nothing but files, and one that holds only numbered folders: heaps)
+                       ('materials/materials5/heap.vmt', None),
+                       ('materials/materials0000/also heap.vmt', None),
+                       ('materials/materials0000/materials 1/x.vmt', None)):
+        got = L.merged_destination(path, trees=trees)
+        check(got == (want or path), 'merged_destination(%r, trees) is %r, not %r' % (path, got, want or path))
+    check(L.merged_destination('materials/models3/top.mdl', mirror=True) == 'models/models3/top.mdl'
+          and L.merged_destination('materials/models3/top.mdl') is None,
+          '... and without the trees a file right in a numbered folder is read as before')
+    check([L.numbered_folder(path) for path in ('materials/My Pack/Materials3/models/x.vmt', 'materials/materials/x.vmt',
+                                                'models/pack/models/x.mdl', 'materials/models/x.vmt', 'models/x.mdl')]
+          == ['materials/my pack/materials3', 'materials/materials', 'models/pack/models', None, None],
+          'numbered_folder(): the outermost copy of materials / models a file lies in')
+    check(L.numbered_folder('materials/models/weapons/materials2/sub/x.vmt', real) is None, '... but not a folder the game is known to have')
+
     # (every path of the Lua archives of the repository: read as before)
     odd = [name for name in sorted(named_by_the_lua() | list_content.stock_names())
            if any(L.numbered_root(part) for part in name.split('/')[:-1])]
@@ -2778,11 +2844,11 @@ def test_thrown_in_folders(tmp):
     # ---- the placing: names first, the reading of the folders when nothing else is known
     def items_of(root, files, order=1, source='zcity_csgo_gloves'):
         out = []
+        trees = L.tree_roots(inner for inner in files if P.kind_of(inner))
         for inner, data in sorted(files.items()):
             full = os.path.join(root, inner)
             write(full, data)
-            out.append(P.Item(source, inner, full, L.dropin_destination(inner), order,
-                              L.merged_destination(inner), L.merged_destination(inner, mirror=True)))
+            out.append(an_item(source, inner, full, order, trees))
         return out
 
     def placing(label, files, named=(), order=None, spare=()):
@@ -2810,11 +2876,91 @@ def test_thrown_in_folders(tmp):
           and went.get('materials/materials1/effects/pack/loose.vtf') == ['materials/effects/pack/loose.vtf'],
           'a numbered folder: a file nothing names goes where it lies below that folder: %s'
           % ([went.get('materials/materials1/vgui/pack/icon.vmt'), went.get('materials/materials1/effects/pack/loose.vtf')],))
-    check(went.get('materials/materials1/mystery.vtf') == ['materials/materials1/mystery.vtf']
-          and [item.inner for item in report.as_packed] == ['materials/materials1/mystery.vtf'],
-          'a file right in a numbered folder, of which nothing is known, stays and is called unknown: %s'
+    check(went.get('materials/materials1/mystery.vtf') == ['materials/mystery.vtf'] and not report.as_packed,
+          'a file right in a numbered folder that holds a tree is a file of the top of that tree: %s'
           % [item.inner for item in report.as_packed])
     check(not report.notes and not report.left_out, 'nothing to remark: %s %s' % (report.notes, report.left_out))
+
+    # What a numbered folder holds is a tree: a file in it lies at its path in the game, whatever it
+    # says itself. A pack of models copied from another pack: compiled as tnb/halflife2/..., they
+    # lie in tnb/halflife - and the pack has a tnb/halflife2 as well, with other models of these
+    # names. Each stays in the folder it lies in; nothing is told apart by what it says, nothing
+    # is put aside. (2.6.0 read what the models say first, and threw the two folders together.)
+    says2 = model(['models/tnb/citizens'], ['coat'], 'tnb/halflife2/torso.mdl')
+    report, went, left = placing('a pack that says otherwise', {
+        'materials/models3/tnb/halflife/torso.mdl': says2,
+        'materials/models3/tnb/halflife/torso.vvd': b'vvd, halflife',
+        'materials/models3/tnb/halflife/legs.mdl': model(['models/tnb/citizens'], ['coat'], 'tnb/halflife2/legs.mdl'),
+        'materials/models3/tnb/halflife/legs.vvd': b'vvd of the legs',
+        'materials/models3/tnb/halflife2/torso.mdl': model(['models/tnb/citizens'], ['coat', 'more'], 'tnb/halflife2/torso.mdl'),
+        'materials/models3/tnb/halflife2/torso.vvd': b'vvd, halflife2',
+        'materials/models3/tnb/items/shared/bag.mdl': model(['models/ninja/bags'], ['coat'], 'tnb/items/shared/backpacks/bag.mdl'),
+        'materials/models3/top.mdl': model([], [], 'top.mdl'),
+        'materials/models3/top.phy': b'phy of top',
+        'materials/materials7/models/tnb/citizens/coat.vmt': material('models/tnb/citizens/coat'),
+        'materials/materials7/models/tnb/citizens/coat.vtf': texture('coat'),
+        'materials/materials7/top.vtf': texture('top'),
+    })
+    want = dict((inner, [('models/' if '/models3/' in inner else 'materials/') + inner.split('/', 2)[2]]) for inner in went)
+    check(went == want and len(went) == 12 and not left and not report.notes and not report.as_packed,
+          'a numbered folder holds a tree - a model stays in the folder it lies in, whatever folder it says it was compiled '
+          'for: %s %s %s' % (sorted((k, v) for k, v in went.items() if want.get(k) != v), left, report.notes))
+    check(sorted(report.moves.items()) == [(('zcity_csgo_gloves', 'materials/materials7', 'materials'), 1),
+                                           (('zcity_csgo_gloves', 'materials/materials7/models', 'materials/models'), 2),
+                                           (('zcity_csgo_gloves', 'materials/models3', 'models'), 2),
+                                           (('zcity_csgo_gloves', 'materials/models3/tnb', 'models/tnb'), 7)],
+          '... and the report tells from where to where: %s' % sorted(report.moves.items()))
+    check([(model_, name) for model_, name, _group in report.missing_materials]
+          == [('models/tnb/halflife2/torso.mdl', 'more'), ('models/tnb/items/shared/bag.mdl', 'coat')],
+          '... a material that a model looks for in a folder of its own is not taken out of the tree for it: %s'
+          % report.missing_materials)
+    # A file of such a tree is a file that lies in the addon - no less, no more. In a folder
+    # somebody names files in it is at home: a model that looks for a material of that name in
+    # another folder does not get it. (2.6.0 took such files out of their folders: they were
+    # files of a numbered folder to it, found by their names.) In a folder nobody names anything
+    # in, a name may take it - as it takes any file that lies in such a folder of the addon -
+    # and the folder goes along.
+    trees = {
+        'materials/materials7/models/known/a.vmt': material('models/known/a'),
+        'materials/materials7/models/known/a.vtf': texture('a'),
+        'materials/models3/known/b.mdl': model(['models/known'], ['a'], 'known/b.mdl'),
+        'materials/models3/tnb/cca/vest.mdl': model(['models/ninja/combino'], ['c13_a'], 'tnb/cca/vest.mdl'),
+    }
+    c13 = 'materials/materials7/models/tnb/cca/c13/'
+    report, went, left = placing('a tree, a folder at home', dict(trees, **{
+        c13 + 'c13_a.vmt': material('models/tnb/cca/c13/c13_a'),
+        c13 + 'c13_a.vtf': texture('c13'),
+    }))
+    check(went.get(c13 + 'c13_a.vmt') == ['materials/models/tnb/cca/c13/c13_a.vmt']
+          and went.get(c13 + 'c13_a.vtf') == ['materials/models/tnb/cca/c13/c13_a.vtf']
+          and [(model_, name) for model_, name, _group in report.missing_materials] == [('models/tnb/cca/vest.mdl', 'c13_a')],
+          'a file of a tree, in a folder somebody names files in, is not taken for a model that looks for such a name '
+          'elsewhere: %s %s' % (went, report.missing_materials))
+    report, went, left = placing('a tree, a folder nobody names', dict(trees, **{
+        c13 + 'c13_a.vmt': material('models/elsewhere/tex'),
+        c13 + 'c13_z.vmt': material('models/elsewhere/tex2'),
+    }))
+    check(went.get(c13 + 'c13_a.vmt') == ['materials/models/ninja/combino/c13_a.vmt']
+          and went.get(c13 + 'c13_z.vmt') == ['materials/models/ninja/combino/c13_z.vmt'] and not report.missing_materials,
+          'a file of a tree, in a folder nobody names anything in, is found by its name like any file of the addon: %s' % went)
+
+    # A heap under a numbered name is no tree: files of several folders of the game, each folder
+    # of the heap under the same names ("model 14/f", "model 15/f"). Nothing asks for any of them
+    # where a tree would have it, the Lua names them elsewhere: by the names, as ever.
+    report, went, left = placing('heaps under numbers', {
+        'materials/model 14/f/female_01.mdl': model([], [], 'female_01.mdl'),
+        'materials/model 14/f/female_01.vvd': b'vvd 14',
+        'materials/model 15/f/female_01.mdl': model(['x'], [], 'female_01.mdl'),
+        'materials/model 15/f/female_01.vvd': b'vvd 15',
+        'materials/model 15/f/female_02.mdl': model([], [], 'female_02.mdl'),
+    }, ['models/zcity/f/female_02.mdl', 'models/zcity/f/female_01.mdl', 'models/other/f/female_01.mdl'])
+    check(went == {'materials/model 15/f/female_02.mdl': ['models/zcity/f/female_02.mdl'],
+                   'materials/model 15/f/female_01.mdl': ['models/zcity/f/female_01.mdl'],
+                   'materials/model 15/f/female_01.vvd': ['models/zcity/f/female_01.vvd'],
+                   'materials/model 14/f/female_01.mdl': ['models/other/f/female_01.mdl'],
+                   'materials/model 14/f/female_01.vvd': ['models/other/f/female_01.vvd']} and not left and not report.notes,
+          'numbered folders that are heaps: by the names - two files for two names are not two versions of one file: %s %s %s'
+          % (went, left, report.notes))
 
     # two numbered folders with a file for one place: the later one has it, numbers read as numbers
     report, went, left = placing('twice', {
@@ -3004,6 +3150,24 @@ def test_thrown_in_folders(tmp):
         again.pop(sort_content.REPORT, None)
         check(code == 0 and again == want and u'\u043f\u0435\u0440\u0435\u043c\u0435\u0449\u0435\u043d\u043e \u0432\u043d\u0443\u0442\u0440\u0438 \u0430\u0434\u0434\u043e\u043d\u0430: 0' in text and u'\u0441\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u043e \u0432 \u0430\u0434\u0434\u043e\u043d: 0' in text,
               'folders thrown in, %s: a second run changes nothing' % how)
+        if THROWN[how] is None:
+            continue
+        # The same folders thrown in once more, on top of what is sorted: every file that lies in
+        # place stays - the very file, not its copy out of a numbered folder - also in the folders
+        # nobody names anything in, and the copies are put aside.
+        stamps = dict((rel, os.stat(os.path.join(addon, rel)).st_ino) for rel in again)
+        _want, handed = thrown(addon, how, outside)
+        code, text = sort('--addon', addon, *handed)
+        third = tree(addon)
+        third.pop(sort_content.REPORT, None)
+        aside = sorted(rel for rel in third if rel not in again)
+        check(code == 0 and all(third.get(rel) == data for rel, data in again.items())
+              and all(os.stat(os.path.join(addon, rel)).st_ino == stamps[rel] for rel in again),
+              'folders thrown in once more, %s: what lies in place stays, the very files' % how)
+        check(aside and all(rel.startswith(sort_content.ASIDE + '/') and rel[len(sort_content.ASIDE) + 1:].lower() not in again
+                            for rel in aside)
+              and u'\u043f\u0435\u0440\u0435\u043c\u0435\u0449\u0435\u043d\u043e \u0432\u043d\u0443\u0442\u0440\u0438 \u0430\u0434\u0434\u043e\u043d\u0430: 0' in text,
+              'folders thrown in once more, %s: the copies are put aside, nothing else moves: %s %r' % (how, aside[:4], text[-700:]))
 
     # ---- a trial run tells it and moves nothing
     addon = os.path.join(tmp, 'thrown trial', 'zcity_csgo_gloves')
@@ -3080,6 +3244,206 @@ def test_thrown_in_folders(tmp):
     check(code == 0 and again == got, 'and a second run changes nothing')
 
 
+# ---- random trees under numbered names ----------------------------------------------------------
+TREE_FOLDERS = ['tnb/halflife', 'tnb/halflife2', 'tnb/items/shared', 'tnb/items/shared/backpacks', 'tnb/citizens',
+                'tnb/cca', 'tnb/cca/c13', 'humans/slav', 'humans/male/group01', 'player/custom', 'zcity/m', 'props']
+TREE_NAMES = ['torso', 'legs', 'coat', 'body', 'hands', 'male_01', 'male_02', 'sheet_01', 'sheet_02', 'visor', 'bag']
+
+
+def random_trees(rng, wild=0.0):
+    """Folders the way an owner collects them, made up: the materials and models folders of several
+    addons, each under a name of its own and each a tree as its addon has it. The addons share
+    folders and file names, as packs made of one another do: the same path holds another file in
+    two of them, or the very same one.
+    wild: the share of materials that keep their texture under another folder than their own, of
+    models that say another folder than the one they lie in, and of names the Lua has elsewhere -
+    0 for trees in which everything is where it says.
+    Returns ({folder: [what it holds, file by file and model by model: {path below it: content}]},
+             the names for the Lua)."""
+    roots, named = collections.OrderedDict(), set()
+    folders = rng.sample(TREE_FOLDERS, rng.between(3, 7))
+    numbers = rng.sample(range(1, 13), 8)
+    same = set(rng.sample(TREE_NAMES, 3))       # files that are the same in every folder that has them
+
+    def elsewhere(name):
+        return rng.choice(TREE_FOLDERS) + '/' + name
+
+    for i in range(rng.between(1, 4)):
+        root = 'materials' if i == 0 and rng.random() < 0.3 else 'materials%d' % numbers[i]
+        units, there = roots.setdefault(root, []), set()
+        for _ in range(rng.between(2, 20)):
+            name = rng.choice(TREE_NAMES)
+            base = 'models/%s/%s' % (rng.choice(folders), name)
+            if base in there:
+                continue
+            there.add(base)
+            shared = name in same
+            tex = 'models/' + elsewhere(name) if rng.random() < wild else base
+            more = {} if shared else {'surfaceprop': root}
+            units.append({base + '.vmt': material(base if shared else tex, **more).encode('utf-8')})
+            if rng.random() < 0.9:
+                units.append({base + '.vtf': texture(base + ('' if shared else ' of ' + root))})
+            if rng.random() < 0.25:
+                named.add('materials/%s.vmt' % ('models/' + elsewhere(name) if rng.random() < wild else base))
+        if rng.random() < 0.3:      # right in the folder: the top of the tree
+            units.append({'top_%s.vtf' % rng.choice(TREE_NAMES): texture('at the top of ' + root)})
+    for i in range(rng.between(1, 3)):
+        root = 'models%d' % numbers[4 + i]
+        units, there = roots.setdefault(root, []), set()
+        for _ in range(rng.between(1, 12)):
+            name = rng.choice(TREE_NAMES)
+            stem = rng.choice(TREE_FOLDERS) + '/' + name
+            if stem in there:
+                continue
+            there.add(stem)
+            shared = name in same
+            if shared:
+                unit = {stem + '.mdl': model(['models/' + stem.rsplit('/', 1)[0]], [name], stem + '.mdl'),
+                        stem + '.vvd': b'vvd of ' + stem.encode(), stem + '.dx90.vtx': b'vtx of ' + stem.encode()}
+            else:
+                says = (elsewhere(name) if rng.random() < 0.5 else name) if rng.random() < 2 * wild else stem
+                looks = ['models/' + folder for folder in rng.sample(folders, rng.between(1, 2))]
+                mark = (' of ' + root).encode()
+                unit = {stem + '.mdl': model(looks, rng.sample(TREE_NAMES, rng.between(1, 3)), says + '.mdl') + mark}
+                for ext in rng.sample(['.vvd', '.dx90.vtx', '.sw.vtx', '.phy'], rng.between(1, 4)):
+                    unit[stem + ext] = ext.encode() + b' of ' + stem.encode() + mark
+            units.append(unit)
+            if rng.random() < 0.2:
+                named.add('models/%s.mdl' % (elsewhere(name) if rng.random() < wild else stem))
+        if rng.random() < 0.3:
+            name = 'top_%s' % rng.choice(TREE_NAMES)
+            units.append({name + '.mdl': model([], [], name + '.mdl') + (' of ' + root).encode(),
+                          name + '.vvd': b'vvd at the top of ' + root.encode()})
+    return roots, named
+
+
+def random_tree_run(seed, tmp, wild=0.0):
+    """one such collection, thrown at an addon and sorted, twice: what became of the files"""
+    rng = Dice(seed)
+    roots, named = random_trees(rng, wild)
+    how = rng.choice([key for key in THROWN if THROWN[key] is not None])
+    where = THROWN[how]
+    addon = os.path.join(tmp, 'zcity_csgo_gloves')
+    lua = '\n'.join('hg.Appearance.Clothes[1]["n%d"] = "%s"' % (i, path[len('materials/'):-len('.vmt')])
+                    if path.endswith('.vmt') else 'AppAddModel("m%d", "%s", false, {})' % (i, path)
+                    for i, path in enumerate(sorted(named)))
+    write(os.path.join(addon, 'lua/autorun/names.lua'), lua)
+    write(os.path.join(addon, 'addon.json'), b'{}')
+    listed = os.path.join(tmp, 'names.txt')
+    list_content.write_run_list(listed, sorted(list_content.names_in(lua)), {'autorun/names.lua': lua})
+
+    # A plain merge: each file at the path it has in its folder; of two folders the one that
+    # comes later by its name has the place (a folder simply called materials first - unless it
+    # was thrown beside the materials folder of the addon: then it is that folder, and what lies
+    # in place stays). A model is one thing: it brings its files, and takes them along.
+    def key_of(path):
+        return path.split('.', 1)[0] if P.kind_of(path) in ('mdl', 'part') else path
+
+    in_place = how == 'beside materials and models'
+    merged, stats = collections.OrderedDict(), collections.Counter()
+    for root in sorted(roots, key=lambda name: (in_place and name == 'materials', P.by_folders(name))):
+        top = 'materials' if root.startswith('materials') else 'models'
+        for unit in roots[root]:
+            for rel, data in unit.items():
+                write(os.path.join(addon, where(root), rel), data)
+            unit = dict((top + '/' + rel, data) for rel, data in unit.items())
+            key = key_of(sorted(unit)[0])
+            earlier = merged.get(key)
+            if earlier is not None:
+                stats['a place two folders have a file for'] += 1
+                stats['... the same file'] += earlier == unit
+            merged[key] = unit
+            stats['files'] += len(unit)
+    # ... and some of it lies in place already - as an earlier run left it, or another file
+    for key in rng.sample(sorted(merged), min(len(merged), rng.below(5))):
+        unit = merged[key]
+        if rng.random() < 0.5:
+            unit = dict((path, b'another file that lay at ' + path.encode()) for path in unit)
+            first = sorted(unit)[0]
+            if first.endswith('.mdl'):
+                unit = {first: model([], ['in_place'], first[len('models/'):]),
+                        first[:-len('.mdl')] + '.vvd': b'the vvd of a model that lay there'}
+            elif first.endswith('.vmt'):
+                unit = {first: material(first[len('materials/'):-len('.vmt')], surfaceprop='in place').encode('utf-8')}
+        for path, data in unit.items():
+            write(os.path.join(addon, path), data)
+        merged[key] = unit
+        stats['in place'] += len(unit)
+    want = {}
+    for unit in merged.values():
+        want.update(unit)
+
+    def content(found):
+        return dict((path, data) for path, data in found.items() if path.split('/')[0] in ('materials', 'models'))
+
+    before = tree(addon)
+    code, text = sort('--addon', addon, '--names-list', listed)
+    got = tree(addon)
+    got.pop(sort_content.REPORT, None)
+    stats['runs'] += 1
+    stats['failed'] += code != 0
+    stats['lost'] += len(set(before.values()) - set(got.values()))
+    have = content(got)
+    wrong = sorted(path for path in set(want) | set(have) if want.get(path) != have.get(path))
+    stats['not as merged'] += len(wrong)
+    stats['in numbered folders'] += sum(1 for path in have if any(L.numbered_root(part) for part in path.split('/')[:-1]))
+    code, text = sort('--addon', addon, '--names-list', listed)
+    again = tree(addon)
+    again.pop(sort_content.REPORT, None)
+    stats['failed'] += code != 0
+    stats['changed by a second run'] += sum(1 for path in set(got) | set(again) if got.get(path) != again.get(path))
+    return how, stats, ['%s, seed %d: %s' % (how, seed, path) for path in wrong]
+
+
+def test_random_trees(tmp, runs=60):
+    """Whole folders under numbered names, each a tree in which everything is where it says: what
+    the sorting leaves is a plain merge of them, file for file - whatever names they share, and
+    however they were thrown in. That must hold. (What an owner has: the folders of the addons he
+    took the content from. 2.6.0 went by what the files say first, and took such trees apart.)
+    With materials that keep their textures elsewhere and models that say another folder the
+    names are followed where they lead, so it is only kept small - but no file is lost, and
+    none stays in a numbered folder."""
+    total, ways, wrong = collections.Counter(), collections.Counter(), []
+    for seed in range(runs):
+        folder = os.path.join(tmp, 'trees%d' % seed)
+        how, stats, off = random_tree_run(seed, folder)
+        shutil.rmtree(folder, ignore_errors=True)
+        total.update(stats)
+        ways[how] += 1
+        wrong += off
+    print('  random trees: %d runs, %d files, %d places that two folders have a file for (%d times the same file), '
+          '%d files in place: %d not as a plain merge has them, %d lost, %d changed by a second run'
+          % (total['runs'], total['files'], total['a place two folders have a file for'], total['... the same file'],
+             total['in place'], total['not as merged'], total['lost'], total['changed by a second run']))
+    check(not total['failed'], 'random trees: the tool ends well (%d runs did not)' % total['failed'])
+    check(len(ways) == 5 and min(ways.values()) >= runs // 12, 'random trees: thrown in every way (%r)' % dict(ways))
+    check(total['a place two folders have a file for'] >= 3 * runs and total['... the same file'] >= runs // 2
+          and total['in place'] >= runs, 'random trees: the folders share paths (%r)' % dict(total))
+    check(not total['lost'], 'random trees: %d files lost' % total['lost'])
+    check(not total['not as merged'], 'random trees: %d of %d files are not where a plain merge of the folders has them: %r'
+          % (total['not as merged'], total['files'], wrong[:6]))
+    check(not total['in numbered folders'], 'random trees: %d files stay in numbered folders' % total['in numbered folders'])
+    check(not total['changed by a second run'], 'random trees: a second run changes %d files' % total['changed by a second run'])
+
+    total = collections.Counter()
+    for seed in range(runs):
+        folder = os.path.join(tmp, 'wild%d' % seed)
+        how, stats, _off = random_tree_run(1000 + seed, folder, wild=0.05)
+        shutil.rmtree(folder, ignore_errors=True)
+        total.update(stats)
+    print('  random trees, one file in twenty saying another folder: %d files, %d not as a plain merge has them, '
+          '%d lost, %d in numbered folders, %d changed by a second run'
+          % (total['files'], total['not as merged'], total['lost'], total['in numbered folders'], total['changed by a second run']))
+    check(not total['failed'] and not total['lost'], 'random trees that say other folders: %d runs failed, %d files lost'
+          % (total['failed'], total['lost']))
+    check(not total['in numbered folders'], 'random trees that say other folders: %d files stay in numbered folders'
+          % total['in numbered folders'])
+    check(total['not as merged'] <= 0.05 * total['files'],
+          'random trees that say other folders: %d of %d files are not where a plain merge has them' % (total['not as merged'], total['files']))
+    check(total['changed by a second run'] <= 0.002 * total['files'],
+          'random trees that say other folders: a second run changes %d of %d files' % (total['changed by a second run'], total['files']))
+
+
 def main():
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, 'reconfigure'):
@@ -3107,6 +3471,7 @@ def main():
         test_versions_of_a_pack(tmp)
         test_numbered_folders_of_the_owner(tmp)
         test_thrown_in_folders(tmp)
+        test_random_trees(tmp)
         test_random_packings(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

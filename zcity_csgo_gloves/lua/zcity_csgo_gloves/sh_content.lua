@@ -526,8 +526,9 @@ end
 -- { { title = , instead = , files = how many files only it names, there = ... are installed,
 --     own = how many files only the version in the addon names, ownThere = ... are installed,
 --     other = true when the content here is that of the pack that is not in the addon: files of
---             it are here and none of the other kind - or one or two of them while most of its
---             own are here: a stray file or two do not make a version }, ... }
+--             it are here and none of the other kind - or few of them (one or two, or not more
+--             than one in four) while most of its own are here: the content of one version
+--             carries some files of the other, and that does not make it the other one's }, ... }
 -- sorted by title; empty without such packs.
 function ZCG.OtherVersions()
 	local found = {}
@@ -548,7 +549,8 @@ function ZCG.OtherVersions()
 		item.files, item.there = count(ZCG.BoundOther, title)
 		item.own, item.ownThere = count(ZCG.BoundOnly, title)
 		item.other = item.there > 0 and item.own > 0
-			and (item.ownThere == 0 or (item.ownThere <= 2 and item.there * 2 > item.files))
+			and (item.ownThere == 0
+				or ((item.ownThere <= 2 or item.ownThere * 4 <= item.own) and item.there * 2 > item.files))
 		found[#found + 1] = item
 	end
 	table.sort(found, function(a, b) return a.title < b.title end)
@@ -569,7 +571,8 @@ local function tellVersions(out, trouble)
 			out("  " .. item.ownThere .. " of the " .. item.own .. " files that only \"" .. item.instead .. "\" names are here")
 			if item.other then
 				out("  IT LOOKS LIKE THE CONTENT HERE IS THAT OF \"" .. item.title .. "\": this addon looks for the files of \""
-					.. item.instead .. "\" and finds " .. (item.ownThere == 0 and "none" or "next to none")
+					.. item.instead .. "\" and finds "
+					.. (item.ownThere == 0 and "none" or item.ownThere <= 2 and "next to none" or ("only " .. item.ownThere))
 					.. " of them. Take the build of this addon that has \"" .. item.title
 					.. "\" (the other archive of the release) and copy its folder over this one")
 			end

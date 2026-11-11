@@ -45,6 +45,21 @@ which copy goes where does not matter. A material that has a place and is made o
 texture a missing material is called after ("zcity_drill/sheet_16" for
 materials/zcity_drill/sheet_16.vmt) is used for that one as well.
 
+One kind of folder is trusted: a numbered copy of the materials or models folder ("materials3",
+"models 2") that holds a tree. That is how an owner of the addon keeps the folders of the
+addons he took the content from, and throws them into materials/: each file in it lies at its
+path in the game already - materials3/models/tnb/x.vmt is materials/models/tnb/x.vmt, a file
+right in materials3 is a file of the top of materials - where the addon it comes from has
+it and everything that works with that addon looks for it. Such a file is read as lying there
+(Item.rooted), before any name is looked up, and is a file that lies in the addon from then
+on. What it says itself does not move it: a pack of models is copied from pack to pack
+without being compiled again, so the models of tnb/halflife say tnb/halflife2 - and the pack
+has a tnb/halflife2 of its own. Of two numbered folders with a file for one place the one
+that comes later by its name has it; a file that lies there already keeps it.
+Only a heap under a numbered name ("model 14/f/female_01.mdl", the next pack in "model 15/f")
+is no tree, and shows: nothing asks for any of its files where a tree would have it, and most
+of them are asked for elsewhere, where nothing lies. Its files go by their names.
+
 A file that lies in a folder somebody names files in is at home there: it is moved for a
 shifted path only, never for a name it merely shares with a file that is missing. A folder
 nobody knows is no home, wherever it lies: that other files below materials/ lie right says
@@ -55,9 +70,8 @@ A file nobody names follows what is known about its folder: where the files next
 (a folder that kept its name on the way - materials/gate -> materials/models/gate - took
 everything below it along), or what a material and a texture it names, lying together, say
 about the folder they lie in. Without any of that, the folders above it are read the way an
-owner of the addon means them (zcg_layout.merged_destination): a numbered copy of the
-materials folder - "materials3", thrown into materials/ with a tree of its own inside - is the
-materials folder, and a model that lies below materials/ belongs below models/. Where that
+owner of the addon means them (zcg_layout.merged_destination) - a file of a numbered heap as
+if that were a tree, a model that lies below materials/ as a file of models/. Where that
 gives nothing either, the file stays where it was packed; packed outside of any materials /
 models folder it is left out.
 
@@ -270,14 +284,18 @@ def read_model_name(path):
 class Item(object):
     """a supplied file"""
 
-    def __init__(self, source, inner, path, default, order, merged=None, mirror=None):
+    def __init__(self, source, inner, path, default, order, merged=None, mirror=None, root=None):
         self.source = source      # the archive or folder it came in
         self.inner = inner        # its path there, as packed
         self.path = path          # the file on the disk
         self.default = default    # where its folders alone put it (zcg_layout.dropin_destination) or None
+        self.lies = default       # ... as it was packed (place() reads a numbered folder that holds a tree as that tree)
         # where it lies when the numbered and repeated materials / models folders above it are
-        # read as that folder (zcg_layout.merged_destination): used when nothing else is known
+        # read as that folder (zcg_layout.merged_destination)
         self.merged = merged if merged != default else None
+        # the numbered folder it lies in (zcg_layout.numbered_folder): "materials/materials3"
+        self.root = root if self.merged is not None else None
+        self.rooted = False       # that folder holds a tree, and the file lies in it at its path in the game
         # a file of a model that lies below materials/ with no models folder above it: the same
         # path below models/ (merged_destination, mirror=True). The last thing to go by.
         self.mirror = mirror if mirror not in (default, self.merged) else None
@@ -285,6 +303,9 @@ class Item(object):
         self.parts = [p for p in clean(inner).split('/') if p]
         self.name = self.parts[-1]
         self.folder = (source, '/'.join(self.parts[:-1]))
+        # The folder it stands for when its folder is asked where it went: the one it was packed
+        # in - or, for a file of a tree in a numbered folder, the folder of the game it lies in.
+        self.seat = self.folder
         self.kind = kind_of(self.name)
         self.dests = []           # where it goes
         self.how = []             # for each of them: 'place' as packed, 'name' found by name, 'folder' went with its folder
@@ -395,6 +416,14 @@ def natural(text):
     return [int(part) if part.isdigit() else part for part in re.split(r'(\d+)', text)]
 
 
+def by_folders(path):
+    """a key that sorts paths the way a file manager lists folders: name by name, each read like
+    natural() - "materials/x" before "materials1/x", "materials2/x" before "materials10/x".
+    (natural() of the whole path would put "materials/x" after them all: "/" comes after the end
+    of a name.)"""
+    return [natural(part) for part in path.replace('\\', '/').lower().split('/')]
+
+
 def relation(path, wanted):
     """How the path of a supplied file stands to a wanted path with the same file name (both as
     lists of parts). Returns (kind, how many of the last parts are the same), kind being
@@ -442,6 +471,86 @@ def place(items, named, own, spare=()):
         # a model below materials/ and the like: packed where the game never looks, so no place
         if item.default is not None and not is_place(item.default, item.kind):
             item.default = None
+        item.lies = item.default
+
+    # ---- what the files say -----------------------------------------------------------------
+    unreadable = []
+    materials = [item for item in items if item.kind == 'vmt']
+    for item in materials:
+        try:
+            item.material = read_material(item.path)
+        except (OSError, UnicodeError) as err:
+            item.material = Material()
+            unreadable.append(Note('unreadable', item, err))
+    models = {}
+    for item in items:
+        if item.kind != 'mdl':
+            continue
+        try:
+            item.model_name = read_model_name(item.path)
+            models[id(item)] = read_model(item.path)
+        except (OSError, ValueError) as err:
+            models[id(item)] = err
+
+    # ---- trees ------------------------------------------------------------------------------
+    # A numbered folder - "materials3", "models 2" - is how an owner keeps the materials and
+    # models folders of the addons he took the content from: two folders of one name do not fit
+    # into one. Such a folder holds a tree, and a file in it lies at its path in the game
+    # already: materials3/models/tnb/x.vmt is materials/models/tnb/x.vmt. That is where the
+    # addon it comes from has it, and where everything that works with that addon looks for it -
+    # scripts and models that are not at hand as well. So the file is read as lying there, and
+    # from here on it is a file that lies in the materials folder like any other: it stays
+    # unless a name asks for it at that very path shifted, or its folder is one nobody names
+    # anything in and a name finds it there. What the file says itself is not asked: a model
+    # that lies in tnb/halflife and was compiled as tnb/halflife2/... stays in tnb/halflife -
+    # models are copied from pack to pack without being compiled again, and the pack may well
+    # have a tnb/halflife2 of its own.
+    #
+    # A numbered folder may be a heap instead: files of several folders of the game, thrown
+    # together ("model 14/f/female_01.mdl", the next one in "model 15/f"). Read as trees, two
+    # heaps would be two versions of one file. A heap shows: nothing asks for any of its files
+    # where the tree would have it, and most of them are asked for somewhere else, at a path
+    # that is empty. Its files go by their names, as ever.
+    roots = collections.defaultdict(list)
+    for item in items:
+        if item.root is not None and item.merged is not None and is_place(item.merged, item.kind):
+            roots[(item.source, item.root)].append(item)
+    if roots:
+        asked, groups = set(named) | spare, []
+        for item in materials:
+            asked.update('materials/' + name + '.vtf' for _key, name, _sure in item.material.textures)
+            asked.update(item.material.includes)
+        for item in items:
+            found = models.get(id(item))
+            if isinstance(found, tuple):
+                folders, names = found
+                for name in names:
+                    group = ['materials/' + '/'.join(p for p in (folder, name) if p) + '.vmt' for folder in folders or ['']]
+                    groups.append(group)
+                    asked.update(group)
+        lying = set()
+        for item in items:
+            if item.root is not None and (item.source, item.root) in roots:
+                lying.add(item.merged)
+            elif item.default is not None:
+                lying.add(item.default)
+        empty = set(posixpath.basename(path) for path in asked if path not in lying)
+        for group in groups:    # (a model looks into each of its folders: one file will do)
+            if any(path in lying for path in group):
+                empty.discard(posixpath.basename(group[0]))
+        for members in roots.values():
+            if not any(item.merged in asked for item in members):
+                telling = [item for item in members if item.kind != 'part']
+                elsewhere = sum(1 for item in telling if item.name in empty)
+                if elsewhere * 2 > len(telling):
+                    continue    # a heap
+            for item in members:
+                item.default, item.merged, item.rooted = item.merged, None, True
+                item.seat = (item.source, posixpath.dirname(item.default))
+                # (its neighbours are the files of that folder of the game - those that lie there
+                # and those of the other numbered folders: what is true of files lying together
+                # is true of them at once, not only when the tool is run again)
+                in_folder[item.seat].add(item.name)
 
     def free(path):
         return path not in taken and not own(path)
@@ -472,26 +581,56 @@ def place(items, named, own, spare=()):
 
     # where the folders alone put a file; of two files with one place the later source has it,
     # and the earlier one is out of the game: it is not looked at for any other name either
-    at = {}
+    def keeps_the_place(earlier, item):
+        """of two files of one source for one place (item comes later in the order of the items):
+        does the earlier one have it?"""
+        if earlier.rooted != item.rooted:
+            return item.rooted      # the file that lies there stays, whatever a numbered folder brings
+        if earlier.rooted:
+            # (of two numbered folders the one that comes later by its name, a number read as a
+            # number; a second materials folder inside the first comes before "materials1")
+            return by_folders(earlier.inner) > by_folders(item.inner)
+        return earlier.order == item.order and by_folders(earlier.inner) > by_folders(item.inner)
+
+    at, versions = {}, []
     for item in items:
         if item.default is None:
             continue
         earlier = at.get(item.default)
         if earlier is not None:
-            if earlier.source == item.source and earlier.order == item.order \
-                    and natural(earlier.inner) > natural(item.inner):
-                earlier, item = item, earlier      # (the folder that comes later by its name)
+            if earlier.source == item.source and keeps_the_place(earlier, item):
+                earlier, item = item, earlier
             earlier.replaced = True
-            earlier.copy = earlier.same_as(item)
-            if earlier.copy:
-                pass
-            elif earlier.source == item.source:
-                report.notes.append(Note('version here', item.default, earlier.inner, item.inner))
-            else:
-                report.notes.append(Note('version', item.default, earlier.source, item.source))
         at[item.default] = item
+    # (each of them is measured against the file that has the place in the end, not the next one)
+    for item in items:
+        if item.replaced:
+            winner = at[item.default]
+            item.copy = item.same_as(winner)
+            if item.copy:
+                pass
+            elif item.source == winner.source:
+                versions.append((item, Note('version here', item.default, item.inner, winner.inner)))
+            else:
+                versions.append((item, Note('version', item.default, item.source, winner.source)))
     for name in list(by_name):
         by_name[name] = [item for item in by_name[name] if not item.replaced]
+    # A model of a tree moves whole. One that another model has the place of - another model, not
+    # a copy - takes its files along: a file the other one has no file of its own for (a .phy)
+    # is not put next to that one, and of the two models one remark tells, not one for every
+    # file of theirs. id -> where it would lie.
+    orphans = {}
+    beside_model = collections.defaultdict(list)
+    for item in items:
+        if item.kind == 'part' and item.rooted:
+            beside_model[item.folder].append(item)
+    for item in items:
+        if item.kind == 'mdl' and item.rooted and item.replaced and not item.copy:
+            stem = item.name[:-len('.mdl')] + '.'
+            for part in beside_model.get(item.folder, ()):
+                if part.name.startswith(stem):
+                    orphans[id(part)] = part.default
+    report.notes += [note for earlier, note in versions if id(earlier) not in orphans]
 
     def path_of(item):
         return item.default.split('/') if item.default else item.parts
@@ -524,7 +663,7 @@ def place(items, named, own, spare=()):
     silent = set()
 
     def vote(item, dest):
-        src, dst = item.parts[:-1], dest.split('/')[:-1]
+        src, dst = [p for p in item.seat[1].split('/') if p], dest.split('/')[:-1]
         # The folder of the file went to the folder of the place. A folder above that kept its
         # name went along: .../gate/sub -> materials/models/gate/sub says where .../gate went.
         same = common_suffix(src, dst)
@@ -558,7 +697,7 @@ def place(items, named, own, spare=()):
         below. That folder is the materials folder - which says where a file goes along to when
         nothing else is known, and nothing about a folder in it that nobody knows ("my stuff 3"):
         a file there is as free to be the one a name asks for as a file in any folder."""
-        source, folder = item.folder
+        source, folder = item.seat
         parts = folder.split('/') if folder else []
         root = ROOT_OF[item.kind]
         tables = ((votes, source), (hints, source), (votes, None), (loose_votes, source))
@@ -592,8 +731,6 @@ def place(items, named, own, spare=()):
 
     undecided = {}
     merging = set()     # files that go where the names of their folders put them (Item.merged)
-    # files of such a model that has no place because another model has it: id -> where it would lie
-    orphans = {}
 
     def merged_place(item):
         return item.merged is not None and is_place(item.merged, item.kind)
@@ -638,7 +775,7 @@ def place(items, named, own, spare=()):
                 if item.kind != kind or item.dests:
                     continue
                 how, same = relation(path_of(item), parts)
-                near = item.folder in target.near
+                near = item.folder in target.near or item.seat in target.near
                 says = bool(proof and proof(item, target))
                 claimed = home(item) if home else None
                 fit = (-same, -(near + says + (claimed == target.path)), -item.order, target.path, item.inner,
@@ -768,7 +905,8 @@ def place(items, named, own, spare=()):
                 if item.kind != kind or not item.dests or only_spare(item):
                     continue
                 how, same = relation(path_of(item), parts)
-                if (how == 'shift' and same >= 2) or (kind == 'vtf' and item.folder in target.near):
+                if (how == 'shift' and same >= 2) or \
+                        (kind == 'vtf' and (item.folder in target.near or item.seat in target.near)):
                     if best is None or (same, item.order) > best[:2]:
                         best = (same, item.order, item)
             if best is not None:
@@ -815,7 +953,7 @@ def place(items, named, own, spare=()):
         # two numbered folders with a file for one place the later one has it)
         todo = [pair for pair in todo if id(pair[0]) not in merging] + \
             sorted((pair for pair in todo if id(pair[0]) in merging),
-                   key=lambda pair: (pair[0].order, natural(pair[0].inner)), reverse=True)
+                   key=lambda pair: (pair[0].order, by_folders(pair[0].inner)), reverse=True)
         for item, dest in todo:
             if item.dests:
                 continue
@@ -830,24 +968,8 @@ def place(items, named, own, spare=()):
                 silent.add(id(item))
         count_votes(kind)
 
-    # ---- what the files say -----------------------------------------------------------------
-    materials = [item for item in items if item.kind == 'vmt']
-    for item in materials:
-        try:
-            item.material = read_material(item.path)
-        except (OSError, UnicodeError) as err:
-            item.material = Material()
-            report.notes.append(Note('unreadable', item, err))
-    models = {}
-    for item in items:
-        if item.kind != 'mdl':
-            continue
-        try:
-            item.model_name = read_model_name(item.path)
-            models[id(item)] = read_model(item.path)
-        except (OSError, ValueError) as err:
-            models[id(item)] = err
-
+    # ---- the folders somebody names files in ------------------------------------------------
+    report.notes += unreadable
     for path in named:
         known.add(posixpath.dirname(path))
     for path in spare:      # (a file that lies in a folder of the other version is at home there)
@@ -862,9 +984,9 @@ def place(items, named, own, spare=()):
             # A material packed in one folder with a texture it names: whatever that folder is
             # called, it is the folder of the texture. Asked as long as nothing in the folder
             # has a place yet.
-            if posixpath.basename(name) + '.vtf' in in_folder[item.folder] and there not in beside:
+            if posixpath.basename(name) + '.vtf' in in_folder[item.seat] and there not in beside:
                 beside.add(there)
-                hints[item.folder][there] += 1
+                hints[item.seat][there] += 1
         for path in item.material.includes:
             known.add(posixpath.dirname(path))
     for item in items:
@@ -1046,7 +1168,7 @@ def place(items, named, own, spare=()):
         if item.replaced:
             continue
         for path in item.material.includes:
-            wanted.setdefault(path, Target(path, asked=item)).near.add(item.folder)
+            wanted.setdefault(path, Target(path, asked=item)).near.update((item.folder, item.seat))
 
     of_models, model_wants = [], []
     for item in items:
@@ -1071,7 +1193,7 @@ def place(items, named, own, spare=()):
             if counts:
                 model_wants.append((item, name, group))
             for path in group:
-                of_models.append(Target(path, near=[item.folder], group=group, asked=item))
+                of_models.append(Target(path, near=[item.folder, item.seat], group=group, asked=item))
 
     def texture_lies_there(item, target):
         base = item.material.base
@@ -1083,7 +1205,7 @@ def place(items, named, own, spare=()):
         if not base:
             return None
         folder, stem = posixpath.split(base)
-        if stem + '.vtf' not in in_folder[item.folder]:
+        if stem + '.vtf' not in in_folder[item.seat]:
             return None
         dest = '/'.join(p for p in ('materials', folder, item.name) if p)
         if relation(path_of(item), dest.split('/'))[0] == 'sibling':
@@ -1127,7 +1249,7 @@ def place(items, named, own, spare=()):
     pack_of = collections.defaultdict(set)
 
     def packed_as(item, claim):
-        source, folder = item.folder
+        source, folder = item.seat
         keys = [(source, folder, posixpath.dirname(claim))]
         if folder:      # (an upload cut into several archives has the same folder in each of them)
             keys.append((None, folder, posixpath.dirname(claim)))
@@ -1211,7 +1333,7 @@ def place(items, named, own, spare=()):
             if target is None:
                 target = textures[path] = Target(path, sure=False, asked=(item, key))
                 target.needed = False
-            target.near.add(item.folder)
+            target.near.update((item.folder, item.seat))
             # (of the materials that name it, one that the addon needs is the one to tell about)
             if sure and (not target.sure or (needed and not target.needed)):
                 target.sure, target.asked = True, (item, key)
@@ -1226,14 +1348,14 @@ def place(items, named, own, spare=()):
         report.placed.append((dest, item))
         if dest in spare:
             report.spare.append((dest, item))
-        if dest != item.default:
+        if dest != item.lies:
             src, dst = item.parts[:-1], dest.split('/')[:-1]
             same = common_suffix(src, dst)
             if same:
                 src, dst = src[:len(src) - same + 1], dst[:len(dst) - same + 1]
             report.moves[(item.source, '/'.join(src), '/'.join(dst))] += 1
     for item in items:
-        if id(item) in silent and item.dests == [item.default]:
+        if id(item) in silent and item.dests == [item.lies]:
             report.as_packed.append(item)
         doubt = undecided.get(id(item))
         if doubt is not None and doubt not in report.notes and (not item.dests or id(item) in silent):
@@ -1241,16 +1363,17 @@ def place(items, named, own, spare=()):
             report.notes.append(doubt)
         if item.dests:
             continue
-        if item.replaced:
-            why = COPY if item.copy else REPLACED
+        if id(item) in orphans:
+            # (a copy of the file the other model has there is a copy, like the model itself)
+            twin = taken.get(orphans[id(item)])
+            why = COPY if twin is not None and twin.same_as(item) else ORPHAN
+        elif item.replaced:
+            # (of two numbered folders of one source none is "later": the other file has the place)
+            why = COPY if item.copy else PLACE_TAKEN if item.rooted else REPLACED
         elif item.default is not None and own(item.default):
             why = OWN_FILE
         elif item.crowded is not None:
             why = OWN_FILE if own(item.crowded) else COPY if item.copy else PLACE_TAKEN
-        elif id(item) in orphans:
-            # (a copy of the file the other model has there is a copy, like the model itself)
-            twin = taken.get(orphans[id(item)])
-            why = COPY if twin is not None and twin.same_as(item) else ORPHAN
         elif doubt is not None:
             why = NAMESAKES
         elif item.default is None:

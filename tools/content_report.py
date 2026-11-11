@@ -63,6 +63,7 @@ REASONS = {
 
 
 STRAY_FILES = 2     # see of_the_other_version
+FEW = 4             # ... "few of them": not more than one in four
 
 
 def versions_found(result, instead, spare, only):
@@ -96,14 +97,17 @@ def versions_found(result, instead, spare, only):
 def of_the_other_version(entry):
     """is the content at hand that of the version that is not in the addon? (an entry of
     versions_found) Yes when files of that version are there and none of the files only the
-    version in the addon names - or one or two of them while most of the other kind are there:
-    a stray file or two do not make a version."""
+    version in the addon names - or few of them while most of the other kind are there: a stray
+    file or two, or not more than one in four. The content of one version carries some files
+    of the other (the first one seen had 13 of the 15 files of its own version, all its models,
+    and 9 of the 85 of the other, materials only): that does not make it the other one's."""
     theirs = entry['theirs'] + entry['taken']
     if not theirs or not entry['ours_all']:
         return False
     if not entry['ours']:
         return True
-    return entry['ours'] <= STRAY_FILES and theirs * 2 > max(entry['theirs_all'], 1)
+    few = entry['ours'] <= STRAY_FILES or entry['ours'] * FEW <= entry['ours_all']
+    return few and theirs * 2 > max(entry['theirs_all'], 1)
 
 
 def version_lines(found):

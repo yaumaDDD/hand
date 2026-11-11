@@ -17,10 +17,13 @@ the folder _not_used, and everything is written down in sort_content_report.txt.
 The content may be thrown in the way it was collected - the materials folder of one addon, of the
 next one ... as materials1, materials2, models1 ... - into the materials folder, into the models
 folder, into both, in a folder of their own, or beside the two: every folder is gone through. A
-file that nothing names, in a folder nothing is known of, goes where such folders put it: a
-numbered folder is a copy of materials/ (models/), the files of a model belong below models/,
-materials and textures below materials/ (zcg_layout.merged_destination). What is neither - a
-note, a picture - moves along with its folder. A numbered folder that is empty then is removed.
+numbered folder that holds a tree is a copy of materials/ (models/): every file in it is read as
+lying at the path it has below that folder, before any name is looked up, and whatever a model
+says it was compiled for (place_content.py, "One kind of folder is trusted") - the files of a
+model below models/, materials and textures below materials/. A heap under a numbered name goes
+by the names; a file of it that nothing names, in a folder nothing is known of, goes where such
+folders put it (zcg_layout.merged_destination). What is neither - a note, a picture - moves
+along with its folder. A numbered folder that is empty then is removed.
 
 The text of the Lua does not show every name: some are put together while the Lua runs, some are
 written from inside the materials folder. There is no Lua to run here, so the build of the addon
@@ -34,6 +37,7 @@ import argparse
 import collections
 import io
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -227,12 +231,7 @@ def numbered_folder(rel, real=()):
     by its name - a numbered one ("materials/materials3"), or a second one inside the first
     ("materials/materials", "models/my pack/models") - or None.
     real: the folders the game is known to have (real_folders): none of them is such a copy"""
-    parts = rel.lower().split('/')[:-1]
-    for cut, part in enumerate(parts):
-        if (L.numbered_root(part) or (cut and (part == 'materials' or part == parts[0] == 'models'))) \
-                and '/'.join(parts[:cut + 1]) not in real:
-            return '/'.join(parts[:cut + 1])
-    return None
+    return L.numbered_folder(rel, real)
 
 
 def unpack(archive, temp):
@@ -283,10 +282,14 @@ def collect(addon, sources, temp, real=()):
         root = source if os.path.isdir(source) else unpack(source, temp)
         entry = dict(name=label, kind='folder' if os.path.isdir(source) else 'archive', no_place=[],
                      content=0, other=0, lua=0)
-        for rel, full in sorted(walk_files(root)):
+        files = sorted(walk_files(root))
+        # (the numbered folders that hold a tree: a file right in one of them is a file of its top)
+        trees = L.tree_roots(rel for rel, _full in files if P.kind_of(rel))
+        for rel, full in files:
             if P.kind_of(rel):
-                items.append(P.Item(label, rel, full, L.dropin_destination(rel), order, L.merged_destination(rel),
-                                    L.merged_destination(rel, mirror=True)))
+                items.append(P.Item(label, rel, full, L.dropin_destination(rel), order,
+                                    L.merged_destination(rel, trees=trees),
+                                    L.merged_destination(rel, mirror=True, trees=trees), L.numbered_folder(rel)))
                 entry['content'] += 1
                 continue
             # (a note or a picture: by its folders, read like those of the content beside it)
@@ -305,31 +308,34 @@ def collect(addon, sources, temp, real=()):
     # A numbered folder beside materials/ ("materials3", put next to it instead of into it) is
     # gone through as if it lay in it.
     mine = dict(name=name, kind='folder', no_place=[], content=0, other=0, lua=0, beside=beside(addon), archives=[])
+    files = []
     for top, inside in [(top, None) for top in ROOTS] + mine['beside']:
         for rel, full in sorted(walk_files(os.path.join(addon, top))):
             rel = top + '/' + rel
-            if L.is_own_content(rel):
-                continue
-            seen = rel if inside is None else inside + '/' + rel
-            if P.kind_of(rel):
-                default = L.dropin_destination(seen)
-                item = P.Item(name, rel, full, default, order + (2 if default == rel else 1),
-                              L.merged_destination(seen, real), L.merged_destination(seen, real, mirror=True))
-                item.in_addon = True
-                items.append(item)
-                mine['content'] += 1
-                continue
-            if L.ARCHIVE.search(rel):
-                mine['archives'].append(rel)    # (nothing here opens it: it stays, and is told)
-                continue
-            # (a note, a picture: it moves along with a numbered folder it lies in, and only then)
-            if numbered_folder(rel, real) is not None:
-                dest = L.merged_destination(seen, real)
-                if dest is None or dest == seen.lower() or dest.split('/', 1)[0] not in ROOTS:
-                    dest = None                 # right in the numbered folder, or no content at all: see plan
-                along.append((rel, dest))
-            elif rel != rel.lower():
-                lower_case.append((rel, rel.lower()))
+            if not L.is_own_content(rel):
+                files.append((rel, full, rel if inside is None else inside + '/' + rel))
+    trees = L.tree_roots((seen for rel, _full, seen in files if P.kind_of(rel)), real)
+    for rel, full, seen in files:
+        if P.kind_of(rel):
+            default = L.dropin_destination(seen)
+            item = P.Item(name, rel, full, default, order + (2 if default == rel else 1),
+                          L.merged_destination(seen, real, trees=trees),
+                          L.merged_destination(seen, real, mirror=True, trees=trees), L.numbered_folder(seen, real))
+            item.in_addon = True
+            items.append(item)
+            mine['content'] += 1
+            continue
+        if L.ARCHIVE.search(rel):
+            mine['archives'].append(rel)    # (nothing here opens it: it stays, and is told)
+            continue
+        # (a note, a picture: it moves along with a numbered folder it lies in, and only then)
+        if numbered_folder(rel, real) is not None:
+            dest = L.merged_destination(seen, real)
+            if dest is None or dest == seen.lower() or dest.split('/', 1)[0] not in ROOTS:
+                dest = None                 # right in the numbered folder, or no content at all: see plan
+            along.append((rel, dest))
+        elif rel != rel.lower():
+            lower_case.append((rel, rel.lower()))
     brought.append(mine)
     return items, lower_case, extra, brought, along
 
@@ -399,7 +405,7 @@ def plan(addon, items, lower_case, extra, report, along=(), real=()):
     waiting = collections.defaultdict(list)
     # (the later folder first, as with the content: of two numbered folders with a file for one
     # place the later one has it)
-    for now, then in sorted(along, key=lambda pair: P.natural(pair[0].lower()), reverse=True):
+    for now, then in sorted(along, key=lambda pair: P.by_folders(pair[0]), reverse=True):
         if then is None:
             waiting[numbered_folder(now, real)].append(now)     # right in a numbered folder: nowhere to go
             count(now)
@@ -533,11 +539,23 @@ def apply(addon, job):
 
 
 # ---- telling about it ------------------------------------------------------------------------
+def addon_version(addon):
+    """the version of the addon these scripts came with, as its Lua tells it ('' when it does not):
+    a report that is sent on says which version wrote it"""
+    try:
+        with io.open(os.path.join(addon, 'lua', 'autorun', L.ADDON_DIRNAME + '.lua'), encoding='utf-8', errors='replace') as f:
+            found = re.search(r'ZCGloves\.Version\s*=\s*"([^"\n]{1,40})"', f.read(4000))
+    except (OSError, IOError):
+        return u''
+    return found.group(1) if found else u''
+
+
 def summary(addon, names, brought, report, job, dry, problems):
     """the lines for the screen and for the head of the report"""
     name = os.path.basename(addon)
     named = names.named
-    out = [u'Аддон: %s' % addon,
+    version = addon_version(addon)
+    out = [u'Аддон: %s%s' % (addon, u'   (версия %s)' % version if version else u''),
            u'Lua аддона (файлов: %d) называет материалов и моделей: %d' % (names.files, len(named))]
     if names.by_running:
         out.append(u'  из них %d в тексте Lua не видны — их нашла сборка аддона, запустив этот Lua' % names.by_running)
@@ -632,6 +650,12 @@ def summary(addon, names, brought, report, job, dry, problems):
             out.append(u'        ... и ещё наборов: %d' % (len(packs) - 10))
         out.append(u'    материалов, которые ищут модели: %d из %d'
                    % (len(report.missing_materials), report.materials_wanted))
+        # (a pack of models may bring hundreds that no Lua of the addon names: what they miss is
+        # not what the clothes of the addon miss)
+        ours = sum(1 for model, _name, _group in report.missing_materials if model in named)
+        if report.missing_materials and ours != len(report.missing_materials):
+            out.append(u'        из них моделям, которые называет Lua аддона: %d; остальным (Lua аддона их не называет): %d'
+                       % (ours, len(report.missing_materials) - ours))
         out.append(u'    текстур, которые ищут материалы: %d из %d'
                    % (len(report.missing_textures), report.textures_wanted))
         out.append(u'  Часть из них — файлы самой игры и Z-City, их и не должно быть в аддоне. Остальные нужно')
@@ -757,7 +781,17 @@ def main(argv=None):
         say()
         say(u'Подробный отчёт: %s' % listing)
         if not args.dry_run and not problems:
-            say(u'Готово. Запустите игру и наберите в консоли zcg_content — он покажет, чего ещё не хватает.')
+            other = [entry for entry in content_report.versions_found(report, names.instead, names.spare, names.only)
+                     if content_report.of_the_other_version(entry)]
+            if other:
+                # (the last line is the one that is read: the content is that of the other version)
+                archive = L.VERSION_ZIPS.get(other[0]['title'])
+                say(u'Файлы разложены. Но контент — от «%s», а эта сборка — с «%s» (см. «ВНИМАНИЕ» выше):'
+                    % (other[0]['title'], other[0]['instead']))
+                say(u'возьмите %s, скопируйте его папку поверх этой и запустите sort_content.bat ещё раз.'
+                    % (u'архив %s' % archive if archive else u'сборку с «%s»' % other[0]['title']))
+            else:
+                say(u'Готово. Запустите игру и наберите в консоли zcg_content — он покажет, чего ещё не хватает.')
         return 2 if problems else 0
     except UserError as err:
         say()

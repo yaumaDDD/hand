@@ -223,7 +223,35 @@ def dropin_destination(path):
     return "/".join(dest)
 
 
-def merged_destination(path, real=None, mirror=False):
+def numbered_folder(path, real=()):
+    """the outermost folder a file lies in that is a copy of materials/ or models/ by its name -
+    a numbered one ("materials/materials3"), or a second one inside the first
+    ("materials/materials", "models/my pack/models") - as a lower-case path, or None.
+    real: the folders the game is known to have, as paths: none of them is such a copy"""
+    parts = path.replace("\\", "/").lower().split("/")[:-1]
+    for cut, part in enumerate(parts):
+        if (numbered_root(part) or (cut and (part == "materials" or part == parts[0] == "models"))) \
+                and "/".join(parts[:cut + 1]) not in real:
+            return "/".join(parts[:cut + 1])
+    return None
+
+
+def tree_roots(paths, real=()):
+    """The numbered folders among these paths that hold a tree: a file below a folder of their
+    own that is not numbered itself (materials7/models/..., not materials0000/materials 1/x).
+    A file that lies right in such a folder is a file of the top of that tree
+    (materials7/x.vtf is materials/x.vtf) - see merged_destination, trees. In a numbered folder
+    with nothing but files in it nothing says so: that is somebody's heap."""
+    found = set()
+    for path in paths:
+        dirs = [p for p in path.replace("\\", "/").lower().split("/") if p not in ("", ".")][:-1]
+        for i in range(len(dirs) - 1):
+            if numbered_root(dirs[i]) and not numbered_root(dirs[i + 1]) and "/".join(dirs[:i + 1]) not in real:
+                found.add("/".join(dirs[:i + 1]))
+    return found
+
+
+def merged_destination(path, real=None, mirror=False, trees=()):
     """Where a file lies when the folders above it are read as an owner of the addon means them:
     he collects the materials and models folders of the addons he needs, each under a name of
     its own, and throws them into the materials / models folder of this addon - or anywhere.
@@ -234,7 +262,9 @@ def merged_destination(path, real=None, mirror=False):
     and so is a numbered one (numbered_root): materials/materials3/models/x.vmt is
     materials/models/x.vmt, models/models 2/a/b.mdl is models/a/b.mdl. The innermost numbered
     folder counts. A file that lies right in a numbered folder, with no folder of its own, is a
-    file of somebody's heap: its folders say nothing, and it is read like dropin_destination.
+    file of the top of that tree when the folder holds a tree beside it (trees: tree_roots() of
+    the paths at hand; materials7/x.vtf is materials/x.vtf then). Else it is a file of
+    somebody's heap: its folders say nothing, and it is read like dropin_destination.
 
     Materials and textures belong below materials/, the files of a model below models/,
     whichever of the two they were put into:
@@ -268,14 +298,16 @@ def merged_destination(path, real=None, mirror=False):
         return dirs[0] == ("models" if is_model else "materials") or not (is_model or is_material)
 
     # a numbered copy of materials/ or models/, with folders below it
-    if dirs and not numbered_root(dirs[-1]):
-        for i in range(len(dirs) - 2, -1, -1):
+    loose = bool(dirs) and numbered_root(dirs[-1]) is not None
+    if dirs and (not loose or "/".join(dirs) in trees):
+        for i in range(len(dirs) - (1 if loose else 2), -1, -1):
             top = numbered_root(dirs[i])
             if top and not known(i + 1):
                 tail = dirs[i + 1:]
                 # (it may hold a whole addon, or a materials folder: materials3/materials/...)
-                holds = tail[0] in ("materials", "lua") or (tail[0] == "models" and top == "models") \
-                    or (tail[0] in CONTENT_ROOTS and tail[0] != "models" and not (is_material or is_model))
+                holds = bool(tail) and (
+                    tail[0] in ("materials", "lua") or (tail[0] == "models" and top == "models")
+                    or (tail[0] in CONTENT_ROOTS and tail[0] != "models" and not (is_material or is_model)))
                 dirs = tail if holds else [top] + tail
                 real = None
                 break
