@@ -14,6 +14,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import place_content as P  # noqa: E402
+import zcg_layout as L  # noqa: E402
 
 WHY = {
     P.REPLACED: u'такой же файл есть в более позднем источнике',
@@ -40,7 +41,100 @@ NOTES = {
     'same name unused': u'«%s» не использован. А файл с таким именем Lua называет в %s, и там его нет: этот туда не '
                         u'взят, потому что ничто не говорит, что это он. Если он оттуда, переложите его в ту папку '
                         u'сами и запустите ещё раз',
+    'other version': u'«%s» положен в %s: %s, а это место файла в другой версии аддона, которой в этой сборке нет. '
+                     u'Файл с таким именем Lua сборки называет в %s, и там его нет: этот туда не взят. Если это всё же '
+                     u'он, переложите его в ту папку сами и запустите ещё раз',
+    'compiled for other': u'Моделей, которые лежат там, где модель называет Lua сборки, а сами говорят, что собраны для '
+                          u'пути из другой версии аддона (её в сборке нет): %d (%s). Возможно, это модели той версии: '
+                          u'если в игре они выглядят не так, замените их',
+    'came back': u'Моделей, которые лежали на местах другой версии аддона (её в сборке нет), а сами говорят, что '
+                 u'собраны для путей, которые называет Lua этой сборки, и там было пусто: %d — они переложены туда (%s)',
 }
+# the reasons in an 'other version' note
+REASONS = {
+    P.SPARE_SAYS: u'модель сама говорит, что собрана для этого пути',
+    P.SPARE_TEXTURE: u'свою текстуру материал называет в этой папке',
+    P.SPARE_FOLDERS: u'так называются его папки',
+}
+
+
+STRAY_FILES = 2     # see of_the_other_version
+
+
+def versions_found(result, instead, spare, only):
+    """What the files say about which version of a pack the content at hand belongs to.
+    instead: {title of a pack that is not in the addon: title of its version that is};
+    spare: {a file only such a pack names: its title};
+    only: {a file the addon names and such a pack does not: the title of that pack}.
+    Returns, sorted by title, a dict for each such pack:
+        title, instead;
+        theirs, theirs_all - how many of the files only it names are there, and how many it names;
+        taken - models that lie at a place of the version in the addon and say themselves that
+                they were compiled for the place of this one;
+        ours, ours_all - how many of the files only the version in the addon names are there
+                (without those), and how many it names.
+    (a file: a model or a material - what place() tells as missing)"""
+    def counted(name):
+        return name.endswith(('.mdl', '.vmt'))
+
+    missing = set(result.missing_named)
+    there = set(dest for dest, _item in getattr(result, 'spare', ()))
+    found = []
+    for title, taken in sorted(instead.items()):
+        theirs_all = set(name for name, pack in spare.items() if pack == title and counted(name))
+        ours_all = set(name for name, pack in only.items() if pack == title and counted(name))
+        odd = set(dest for dest, says in getattr(result, 'misplaced', ()) if spare.get(says) == title)
+        found.append(dict(title=title, instead=taken, theirs=len(theirs_all & there), theirs_all=len(theirs_all),
+                          taken=len(odd), ours=len(ours_all - missing - odd), ours_all=len(ours_all)))
+    return found
+
+
+def of_the_other_version(entry):
+    """is the content at hand that of the version that is not in the addon? (an entry of
+    versions_found) Yes when files of that version are there and none of the files only the
+    version in the addon names - or one or two of them while most of the other kind are there:
+    a stray file or two do not make a version."""
+    theirs = entry['theirs'] + entry['taken']
+    if not theirs or not entry['ours_all']:
+        return False
+    if not entry['ours']:
+        return True
+    return entry['ours'] <= STRAY_FILES and theirs * 2 > max(entry['theirs_all'], 1)
+
+
+def version_lines(found):
+    """what versions_found() gives, as lines for the screen and the report"""
+    out = []
+    for entry in found:
+        theirs = entry['theirs'] + entry['taken']
+        if not theirs:
+            continue
+        title, taken = entry['title'], entry['instead']
+        if of_the_other_version(entry):
+            out.append(u'ВНИМАНИЕ: похоже, ваш контент — от «%s», а эта сборка — с «%s».' % (title, taken))
+            out.append(u'  Файлов, которые называет только «%s»: %d из %d.' % (title, entry['theirs'], entry['theirs_all']))
+            if entry['taken']:
+                out.append(u'  Моделей, которые лежат на местах «%s», а собраны для путей «%s»: %d.' % (taken, title, entry['taken']))
+            out.append(u'  Файлов, которые называет только «%s»: %d из %d.' % (taken, entry['ours'], entry['ours_all']))
+            out.append(u'  С этой сборкой игра ищет файлы «%s» — и не найдёт их. Нужна сборка с «%s»:' % (taken, title))
+            archive = L.VERSION_ZIPS.get(title)
+            if archive:
+                out.append(u'  в выпуске на GitHub это архив %s (свою делает build_addon.bat --pack "%s").' % (archive, title))
+            else:
+                out.append(u'  её делает build_addon.bat --pack "%s".' % title)
+            out.append(u'  Скопируйте её папку поверх этой с заменой файлов (одежда останется на месте) и запустите')
+            out.append(u'  sort_content.bat ещё раз.')
+        else:
+            line = u'Файлов версии «%s», которой в сборке нет: %d' % (title, entry['theirs'])
+            if entry['theirs_all']:
+                line += u' из %d' % entry['theirs_all']
+            out.append(line + u' — лежат на своих местах, игре сейчас не нужны.')
+            if entry['taken']:
+                out.append(u'  Моделей, которые лежат на местах «%s», а собраны для путей «%s»: %d — см. отчёт, «Замечания».'
+                           % (taken, title, entry['taken']))
+            if entry['ours_all']:
+                out.append(u'  Файлов, которые называет только «%s» (она в сборке): %d из %d.' % (taken, entry['ours'], entry['ours_all']))
+    return out
 
 
 # how many folders of files that stay as they were packed are listed
@@ -57,7 +151,7 @@ def note(text):
     kind = getattr(text, 'kind', None)
     if kind in NOTES:
         try:
-            return NOTES[kind] % tuple(text.args)
+            return NOTES[kind] % tuple(REASONS.get(arg, arg) if isinstance(arg, str) else arg for arg in text.args)
         except TypeError:
             pass
     return u'%s' % (text,)
@@ -91,10 +185,11 @@ def folders_of(names, shown=3):
     return text
 
 
-def lines(sources, result, named, written_by, more=(), who=None):
+def lines(sources, result, named, written_by, more=(), who=None, spare=None):
     """the report as a list of lines. sources: [{'name', 'kind', 'no_place': [paths]}];
     more: lines that go right below the heading (what a tool did with the result);
-    who: name -> the pack that names it, to list the missing names pack by pack"""
+    who: name -> the pack that names it, to list the missing names pack by pack;
+    spare: {path: title} - the files only a pack names whose Lua is not in the addon"""
     out = [u'Раскладка контента: материалы, текстуры и модели других аддонов.  (записано %s)' % written_by,
            u'Игра находит файл только по точному пути. Здесь — что куда положено, что не пригодилось и чего не хватает.',
            u'Разделы описаны в README.md, «Куда класть файлы».']
@@ -123,6 +218,18 @@ def lines(sources, result, named, written_by, more=(), who=None):
 
     out += [u'', u'Замечания — %d' % len(result.notes)]
     out += [u'    ' + note(text) for text in result.notes]
+
+    if getattr(result, 'spare', None):
+        # the files of a version of a pack that is not in the addon
+        out += [u'', u'Файлы другой версии аддона, Lua которой в сборке нет — %d (лежат на своих местах; игре с этой '
+                     u'сборкой они не нужны)' % len(result.spare)]
+        by_title = collections.defaultdict(list)
+        for dest, _item in result.spare:
+            by_title[(spare or {}).get(dest) or u''].append(dest)
+        for title, dests in sorted(by_title.items()):
+            if title:
+                out.append(u'  «%s» — %d' % (title, len(dests)))
+            out += [u'    ' + dest for dest in sorted(dests)]
 
     out += [u'', u'Lua называет, а файла нет — %d из %d (такой файл может быть частью игры или Z-City)'
             % (len(result.missing_named), len(named))]
@@ -155,8 +262,8 @@ def lines(sources, result, named, written_by, more=(), who=None):
     return out
 
 
-def write(path, sources, result, named, written_by, more=(), who=None):
+def write(path, sources, result, named, written_by, more=(), who=None, spare=None):
     """writes the report (UTF-8 with a mark, so that Notepad shows the Russian text)"""
-    text = u'\n'.join(lines(sources, result, named, written_by, more, who)) + u'\n'
+    text = u'\n'.join(lines(sources, result, named, written_by, more, who, spare)) + u'\n'
     with io.open(path, 'w', encoding='utf-8-sig', newline='\r\n') as f:
         f.write(text)

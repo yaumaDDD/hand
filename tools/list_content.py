@@ -19,7 +19,6 @@ go into the addon as a list (RUN_LIST) for sort_content.py, which cannot run Lua
 The exact answer for a running game is the console command zcg_content of the addon.
 """
 import hashlib
-import json
 import os
 import re
 import sys
@@ -118,11 +117,14 @@ def lua_fingerprint(text):
     return hashlib.sha1(readable(text).replace('\r\n', '\n').encode('utf-8')).hexdigest()
 
 
-def write_run_list(path, names, lua_files, ran=True, failed=None, by=None, titles=None):
+def write_run_list(path, names, lua_files, ran=True, failed=None, by=None, titles=None, left_out=()):
     """names: game paths; lua_files: {path below lua/: text} the names were found in.
     ran=False: the Lua could not be run where the addon was built - the list says so.
     failed: {Lua file: the error} - the files that stopped with an error when they were run.
-    by: {name: the Lua file that puts it into the tables}; titles: {Lua file: title of its pack}."""
+    by: {name: the Lua file that puts it into the tables}; titles: {Lua file: title of its pack}.
+    left_out: [(title, the title of the pack that is in the addon instead, names[, only])] -
+    the packs whose Lua is not in the addon because another version of them is, each with the
+    files that only it names and (only) the files that the addon names and it does not."""
     lines = [
         '# Materials and models that the Lua of this addon puts into the appearance tables of Z-City -',
         '# found by RUNNING that Lua while the addon was built (build_addon.py, tools/lua_names.py).',
@@ -131,6 +133,12 @@ def write_run_list(path, names, lua_files, ran=True, failed=None, by=None, title
         '# "lua <sha1> <file>" - the Lua files the list was made from.',
         '# "failed <file><tab><error>" - a Lua file that stopped with an error: what it adds after that is not here.',
         '# "title <file><tab><title>" - the pack a Lua file came with.',
+        '# "other <title><tab><title>" - a pack whose Lua is NOT in this addon, and the pack that is in it instead:',
+        '#     two versions of one addon, of which the game can only have one.',
+        '# "spare <name><tab><title>" - a file only such a pack names. The game does not need it with this addon;',
+        '#     sort_content.py knows the name so as not to take that file for a namesake that is needed.',
+        '# "only <name><tab><title>" - a file this addon names and such a pack does not. Which of the two kinds',
+        '#     of files is there tells which version the content at hand belongs to.',
         '# "<name><tab><file>" - a name and the Lua file that puts it into the tables.',
     ]
     if not ran:
@@ -142,6 +150,14 @@ def write_run_list(path, names, lua_files, ran=True, failed=None, by=None, title
     for name in sorted(titles or ()):
         if name in lua_files:
             lines.append('title %s\t%s' % (name, ' '.join((u'%s' % titles[name]).split())))
+    left_out = sorted((entry[0], entry[1], sorted(entry[2]), sorted(entry[3]) if len(entry) > 3 else [])
+                      for entry in left_out)
+    for title, instead, _spare, _only in left_out:
+        lines.append('other %s\t%s' % (one_line(title), one_line(instead)))
+    for title, _instead, spare, _only in left_out:
+        lines += ['spare %s\t%s' % (name, one_line(title)) for name in spare]
+    for title, _instead, _spare, only in left_out:
+        lines += ['only %s\t%s' % (name, one_line(title)) for name in only]
     by = by or {}
     lines += sorted('%s\t%s' % (name, by[name]) if by.get(name) else name for name in names)
     # (a file name that cannot be written is written with question marks: it then counts as changed)
@@ -167,11 +183,53 @@ def read_run_list(path=None):
                 parts = line.split(' ', 2)
                 if len(parts) == 3:
                     made_from[parts[2]] = parts[1]
-            elif line.startswith('failed ') or line.startswith('title '):
-                continue        # (read_run_failed, read_run_who)
+            elif line.startswith(('failed ', 'title ', 'other ', 'spare ', 'only ')):
+                continue        # (read_run_failed, read_run_who, read_run_other, read_run_only)
             else:
                 names.add(line.split('\t', 1)[0])
     return names, made_from, ran
+
+
+def one_line(text):
+    return ' '.join((u'%s' % text).split())
+
+
+def read_run_other(path=None):
+    """({file only a left-out pack names: the title of that pack}, {that title: the title of the
+    pack that is in the addon instead}) out of the list - as far as it says"""
+    path = path or os.path.join(HERE, RUN_LIST)
+    spare, instead = {}, {}
+    if not os.path.isfile(path):
+        return spare, instead
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.rstrip('\r\n')
+            if line.startswith('other '):
+                title, _tab, taken = line[len('other '):].partition('\t')
+                if title.strip():
+                    instead[title.strip()] = taken.strip()
+            elif line.startswith('spare '):
+                name, _tab, title = line[len('spare '):].partition('\t')
+                if name.strip():
+                    spare[name.strip()] = title.strip()
+    return spare, instead
+
+
+def read_run_only(path=None):
+    """{a file the addon names and a left-out pack does not: the title of that pack} out of the
+    list - as far as it says"""
+    path = path or os.path.join(HERE, RUN_LIST)
+    only = {}
+    if not os.path.isfile(path):
+        return only
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.rstrip('\r\n')
+            if line.startswith('only '):
+                name, _tab, title = line[len('only '):].partition('\t')
+                if name.strip():
+                    only[name.strip()] = title.strip()
+    return only
 
 
 def read_run_who(path=None):
@@ -190,7 +248,7 @@ def read_run_who(path=None):
                 name, _tab, title = line[len('title '):].partition('\t')
                 if title.strip():
                     titles[name.strip()] = title.strip()
-            elif line.startswith('lua ') or line.startswith('failed ') or line.strip() == 'not-run':
+            elif line.startswith(('lua ', 'failed ', 'other ', 'spare ')) or line.strip() == 'not-run':
                 continue
             elif '\t' in line:
                 name, _tab, lua = line.partition('\t')
@@ -213,63 +271,40 @@ def read_run_failed(path=None):
     return failed
 
 
-def addon_title(z, names, inner):
-    """title of the addon a file of a drop-in archive belongs to (from the addon.json next to it)"""
-    parts = inner.split('/')
-    for k in range(len(parts) - 1, 0, -1):
-        for candidate in ('/'.join(parts[:k]) + '.json', '/'.join(parts[:k]) + '/addon.json'):
-            if candidate in names:
-                try:
-                    return json.loads(z.read(names[candidate]).decode('utf-8-sig', 'replace')).get('title') or candidate
-                except ValueError:
-                    return candidate
-    return None
+def pack_label(title, archive):
+    """what a pack is called: its title, or the name of its archive when its addon.json has none"""
+    if not title or title.endswith('.json'):
+        return archive
+    return title
 
 
 def pack_titles(root=None):
     """{Lua file below lua/, where the build puts it: the title of the pack it came with} - the
-    title in the addon.json beside it, else the name of the archive"""
+    title in the addon.json beside it, else the name of the archive. Only of the packs the build
+    takes: a version of a pack that is left out (zcg_layout.PACK_VERSIONS) has no file there."""
     titles = {}
-    for archive in L.dropin_archives(root or ROOT):
-        if not archive.lower().endswith('.zip'):
-            continue
-        with zipfile.ZipFile(archive) as z:
-            names = {L.zip_name(info): info for info in z.infolist()}
-            for inner, info in sorted(names.items()):
-                dest = None if info.is_dir() else L.dropin_destination(inner)
-                if dest and dest.startswith('lua/') and dest.endswith('.lua'):
-                    title = addon_title(z, names, inner)
-                    if not title or title.endswith('.json'):     # (no title in it: the name of the archive)
-                        title = os.path.basename(archive)
-                    titles[dest[len('lua/'):].lower()] = title
+    for dest, _data, archive, title in L.dropin_lua(root or ROOT)[0]:
+        titles[dest[len('lua/'):].lower()] = pack_label(title, archive)
     return titles
 
 
 def collect():
     """[(archive, addon title, {game path: [Lua files that name it]})] and the names of Z-City.
     The names are read in the text of the Lua and, where Lua can be run (lupa), found by running
-    it as well; what the files of Z-City itself put into its tables is left out either way."""
+    it as well; what the files of Z-City itself put into its tables is left out either way.
+    Of the packs the build takes - see left_out() for the others."""
     if _COLLECTED:
         return _COLLECTED[0]
     stock = stock_names()
     by_title, order, owner = {}, [], {}
-    for archive in L.dropin_archives(ROOT):
-        if not archive.lower().endswith('.zip'):
-            continue
-        with zipfile.ZipFile(archive) as z:
-            names = {L.zip_name(info): info for info in z.infolist()}
-            for inner, info in sorted(names.items()):
-                dest = None if info.is_dir() else L.dropin_destination(inner)
-                if not dest or not dest.endswith('.lua'):
-                    continue
-                title = addon_title(z, names, inner) or os.path.basename(archive)
-                key = (os.path.basename(archive), title)
-                if key not in by_title:
-                    by_title[key] = {}
-                    order.append(key)
-                owner[dest] = key       # (of two files for one path the later archive has it)
-                for name in names_in(z.read(info).decode('utf-8-sig', 'replace')) - stock:
-                    by_title[key].setdefault(name, []).append(dest)
+    for dest, data, archive, title in L.dropin_lua(ROOT)[0]:
+        key = (archive, title or archive)
+        if key not in by_title:
+            by_title[key] = {}
+            order.append(key)
+        owner[dest] = key       # (of two files for one path the later archive has it)
+        for name in names_in(data.decode('utf-8-sig', 'replace')) - stock:
+            by_title[key].setdefault(name, []).append(dest)
 
     ran = run_names()
     if ran is not None:
@@ -306,7 +341,79 @@ def run_names():
     return _RAN[0]
 
 
+def other_version_names(taken, instead, files, text_only=False):
+    """The materials and models a version of a pack names that the build does not take.
+    taken: {path below lua/: text} - the Lua the build takes; instead: the paths among them that
+    belong to the version that was taken; files: {path below lua/: text} of the version that was
+    left out. Returns every name (game path) the addon would name with that version in the place
+    of the other one - in the text of its Lua and, where Lua can be run, in the tables after
+    running everything that way. What is in this set and not among the names of the addon as it
+    is, only the version that was left out names; the other way round, only the one in it."""
+    swapped = dict((path, text) for path, text in taken.items() if path not in instead)
+    swapped.update(files)
+    names = set()
+    for path, text in swapped.items():
+        if not L.is_own_lua(path):
+            names |= names_in(text)
+    if text_only:
+        return names
+    try:
+        import lua_names
+    except ImportError:
+        return names
+    if not lua_names.available():
+        return names
+    result = lua_names.run_addon(swapped)[0]
+    if result is not None:
+        names |= set(result.names)
+        names -= result.stock
+    return names
+
+
+def left_out():
+    """[(archive, title, the title taken instead, {game path: [Lua files]})] - the packs of the
+    drop-in archives that are versions of a pack the build takes, each with the names that only
+    it names: files the game does not need with this addon."""
+    if _LEFT:
+        return _LEFT[0]
+    stock = stock_names()
+    taken_files, left = L.dropin_lua(ROOT)
+    try:
+        import lua_names
+        to_text = lua_names.lua_text
+    except ImportError:
+        def to_text(data):
+            return data.decode('utf-8-sig', 'replace')
+    used = set()
+    for _archive, _title, wanted in collect()[0]:
+        used.update(wanted)
+    taken = dict((dest[len('lua/'):], to_text(data)) for dest, data, _archive, _title in taken_files)
+    found = []
+    for title, instead, archive, files in left:
+        theirs = set(dest[len('lua/'):] for dest, _data, _archive, pack in taken_files if pack == instead)
+        mine = dict((dest[len('lua/'):], to_text(data)) for dest, data in files)
+        names = other_version_names(taken, theirs, mine) - used - stock
+        by_file = {}
+        for dest, data in files:
+            for name in names_in(data.decode('utf-8-sig', 'replace')) & names:
+                by_file.setdefault(name, []).append(dest)
+        found.append((archive, title, instead, dict((name, by_file.get(name, [])) for name in names)))
+    _LEFT.append(found)
+    return found
+
+
+_LEFT = []          # made once
+
+
 _RAN = []           # run once
+
+
+OTHER_HEAD = u'''\
+%s  [%s]
+    НЕ В СБОРКЕ. Это другая версия аддона «%s»: у обеих одни и те же Lua-файлы,
+    в игре может быть только одна. Сборка берёт «%s»; эту берёт
+    build_addon.bat --pack "%s"%s.
+    Файлы, которые называет только эта версия (с этой сборкой игре они не нужны):'''
 
 
 FILES_HEAD = u'''\
@@ -351,6 +458,21 @@ def main():
         print('%d names in all' % total)
     else:
         print('%d names in all, %d of them are files of the last build (build/%s)' % (total, have, L.ADDON_DIRNAME))
+    for archive, title, instead, wanted in left_out():
+        print('')
+        release = L.VERSION_ZIPS.get(title)
+        print(OTHER_HEAD % (title, archive, instead, instead, title,
+                            u' (в выпуске на GitHub это архив %s)' % release if release else u''))
+        folders = {}
+        for name in wanted:
+            folders.setdefault(os.path.dirname(name), []).append(name)
+        for folder, names in sorted(folders.items()):
+            print('    %-62s %3d names' % (folder + '/', len(names)))
+            if every:
+                for name in sorted(names):
+                    print('        ' + os.path.basename(name))
+        if not wanted:
+            print('    none: it names nothing that the other version does not')
     return 0
 
 

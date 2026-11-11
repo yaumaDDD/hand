@@ -47,7 +47,7 @@ import glua  # noqa: E402
 import zcg_layout as L  # noqa: E402
 
 # the Lua of the gloves themselves: it only speaks of files the addon has from the start
-OWN_LUA = ('autorun/%s.lua' % L.ADDON_DIRNAME, L.ADDON_DIRNAME + '/')
+OWN_LUA = L.OWN_LUA
 # the files of Z-City that make the appearance tables (below lua/), and the one that loads them
 STOCK_FOLDER = 'homigrad/new_appearance/'
 LOADER = 'autorun/loader.lua'
@@ -238,16 +238,12 @@ def folder_files(lua_folder):
 
 def dropin_files(root=None):
     """the Lua the drop-in archives of the repository bring, where the build puts it:
-    {path below lua/: (text, archive)}; of two files for one path the later archive has it"""
+    {path below lua/: (text, archive)}; of two files for one path the later archive has it.
+    Without the packs the build leaves out: a version of a pack that is taken
+    (zcg_layout.PACK_VERSIONS)."""
     found = {}
-    for archive in L.dropin_archives(root or ROOT):
-        if not archive.lower().endswith('.zip'):
-            continue
-        with zipfile.ZipFile(archive) as z:
-            for info in z.infolist():
-                dest = None if info.is_dir() else L.dropin_destination(L.zip_name(info))
-                if dest and dest.startswith('lua/') and dest.endswith('.lua'):
-                    found[dest[len('lua/'):]] = (lua_text(z.read(info)), os.path.basename(archive))
+    for dest, data, archive, _title in L.dropin_lua(root or ROOT)[0]:
+        found[dest[len('lua/'):]] = (lua_text(data), archive)
     return found
 
 

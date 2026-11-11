@@ -1539,14 +1539,8 @@ DRILL = ['players_sheet_02', 'players_sheet_04', 'players_sheet_06', 'players_sh
 def text_names():
     """what the text of the drop-in Lua shows, whether or not Lua can be run here"""
     named = set()
-    for archive in L.dropin_archives(ROOT):
-        if not archive.lower().endswith('.zip'):
-            continue
-        with zipfile.ZipFile(archive) as z:
-            for info in z.infolist():
-                dest = None if info.is_dir() else L.dropin_destination(L.zip_name(info))
-                if dest and dest.endswith('.lua'):
-                    named |= list_content.names_in(z.read(info).decode('utf-8-sig', 'replace'))
+    for _dest, data, _archive, _title in L.dropin_lua(ROOT)[0]:
+        named |= list_content.names_in(data.decode('utf-8-sig', 'replace'))
     return named - list_content.stock_names()
 
 
@@ -1988,6 +1982,532 @@ def test_the_build_takes_lua(tmp):
               'two versions of one Lua file stop the build, and it names both archives: %s' % err)
 
 
+def test_versions_of_a_pack(tmp):
+    """Two versions of one addon bring the same Lua files and name the same models under two paths
+    (models/zcity/m/male_10.mdl in one, models/slav/m/male_10.mdl in the other). The addon has
+    the Lua of one of them; the names only the other one has are known as spare. A file of the
+    other version is put at its own place and is never taken for a file of the version in the
+    addon - and never counts as missing."""
+    named = ['models/slav/m/male_10.mdl', 'models/slav/m/eli.mdl', 'models/slav/f/zoey.mdl',
+             'materials/models/humans/slav/mossman/mossman_face1.vmt']
+    spare = ['models/zcity/m/male_10.mdl', 'models/zcity/m/eli.mdl', 'models/zcity/f/zoey.mdl',
+             'materials/models/humans/slav/mossman/mossman_face.vmt']
+
+    reports = {}
+
+    def placing(label, files, own=(), spare=spare, more=()):
+        src = os.path.join(tmp, 'versions', label)
+        for path, data in files.items():
+            write(os.path.join(src, path), data)
+        report = reports[label] = P.place(scan(src), set(named) | set(more), lambda path: path in own, set(spare))
+        return report, dict((dest, item.inner) for dest, item in report.placed)
+
+    def mdl(compiled_for, mark=''):
+        return model(['models/pack/'], ['body' + mark], compiled_for)
+
+    def kinds(report):
+        return sorted(getattr(note, 'kind', '?') for note in report.notes)
+
+    # ---- the other version in its own tree
+    report, placed = placing('its own tree', {
+        'pack/models/zcity/m/male_10.mdl': mdl('zcity\\m\\male_10.mdl'), 'pack/models/zcity/m/male_10.vvd': b'vvd',
+        'pack/models/zcity/m/eli.mdl': mdl('eli.mdl')})
+    check(placed == {'models/zcity/m/male_10.mdl': 'pack/models/zcity/m/male_10.mdl', 'models/zcity/m/male_10.vvd': 'pack/models/zcity/m/male_10.vvd',
+                     'models/zcity/m/eli.mdl': 'pack/models/zcity/m/eli.mdl'},
+          'the models of the other version stay in their own folder, whatever they say of themselves: %s' % sorted(placed))
+    check(sorted(dest for dest, _item in report.spare) == ['models/zcity/m/eli.mdl', 'models/zcity/m/male_10.mdl'],
+          'and are told as files of that version: %s' % report.spare)
+    check(report.missing_named == sorted(named), 'the files of the version in the addon are missing: %s' % report.missing_named)
+    check(report.models == 0 and not report.missing_materials and not report.as_packed and not kinds(report),
+          'what such a model asks for is not missing, and nothing about it is unknown: %s, %s, %s'
+          % (report.models, report.missing_materials, kinds(report)))
+    old = P.place(scan(os.path.join(tmp, 'versions', 'its own tree')), set(named), lambda path: False)
+    check('models/slav/m/eli.mdl' in dict(old.placed),
+          '(without the names of the other version the one that says nothing is taken for the namesake - as up to 2.4.1)')
+
+    # ---- numbered folders: a model says where it was compiled for
+    report, placed = placing('numbered, they say', {
+        '7/male_10.mdl': mdl('zcity\\m\\male_10.mdl'), '7/male_10.vvd': b'vvd', '7/male_10.dx90.vtx': b'vtx',
+        '7/eli.mdl': mdl('zcity/m/eli.mdl'), '7/zoey.mdl': mdl('ZCity\\F\\Zoey.mdl')})
+    check(sorted(placed) == ['models/zcity/f/zoey.mdl', 'models/zcity/m/eli.mdl', 'models/zcity/m/male_10.dx90.vtx',
+                             'models/zcity/m/male_10.mdl', 'models/zcity/m/male_10.vvd'],
+          'models that say they were compiled for the paths of the other version go there, with their files: %s' % sorted(placed))
+    check(report.missing_named == sorted(named) and kinds(report) == ['other version'] * 3,
+          'the places of the addon stay empty, and each such model is told: %s, %s' % (report.missing_named, kinds(report)))
+    note = [text for text in report.notes if text.kind == 'other version'][0]
+    check(note.args[1:] == ('models/zcity/m/', P.SPARE_SAYS, 'models/slav/m/') and str(note.args[0]).endswith('7/eli.mdl')
+          and 'it says itself' in note and u'\u043c\u043e\u0434\u0435\u043b\u044c \u0441\u0430\u043c\u0430' in content_report.note(note),
+          'with the file, where it went, why, and the place it was not taken for: %s' % (note,))
+
+    # ---- numbered folders that are called like the folders of the other version
+    report, placed = placing('numbered, their folders', {'7/zcity/m/male_10.mdl': mdl('male_10.mdl'), '7/zcity/m/male_10.vvd': b'vvd'})
+    check(sorted(placed) == ['models/zcity/m/male_10.mdl', 'models/zcity/m/male_10.vvd'],
+          'a model in folders called like those of the other version goes there: %s' % sorted(placed))
+    check([text.args[2] for text in report.notes if text.kind == 'other version'] == [P.SPARE_FOLDERS], 'and that is told as the reason')
+    report, placed = placing('numbered, the folders of the addon', {'7/slav/m/male_10.mdl': mdl('male_10.mdl')})
+    check(sorted(placed) == ['models/slav/m/male_10.mdl'] and not kinds(report),
+          'in folders called like those of the version in the addon it goes there: %s' % sorted(placed))
+    report, placed = placing('numbered, one folder says nothing', {'7/m/male_10.mdl': mdl('male_10.mdl')})
+    check(sorted(placed) == ['models/slav/m/male_10.mdl'], '"m" alone is the folder of both versions: the one of the addon: %s' % sorted(placed))
+
+    # ---- numbered folders, and the model says nothing: the version of the addon, as ever
+    report, placed = placing('numbered, silent', {'7/male_10.mdl': mdl('male_10.mdl'), '7/male_10.vvd': b'vvd', '7/eli.mdl': mdl('')})
+    check(sorted(placed) == ['models/slav/m/eli.mdl', 'models/slav/m/male_10.mdl', 'models/slav/m/male_10.vvd'] and not report.spare,
+          'a model that says nothing goes where the Lua of the addon wants a file of that name: %s' % sorted(placed))
+    check(not kinds(report), 'without a note: %s' % kinds(report))
+    report, placed = placing('numbered, compiled for the addon', {'7/male_10.mdl': mdl('slav/m/male_10.mdl')})
+    check(sorted(placed) == ['models/slav/m/male_10.mdl'], 'and so does one that says so: %s' % sorted(placed))
+
+    # ---- both versions at hand
+    report, placed = placing('a pair', {'5/male_10.mdl': mdl('zcity/m/male_10.mdl', ' old'), '5/male_10.vvd': b'old',
+                                        '6/male_10.mdl': mdl('slav/m/male_10.mdl', ' new'), '6/male_10.vvd': b'new'})
+    check(placed == {'models/zcity/m/male_10.mdl': '5/male_10.mdl', 'models/zcity/m/male_10.vvd': '5/male_10.vvd',
+                     'models/slav/m/male_10.mdl': '6/male_10.mdl', 'models/slav/m/male_10.vvd': '6/male_10.vvd'},
+          'two namesakes that say where they belong: each to its own version: %s' % placed)
+    check(not kinds(report) and 'models/slav/m/male_10.mdl' not in report.missing_named, 'nothing to tell then: %s' % kinds(report))
+    report, placed = placing('a pair, one says nothing', {'5/male_10.mdl': mdl('zcity/m/male_10.mdl', ' old'),
+                                                           '6/male_10.mdl': mdl('male_10.mdl', ' new')})
+    check(placed == {'models/zcity/m/male_10.mdl': '5/male_10.mdl', 'models/slav/m/male_10.mdl': '6/male_10.mdl'},
+          'one that says it is of the other version, one that says nothing: the second is the one of the addon: %s' % placed)
+    report, placed = placing('a pair, the other way', {'5/male_10.mdl': mdl('male_10.mdl', ' new'),
+                                                        '6/male_10.mdl': mdl('zcity/m/male_10.mdl', ' old')})
+    check(placed == {'models/zcity/m/male_10.mdl': '6/male_10.mdl', 'models/slav/m/male_10.mdl': '5/male_10.mdl'},
+          'whichever folder comes first: %s' % placed)
+
+    # ---- a file of the addon is never replaced, and its place is never free
+    report, placed = placing('the addon has it', {'7/male_10.mdl': mdl('zcity/m/male_10.mdl')}, own=['models/slav/m/male_10.mdl'])
+    check(sorted(placed) == ['models/zcity/m/male_10.mdl'] and not kinds(report),
+          'with the model of the addon in place the other one goes to its own, and there is nothing to tell: %s, %s'
+          % (sorted(placed), kinds(report)))
+
+    # ---- a model of the other version at a place of the addon: it lay there
+    report, placed = placing('at the place of the addon', {'pack/models/slav/m/eli.mdl': mdl('zcity\\m\\eli.mdl'),
+                                                            'pack/models/slav/m/male_10.mdl': mdl('slav\\m\\male_10.mdl')})
+    check(sorted(placed) == ['models/slav/m/eli.mdl', 'models/slav/m/male_10.mdl'], 'a model that lies at a place of the addon stays: %s' % sorted(placed))
+    odd = [text for text in report.notes if text.kind == 'compiled for other']
+    check(len(odd) == 1 and odd[0].args == (1, 'models/slav/m/eli.mdl') and kinds(report) == ['compiled for other'],
+          'one that says it was compiled for the place of the other version is pointed at: %s' % report.notes)
+    check(report.misplaced == [('models/slav/m/eli.mdl', 'models/zcity/m/eli.mdl')] and not reports['a pair'].misplaced,
+          'and kept, with the place it speaks of: %s' % report.misplaced)
+    placing('only at the place of the addon', {'pack/models/slav/m/eli.mdl': mdl('zcity\\m\\eli.mdl')})
+    report, placed = placing('in a folder of the addon, numbered', {'models/models 7/eli.mdl': mdl('zcity\\m\\eli.mdl'),
+                                                                    'models/models 8/zoey.mdl': mdl('zoey.mdl')})
+    check(placed == {'models/zcity/m/eli.mdl': 'models/models 7/eli.mdl', 'models/slav/f/zoey.mdl': 'models/models 8/zoey.mdl'},
+          'numbered folders below models: the model that says it is of the other version goes there, a silent one to the '
+          'place of the addon: %s' % placed)
+    # (a folder is not torn apart for a guess: what lies with a model of the other version and
+    # says nothing is taken for a file of that version as well)
+    report, placed = placing('one folder, one of them says', {'models/models 7/eli.mdl': mdl('zcity\\m\\eli.mdl'),
+                                                              'models/models 7/male_10.mdl': mdl('male_10.mdl'),
+                                                              'models/models 7/male_10.vvd': b'vvd'})
+    check(sorted(placed) == ['models/zcity/m/eli.mdl', 'models/zcity/m/male_10.mdl', 'models/zcity/m/male_10.vvd']
+          and sorted(dest for dest, _item in report.spare) == ['models/zcity/m/eli.mdl', 'models/zcity/m/male_10.mdl']
+          and report.models == 0,
+          'a silent model in one folder with a model of the other version goes with it, as a file of that version: %s' % sorted(placed))
+
+    # ---- the other way round: a model that lies at a place of the other version and says that
+    # it was compiled for the place the Lua of the addon names (this tool took models by their
+    # file names before it knew of versions; with the other version in the addon they lie wrong)
+    report, placed = placing('came back', {'pack/models/zcity/m/eli.mdl': mdl('slav\\m\\eli.mdl'), 'pack/models/zcity/m/eli.vvd': b'vvd',
+                                           'pack/models/zcity/m/eli.dx90.vtx': b'vtx',
+                                           'pack/models/zcity/m/male_10.mdl': mdl('zcity\\m\\male_10.mdl'),
+                                           'pack/models/zcity/f/zoey.mdl': mdl('zoey.mdl')})
+    check(sorted(placed) == ['models/slav/m/eli.dx90.vtx', 'models/slav/m/eli.mdl', 'models/slav/m/eli.vvd',
+                             'models/zcity/f/zoey.mdl', 'models/zcity/m/male_10.mdl'],
+          'a model at a place of the other version that says it was compiled for the empty place of the addon is put there, '
+          'with its files; the others stay: %s' % sorted(placed))
+    back = [text for text in report.notes if text.kind == 'came back']
+    check(len(back) == 1 and back[0].args == (1, 'models/slav/m/eli.mdl') and kinds(report) == ['came back']
+          and u'\u043e\u043d\u0438 \u043f\u0435\u0440\u0435\u043b\u043e\u0436\u0435\u043d\u044b \u0442\u0443\u0434\u0430 (models/slav/m/eli.mdl)' in content_report.note(back[0]),
+          'and that is told: %s' % report.notes)
+    check('models/slav/m/eli.mdl' not in report.missing_named and report.models == 1
+          and sorted(dest for dest, _item in report.spare) == ['models/zcity/f/zoey.mdl', 'models/zcity/m/male_10.mdl'],
+          'it is a file of the addon then, not one of the other version: %s' % report.spare)
+    report, placed = placing('came back, the place is taken', {'pack/models/zcity/m/eli.mdl': mdl('slav\\\\m\\\\eli.mdl', ' old'),
+                                                               'pack/models/slav/m/eli.mdl': mdl('slav\\\\m\\\\eli.mdl', ' new')})
+    check(placed == {'models/zcity/m/eli.mdl': 'pack/models/zcity/m/eli.mdl', 'models/slav/m/eli.mdl': 'pack/models/slav/m/eli.mdl'}
+          and not kinds(report), 'with a file at the place of the addon it stays where it is: %s' % placed)
+    report, placed = placing('came back, the addon has it', {'pack/models/zcity/m/eli.mdl': mdl('slav\\\\m\\\\eli.mdl')},
+                             own=['models/slav/m/eli.mdl'])
+    check(sorted(placed) == ['models/zcity/m/eli.mdl'] and not kinds(report), 'and so it does when the addon has that file itself')
+
+    # ---- materials: the one only the other version names says where it belongs
+    report, placed = placing('materials', {
+        '3/mossman_face.vmt': material('models/humans/slav/mossman/mossman_face', bumpmap='models/humans/slav/mossman/mossman_n'),
+        '3/mossman_face.vtf': texture('face'),
+        '3/mossman_face1.vmt': material('models/humans/slav/mossman/mossman_face1', bumpmap='models/humans/slav/mossman/gone_n'),
+        '3/mossman_face1.vtf': texture('face 1')})
+    check(sorted(placed) == ['materials/models/humans/slav/mossman/mossman_face.vmt', 'materials/models/humans/slav/mossman/mossman_face.vtf',
+                             'materials/models/humans/slav/mossman/mossman_face1.vmt', 'materials/models/humans/slav/mossman/mossman_face1.vtf'],
+          'a material of the other version and one of the addon, packed together: each at its place: %s' % sorted(placed))
+    check([texture for _material, _key, texture in report.missing_textures] == ['materials/models/humans/slav/mossman/gone_n.vtf']
+          and report.textures_wanted == 2,
+          'a texture only the material of the other version asks for is not missing: %s' % report.missing_textures)
+    check([dest for dest, _item in report.spare] == ['materials/models/humans/slav/mossman/mossman_face.vmt'], 'and that material is told as a file of the other version')
+    check(not kinds(report), 'nothing to tell: the addon names no file of that name: %s' % kinds(report))
+    # (the real pair: one version has a face of its own, the other names the one of the game)
+    report, placed = placing('materials, a namesake', {
+        '3/mossman_face.vmt': material('models/humans/slav/mossman/mossman_face'), '3/mossman_face.vtf': texture('face')},
+        more=['materials/models/mossman/mossman_face.vmt'])
+    note = [text for text in report.notes if text.kind == 'other version']
+    check(sorted(placed) == ['materials/models/humans/slav/mossman/mossman_face.vmt', 'materials/models/humans/slav/mossman/mossman_face.vtf']
+          and len(note) == 1 and note[0].args[1:] == ('materials/models/humans/slav/mossman/', P.SPARE_TEXTURE, 'materials/models/mossman/'),
+          'a material of the other version whose namesake the addon names elsewhere: at its own place, and told with its reason: %s'
+          % report.notes)
+    check(note and u'\u0441\u0432\u043e\u044e \u0442\u0435\u043a\u0441\u0442\u0443\u0440\u0443 \u043c\u0430\u0442\u0435\u0440\u0438\u0430\u043b \u043d\u0430\u0437\u044b\u0432\u0430\u0435\u0442 \u0432 \u044d\u0442\u043e\u0439 \u043f\u0430\u043f\u043a\u0435' in content_report.note(note[0])
+          and u'\u043c\u043e\u0434\u0435\u043b\u044c' not in content_report.note(note[0]),
+          'in the words for a material: %s' % (content_report.note(note[0]) if note else None))
+
+    # ---- the materials of a model of the other version are given their places, and none is missing
+    report, placed = placing('materials of a model', {
+        '7/male_10.mdl': model(['models/pack/'], ['body', 'skin'], 'zcity/m/male_10.mdl'),
+        '7/body.vmt': material('models/pack/body'), '7/body.vtf': texture('body')})
+    check('materials/models/pack/body.vmt' in placed and 'materials/models/pack/body.vtf' in placed and 'models/zcity/m/male_10.mdl' in placed,
+          'the materials of a model of the other version go where it looks for them: %s' % sorted(placed))
+    check(not report.missing_materials and report.models == 0 and report.materials_wanted == 0,
+          'and the one it does not find is not missing: %s' % report.missing_materials)
+
+    # ---- which version is the content of?
+    titles, theirs, ours = {'Mod OLD': 'Mod'}, dict((name, 'Mod OLD') for name in spare), dict((name, 'Mod OLD') for name in named)
+
+    def found(label, only=ours):
+        got = content_report.versions_found(reports[label], titles, theirs, only)
+        return got, u'\n'.join(content_report.version_lines(got))
+
+    got, text = found('its own tree')
+    check(got == [dict(title='Mod OLD', instead='Mod', theirs=2, theirs_all=4, taken=0, ours=0, ours_all=4)],
+          'files of the other version and none of the one in the addon: counted: %s' % got)
+    check(u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415: \u043f\u043e\u0445\u043e\u0436\u0435, \u0432\u0430\u0448 \u043a\u043e\u043d\u0442\u0435\u043d\u0442 \u2014 \u043e\u0442 \xabMod OLD\xbb, \u0430 \u044d\u0442\u0430 \u0441\u0431\u043e\u0440\u043a\u0430 \u2014 \u0441 \xabMod\xbb.' in text
+          and u'\u0442\u043e\u043b\u044c\u043a\u043e \xabMod OLD\xbb: 2 \u0438\u0437 4.' in text and u'\u0442\u043e\u043b\u044c\u043a\u043e \xabMod\xbb: 0 \u0438\u0437 4.' in text
+          and u'build_addon.bat --pack "Mod OLD"' in text and u'\u043f\u043e\u0432\u0435\u0440\u0445 \u044d\u0442\u043e\u0439 \u0441 \u0437\u0430\u043c\u0435\u043d\u043e\u0439 \u0444\u0430\u0439\u043b\u043e\u0432 (\u043e\u0434\u0435\u0436\u0434\u0430 \u043e\u0441\u0442\u0430\u043d\u0435\u0442\u0441\u044f \u043d\u0430 \u043c\u0435\u0441\u0442\u0435)' in text,
+          'and the owner is told that the content is that of the other version, and what to take: %s' % text)
+    got, text = found('a pair')
+    check((got[0]['theirs'], got[0]['ours'], got[0]['taken']) == (1, 1, 0)
+          and u'\u0424\u0430\u0439\u043b\u043e\u0432 \u0432\u0435\u0440\u0441\u0438\u0438 \xabMod OLD\xbb, \u043a\u043e\u0442\u043e\u0440\u043e\u0439 \u0432 \u0441\u0431\u043e\u0440\u043a\u0435 \u043d\u0435\u0442: 1 \u0438\u0437 4 \u2014 \u043b\u0435\u0436\u0430\u0442 \u043d\u0430 \u0441\u0432\u043e\u0438\u0445 \u043c\u0435\u0441\u0442\u0430\u0445, \u0438\u0433\u0440\u0435 \u0441\u0435\u0439\u0447\u0430\u0441 \u043d\u0435 \u043d\u0443\u0436\u043d\u044b.' in text
+          and u'\u0442\u043e\u043b\u044c\u043a\u043e \xabMod\xbb (\u043e\u043d\u0430 \u0432 \u0441\u0431\u043e\u0440\u043a\u0435): 1 \u0438\u0437 4.' in text and u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415' not in text,
+          'files of both: counted, and nothing to warn of: %s' % text)
+    got, text = found('at the place of the addon')
+    check((got[0]['theirs'], got[0]['ours'], got[0]['taken']) == (0, 1, 1)
+          and u'\u043b\u0435\u0436\u0430\u0442 \u043d\u0430 \u043c\u0435\u0441\u0442\u0430\u0445 \xabMod\xbb, \u0430 \u0441\u043e\u0431\u0440\u0430\u043d\u044b \u0434\u043b\u044f \u043f\u0443\u0442\u0435\u0439 \xabMod OLD\xbb: 1 \u2014 \u0441\u043c. \u043e\u0442\u0447\u0451\u0442' in text and u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415' not in text,
+          'a model of the other version at a place of the addon is no file of the addon: %s' % text)
+    got, text = found('only at the place of the addon')
+    check((got[0]['theirs'], got[0]['ours'], got[0]['taken']) == (0, 0, 1)
+          and u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415: \u043f\u043e\u0445\u043e\u0436\u0435, \u0432\u0430\u0448 \u043a\u043e\u043d\u0442\u0435\u043d\u0442 \u2014 \u043e\u0442 \xabMod OLD\xbb' in text
+          and u'\u043b\u0435\u0436\u0430\u0442 \u043d\u0430 \u043c\u0435\u0441\u0442\u0430\u0445 \xabMod\xbb, \u0430 \u0441\u043e\u0431\u0440\u0430\u043d\u044b \u0434\u043b\u044f \u043f\u0443\u0442\u0435\u0439 \xabMod OLD\xbb: 1.' in text,
+          'nothing but such models: the content is that of the other version: %s' % text)
+    got, text = found('numbered, silent')
+    check((got[0]['theirs'], got[0]['ours'], got[0]['taken']) == (0, 2, 0) and text == u'', 'no file of the other version: nothing is said: %r' % text)
+    got, text = found('its own tree', only={})
+    check(got[0]['ours_all'] == 0 and u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415' not in text
+          and u'\u0424\u0430\u0439\u043b\u043e\u0432 \u0432\u0435\u0440\u0441\u0438\u0438 \xabMod OLD\xbb, \u043a\u043e\u0442\u043e\u0440\u043e\u0439 \u0432 \u0441\u0431\u043e\u0440\u043a\u0435 \u043d\u0435\u0442: 2 \u0438\u0437 4' in text,
+          'a list that does not tell which files only the version in the addon names: counted, no guess: %s' % text)
+    # (a stray file or two of the version in the addon do not make the content its own)
+    def verdict(theirs, theirs_all, ours, ours_all, taken=0):
+        return content_report.of_the_other_version(dict(title='Mod OLD', instead='Mod', theirs=theirs, theirs_all=theirs_all,
+                                                        taken=taken, ours=ours, ours_all=ours_all))
+    check(verdict(13, 15, 0, 85) and verdict(1, 15, 0, 85) and verdict(0, 15, 0, 85, taken=13), 'files of the other version and none of this one: the other version')
+    check(verdict(84, 85, 2, 15) and verdict(13, 15, 2, 85) and verdict(8, 15, 1, 85),
+          'most of the other version and a stray file or two of this one: the other version')
+    check(not verdict(13, 15, 84, 85) and not verdict(13, 15, 13, 85) and not verdict(13, 15, 3, 85) and not verdict(2, 15, 2, 85)
+          and not verdict(7, 15, 1, 85), 'files of both, or few of either: no verdict')
+    check(not verdict(0, 15, 0, 85) and not verdict(0, 15, 84, 85) and not verdict(13, 15, 0, 0),
+          'no file of the other version, or nothing known of the files of this one: no verdict')
+    text = u'\n'.join(content_report.version_lines([dict(title='Mod OLD', instead='Mod', theirs=84, theirs_all=85, taken=0, ours=2, ours_all=15)]))
+    check(u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415: \u043f\u043e\u0445\u043e\u0436\u0435, \u0432\u0430\u0448 \u043a\u043e\u043d\u0442\u0435\u043d\u0442 \u2014 \u043e\u0442 \xabMod OLD\xbb' in text and u'\u0442\u043e\u043b\u044c\u043a\u043e \xabMod\xbb: 2 \u0438\u0437 15.' in text,
+          'the numbers are told as they are: %s' % text)
+    real = [title for title in L.PACK_VERSIONS[0] if title != L.PACK_VERSIONS[0][0]][0]
+    got = content_report.versions_found(reports['its own tree'], {real: L.PACK_VERSIONS[0][0]}, dict((name, real) for name in spare),
+                                        dict((name, real) for name in named))
+    text = u'\\n'.join(content_report.version_lines(got))
+    check(L.VERSION_ZIPS[real] in text and L.VERSION_ZIPS[real] != L.VERSION_ZIPS[L.PACK_VERSIONS[0][0]]
+          and sorted(L.VERSION_ZIPS) == sorted(title for group in L.PACK_VERSIONS for title in group),
+          'for a version the release has an archive of, the archive is named: %s' % text)
+
+    # ---- a name of both versions is a name of the addon
+    report, placed = placing('named by both', {'7/male_10.mdl': mdl('slav/m/male_10.mdl')}, spare=spare + named)
+    check(sorted(placed) == ['models/slav/m/male_10.mdl'] and not report.spare, 'a name the Lua of the addon has is no spare name: %s' % sorted(placed))
+
+    # ================================================================ the build
+    tables, menu, patch = ('homigrad/new_appearance/sh_shared_mod.lua', 'homigrad/new_appearance/sh_shared_mod_menu.lua',
+                           'autorun/client/mod_patch.lua')
+    lua = '''
+        hg.Appearance.PlayerModels[1]["Male 10"] = { mdl = "models/%s/m/male_10.mdl", sex = false, submatSlots = {} }
+        hg.Appearance.Clothes[1].coat = "models/mod/coat"
+        for _, name in ipairs({ "face_1" }) do hg.Appearance.Clothes[1][name] = table.concat({ "mod", "%s", name }, "/") end
+    '''
+    repo = os.path.join(tmp, 'a repository with versions')
+
+    def archive(name, files):
+        os.makedirs(repo, exist_ok=True)
+        with zipfile.ZipFile(os.path.join(repo, name), 'w') as z:
+            for inner, data in files.items():
+                z.writestr(inner, data)
+
+    def build(label):
+        out = os.path.join(tmp, 'versions built ' + label)
+        real = build_addon.HERE
+        build_addon.HERE = repo
+        try:
+            sources, content, named, ran = build_addon.step_dropins(None, os.path.join(tmp, 'versions unpacked ' + label), out)
+        finally:
+            build_addon.HERE = real
+        build_addon.step_sort_tool(out, ran)
+        return out, dict((entry['name'], entry) for entry in sources), content, named, ran
+
+    archive('a new.zip', {'mod/addon.json': '{"title": "Mod"}', 'mod/lua/' + tables: lua % ('new', 'new'),
+                          'mod/lua/' + menu: '-- the menu\n', 'mod/lua/' + patch: '-- a patch\n'})
+    archive('b old.zip', {'old/addon.json': u'\ufeff{"title": " Mod OLD "}'.encode('utf-8'), 'old/lua/' + tables: lua % ('old', 'old'),
+                          'old/lua/' + menu: '-- the menu\n', 'old/sound/mod/hello.wav': b'wav',
+                          'old/models/old/m/male_10.mdl': model([], [], 'old/m/male_10.mdl'), 'old/models/old/m/male_10.vvd': b'vvd'})
+    versions, chosen = L.PACK_VERSIONS, list(L.CHOSEN_PACKS)
+    try:
+        L.PACK_VERSIONS, L.CHOSEN_PACKS[:] = (('Mod', 'Mod OLD'),), []
+        out, sources, content, in_addon, ran = build('by default')
+        got = tree(out)
+        run_list = os.path.join(out, build_addon.SORT_TOOL_DIR, list_content.RUN_LIST)
+        check(got.get('lua/' + tables, b'').decode('utf-8') == lua % ('new', 'new') and 'lua/' + menu in got and 'lua/' + patch in got,
+              'of two versions of a pack the build takes the first one listed, whole')
+        check('sound/mod/hello.wav' not in got, 'and nothing of the other one but its materials and models: %s'
+              % sorted(name for name in got if not name.startswith(build_addon.SORT_TOOL_DIR)))
+        left = sources['b old.zip']['versions']
+        check(len(left) == 1 and not sources['a new.zip']['versions'] and not sum(sources['b old.zip']['counts'][key] for key in ('lua', 'other')),
+              'the source of the other version is told as left out')
+        left = left[0] if left else {}
+        check((left.get('title'), left.get('instead'), left.get('from'), sorted(left.get('lua', ())), left.get('other'),
+               left.get('same'), left.get('differ'), left.get('stubs'))
+              == ('Mod OLD', 'Mod', ['a new.zip'], sorted(['lua/' + menu, 'lua/' + tables]), 1, 1, 1, []),
+              'with what it is, what was taken instead and where from, and how its Lua differs: %s'
+              % dict((key, value) for key, value in left.items() if key != 'lua'))
+        text = '\n'.join(build_addon.version_lines(sources['b old.zip']['versions'], ran))
+        check('NOT TAKEN: "Mod OLD" is another version of "Mod" (a new.zip)' in text and '(1 of its 2 differ)' in text
+              and 'build_addon.bat --pack "Mod OLD"' in text and 'and 1 other files' in text,
+              'the build says so, and how to take the other one: %s' % text)
+        check('models/new/m/male_10.mdl' in in_addon and 'models/old/m/male_10.mdl' not in in_addon,
+              'the names of the version that was taken are the names of the addon')
+        ran_here = ran['result'] is not None
+        theirs = set(['models/old/m/male_10.mdl'] + (['materials/mod/old/face_1.vmt'] if ran_here else []))
+        check([(entry['title'], entry['instead'], entry['names']) for entry in ran['left_out']] == [('Mod OLD', 'Mod', theirs)],
+              'the names only the other version has are kept apart%s: %s'
+              % ('' if ran_here else ' (the ones in its text: Lua is not run here)', ran['left_out']))
+        check(list_content.read_run_other(run_list) == (dict((name, 'Mod OLD') for name in theirs), {'Mod OLD': 'Mod'}),
+              'and written into the list for sort_content.py: %s' % (list_content.read_run_other(run_list),))
+        mine = set(['models/new/m/male_10.mdl'] + (['materials/mod/new/face_1.vmt'] if ran_here else []))
+        check(ran['left_out'][0]['own'] == mine and list_content.read_run_only(run_list) == dict((name, 'Mod OLD') for name in mine),
+              'and so are the names only the version in the addon has - the two kinds tell whose content it is: %s'
+              % (list_content.read_run_only(run_list),))
+        check(not (list_content.read_run_list(run_list)[0] & theirs) and not (set(list_content.read_run_who(run_list)[0]) & theirs),
+              'where they are no names of the addon')
+        check(got.get('models/old/m/male_10.mdl') and got.get('models/old/m/male_10.vvd') == b'vvd'
+              and [dest for dest, _item in content.spare] == ['models/old/m/male_10.mdl'] and not content.missing_materials,
+              'a model of the other version that came along lies at its own place, told as such: %s' % content.spare)
+        if ran_here:
+            bound = got.get('lua/' + build_addon.BOUND_LUA, b'').decode('ascii')
+            check('\nZCGloves.BoundLeftOut = {\n\t["Mod OLD"] = "Mod",\n}\n' in bound
+                  and '\nZCGloves.BoundOther = {\n\t["materials/mod/old/face_1.vmt"] = "Mod OLD",\n\t["models/old/m/male_10.mdl"] = "Mod OLD",\n}\n' in bound,
+                  'the game is told too (zcg_content): %s' % bound[-400:])
+            check('"models/new/m/male_10.mdl"' in bound and '"PlayerModels/1/Male 10", "models/old/m/male_10.mdl"' not in bound,
+                  'and the entries it checks are those of the version in the addon')
+            check('\nZCGloves.BoundOnly = {\n\t["materials/mod/new/face_1.vmt"] = "Mod OLD",\n\t["models/new/m/male_10.mdl"] = "Mod OLD",\n}\n' in bound,
+                  'with the files only that version names: %s' % bound[-300:])
+
+        # the other one, asked for
+        L.CHOSEN_PACKS[:] = ['Mod OLD']
+        out, sources, content, in_addon, ran = build('asked for')
+        got = tree(out)
+        check(got.get('lua/' + tables, b'').decode('utf-8') == lua % ('old', 'old') and got.get('sound/mod/hello.wav') == b'wav',
+              'asked for by its title, the other version is taken, whole')
+        left = sources['a new.zip']['versions']
+        left = left[0] if left else {}
+        check((left.get('title'), left.get('instead'), left.get('from'), left.get('stubs'), left.get('other'))
+              == ('Mod', 'Mod OLD', ['b old.zip'], ['lua/' + patch], 0),
+              'and the first one is left out: %s' % dict((key, value) for key, value in left.items() if key != 'lua'))
+        stub = got.get('lua/' + patch, b'x').decode('ascii')
+        check(stub.startswith('-- Left empty on purpose') and '"Mod"' in stub and '"Mod OLD"' in stub
+              and all(line.startswith('--') for line in stub.splitlines()),
+              'a Lua file only the version that was left out has is put into the addon empty: it replaces the old one in a folder '
+              'the new addon is copied over: %r' % stub[:120])
+        check('lua/' + patch in '\n'.join(build_addon.version_lines(sources['a new.zip']['versions'], ran)), 'the build says so')
+        check('models/old/m/male_10.mdl' in in_addon and 'models/new/m/male_10.mdl' not in in_addon
+              and [entry['title'] for entry in ran['left_out']] == ['Mod']
+              and 'models/new/m/male_10.mdl' in ran['left_out'][0]['names'] and not content.spare
+              and 'models/old/m/male_10.mdl' in ran['left_out'][0]['own'] and 'models/new/m/male_10.mdl' not in ran['left_out'][0]['own'],
+              'its names are the names of the addon then, and those of the first one are the spare ones')
+        made_from = list_content.read_run_list(os.path.join(out, build_addon.SORT_TOOL_DIR, list_content.RUN_LIST))[1]
+        check(sorted(made_from or ()) == sorted([tables, menu, patch]), 'the empty file is a Lua file of the addon like any other: %s'
+              % sorted(made_from or ()))
+
+        # asked for something that is not there
+        for asked, words in ((['Nope'], ('--pack "Nope"', '"Mod"', '"Mod OLD"')), ):
+            L.CHOSEN_PACKS[:] = asked
+            try:
+                build('asked for nothing')
+                check(False, 'a title that is no version of anything stops the build')
+            except build_addon.BuildError as err:
+                check(all(word in str(err) for word in words), 'a title that is no version of anything stops the build, with the ones that are: %s' % err)
+        os.rename(os.path.join(repo, 'b old.zip'), os.path.join(tmp, 'b old.zip'))
+        L.CHOSEN_PACKS[:] = ['Mod OLD']
+        try:
+            build('asked for the absent')
+            check(False, 'a version that no source brings stops the build')
+        except build_addon.BuildError as err:
+            check('--pack "Mod OLD"' in str(err) and 'no drop-in source' in str(err), 'a version that no source brings stops the build: %s' % err)
+        # one version alone is a pack like any other
+        L.CHOSEN_PACKS[:] = []
+        out, sources, content, in_addon, ran = build('one alone')
+        check(not sources['a new.zip']['versions'] and ran['left_out'] == [] and sources['a new.zip']['counts']['lua'] == 3
+              and list_content.read_run_other(os.path.join(out, build_addon.SORT_TOOL_DIR, list_content.RUN_LIST)) == ({}, {}),
+              'a version that is there alone is a pack like any other')
+        os.rename(os.path.join(tmp, 'b old.zip'), os.path.join(repo, 'b old.zip'))
+
+        # two packs with different Lua for one place that nobody listed as versions: the build stops
+        L.PACK_VERSIONS = ()
+        try:
+            build('not listed')
+            check(False, 'two packs that are not listed as versions stop the build')
+        except build_addon.BuildError as err:
+            check('a new.zip' in str(err) and 'b old.zip' in str(err) and '"Mod"' in str(err) and '"Mod OLD"' in str(err)
+                  and 'PACK_VERSIONS' in str(err),
+                  'two packs with different Lua for one place that are not listed as versions stop the build; it names their titles '
+                  'and the list: %s' % err)
+    finally:
+        L.PACK_VERSIONS = versions
+        L.CHOSEN_PACKS[:] = chosen
+    check(L.versions_left_out(['Mod', 'Mod OLD']) == {}, '(the made-up versions are forgotten again)')
+
+    # ---- a release has an archive for each version; the workflow that builds them and the list agree
+    def workflow_text(name):
+        # (a checkout on Windows may have other line ends)
+        return build_addon.read_bytes(os.path.join(ROOT, '.github', 'workflows', name)).decode('utf-8').replace('\r\n', '\n')
+
+    workflow, tests = workflow_text('release.yml'), workflow_text('test.yml')
+    chosen = list(L.CHOSEN_PACKS)
+    try:
+        for group in L.PACK_VERSIONS:
+            for number, title in enumerate(group):
+                archive = L.VERSION_ZIPS.get(title, '')
+                L.CHOSEN_PACKS[:] = [title]
+                out = os.path.join('somewhere', L.ADDON_DIRNAME)
+                check(archive and build_addon.zip_path(out) == os.path.join('somewhere', archive)
+                      and len(set(L.VERSION_ZIPS.values())) == len(L.VERSION_ZIPS),
+                      'a build with "%s" packs its archive under a name of its own: %s' % (title, build_addon.zip_path(out)))
+                check(workflow.count('build/' + archive + ' ') + workflow.count('build/' + archive + '\n') >= 2,
+                      'the release workflow attaches %s' % archive)
+                if number:
+                    check('build_addon.py --zip --pack "%s"' % title in workflow, 'and builds it with --pack "%s"' % title)
+                    check('test_lua.py --pack "%s"' % title in workflow and 'test_lua.py --pack "%s"' % title in tests,
+                          'the Lua tests are run with "%s" as well, by both workflows' % title)
+                else:
+                    L.CHOSEN_PACKS[:] = []
+                    check(archive == L.ADDON_DIRNAME + '.zip' and build_addon.zip_path(out) == out + '.zip',
+                          'the version taken by default is the one in %s.zip' % L.ADDON_DIRNAME)
+    finally:
+        L.CHOSEN_PACKS[:] = chosen
+
+    # ================================================================ the tool of the owner
+    models = [name for name in named if name.endswith('.mdl')]
+
+    def addon(label, files, only=models):
+        root = os.path.join(tmp, 'versions sorted ' + label, 'zcity_csgo_gloves')
+        text = '\n'.join('hg.Appearance.PlayerModels[1]["%s"] = { mdl = "%s" }' % (name, name) for name in models)
+        write(os.path.join(root, 'lua', TABLE_LUA), text)
+        for rel, data in files.items():
+            write(os.path.join(root, rel), data)
+        path = os.path.join(tmp, 'versions sorted ' + label, 'names.txt')
+        list_content.write_run_list(path, models, {TABLE_LUA: text}, titles={TABLE_LUA: 'Mod'},
+                                    left_out=[('Mod OLD', 'Mod', spare) + ((only + ['materials/gone/of_a_changed_lua.vmt'],) if only else ())])
+        return root, path
+
+    root, path = addon('names', {})
+    got = sort_content.names_of([os.path.join(root, 'lua')], path)
+    check(got.instead == {'Mod OLD': 'Mod'} and got.spare == dict((name, 'Mod OLD') for name in spare) and not (got.named & set(spare)),
+          'sort_content.py reads the names of the other version out of the list, apart from those of the addon: %s' % got.spare)
+    check(got.only == dict((name, 'Mod OLD') for name in models) and list_content.read_run_list(path)[0] == set(models),
+          'and the names only the version in the addon has - those the Lua still names: %s' % got.only)
+    root, path = addon('names of an older build', {}, only=None)
+    got = sort_content.names_of([os.path.join(root, 'lua')], path)
+    check(got.only == {} and list_content.read_run_only(path) == {} and got.spare, 'a list without them: none')
+
+    root, path = addon('the other version', {
+        'materials/7/male_10.mdl': mdl('zcity/m/male_10.mdl'), 'materials/7/male_10.vvd': b'vvd',
+        'models/zcity/m/eli.mdl': mdl('eli.mdl'),
+        'materials/8/zoey.mdl': mdl('slav/f/zoey.mdl')})
+    code, text = sort('--addon', root, '--names-list', path)
+    got = tree(root)
+    report = got.pop(sort_content.REPORT, b'').decode('utf-8-sig')
+    check(code == 0 and sorted(got) == ['lua/' + TABLE_LUA, 'models/slav/f/zoey.mdl', 'models/zcity/m/eli.mdl',
+                                        'models/zcity/m/male_10.mdl', 'models/zcity/m/male_10.vvd'],
+          'sort_content.py: the models of the other version go to their places, the one of the addon to its own: %s' % sorted(got))
+    check(u'\u0412 \u044d\u0442\u043e\u0439 \u0441\u0431\u043e\u0440\u043a\u0435 \xabMod\xbb. \xabMod OLD\xbb \u2014 \u0434\u0440\u0443\u0433\u0430\u044f \u0432\u0435\u0440\u0441\u0438\u044f \u0442\u043e\u0433\u043e \u0436\u0435 \u0430\u0434\u0434\u043e\u043d\u0430' in text
+          and u'(\u0438\u043c\u0451\u043d: 4)' in text,
+          'it tells which version the addon is built with: %r' % text[:700])
+    check(u'\u0424\u0430\u0439\u043b\u043e\u0432 \u0432\u0435\u0440\u0441\u0438\u0438 \xabMod OLD\xbb, \u043a\u043e\u0442\u043e\u0440\u043e\u0439 \u0432 \u0441\u0431\u043e\u0440\u043a\u0435 \u043d\u0435\u0442: 2 \u0438\u0437 4 \u2014 \u043b\u0435\u0436\u0430\u0442 \u043d\u0430 \u0441\u0432\u043e\u0438\u0445 \u043c\u0435\u0441\u0442\u0430\u0445' in text
+          and u'\u0442\u043e\u043b\u044c\u043a\u043e \xabMod\xbb (\u043e\u043d\u0430 \u0432 \u0441\u0431\u043e\u0440\u043a\u0435): 1 \u0438\u0437 3.' in text and u'\u043f\u043e\u0445\u043e\u0436\u0435, \u0432\u0430\u0448 \u043a\u043e\u043d\u0442\u0435\u043d\u0442' not in text,
+          'how many files of the other version there are, and of the one in the addon: %r' % text[-900:])
+    check(u'\u043f\u043e \u0438\u043c\u0435\u043d\u0438 \u043f\u043e\u0434\u043e\u0448\u043b\u0438 \u0431\u044b \u043d\u0430 \u043f\u0443\u0441\u0442\u044b\u0435 \u043c\u0435\u0441\u0442\u0430, \u043d\u043e \u043e\u043a\u0430\u0437\u0430\u043b\u0438\u0441\u044c \u0444\u0430\u0439\u043b\u0430\u043c\u0438 \u0434\u0440\u0443\u0433\u043e\u0439 \u0432\u0435\u0440\u0441\u0438\u0438 \u0430\u0434\u0434\u043e\u043d\u0430: 1' in text
+          and u'male_10.mdl' in text,
+          'and warns of the one that would have fitted an empty place by its name: %r' % text[-900:])
+    check(u'\u043d\u0430\u0437\u0432\u0430\u043d\u043d\u044b\u0445 \u0432 Lua: 2 \u0438\u0437 3' in text, 'the files of the other version are not counted as missing: %r' % text[-900:])
+    check(u'\u0424\u0430\u0439\u043b\u044b \u0434\u0440\u0443\u0433\u043e\u0439 \u0432\u0435\u0440\u0441\u0438\u0438 \u0430\u0434\u0434\u043e\u043d\u0430, Lua \u043a\u043e\u0442\u043e\u0440\u043e\u0439 \u0432 \u0441\u0431\u043e\u0440\u043a\u0435 \u043d\u0435\u0442 \u2014 2' in report
+          and u'  \u00abMod OLD\u00bb \u2014 2\n    models/zcity/m/eli.mdl\n    models/zcity/m/male_10.mdl\n' in report.replace('\r\n', '\n'),
+          'the report lists them: %r' % report[-1500:])
+    check(u'\u043c\u043e\u0434\u0435\u043b\u044c \u0441\u0430\u043c\u0430 \u0433\u043e\u0432\u043e\u0440\u0438\u0442, \u0447\u0442\u043e \u0441\u043e\u0431\u0440\u0430\u043d\u0430 \u0434\u043b\u044f \u044d\u0442\u043e\u0433\u043e \u043f\u0443\u0442\u0438' in report, 'with the note about the one that was not taken')
+    again, text = sort('--addon', root, '--names-list', path)
+    after = tree(root)
+    after.pop(sort_content.REPORT, None)
+    check(again == 0 and after == got and u'\u043f\u043e\u0434\u043e\u0448\u043b\u0438 \u0431\u044b' not in text,
+          'a second run leaves everything where it is, and has nothing to warn of: the files lie at their places now')
+
+    # nothing but the content of the other version: the owner is told so
+    root, path = addon('only the other version', {'materials/7/male_10.mdl': mdl('zcity/m/male_10.mdl'), 'materials/7/male_10.vvd': b'vvd',
+                                                  'materials/7/eli.mdl': mdl('zcity/m/eli.mdl')})
+    code, text = sort('--addon', root, '--names-list', path)
+    got = tree(root)
+    report = got.pop(sort_content.REPORT, b'').decode('utf-8-sig')
+    check(code == 0 and sorted(got) == ['lua/' + TABLE_LUA, 'models/zcity/m/eli.mdl', 'models/zcity/m/male_10.mdl', 'models/zcity/m/male_10.vvd'],
+          'the content of the other version alone: put at the places of that version: %s' % sorted(got))
+    for where, said in (('on the screen', text), ('in the report', report)):
+        check(u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415: \u043f\u043e\u0445\u043e\u0436\u0435, \u0432\u0430\u0448 \u043a\u043e\u043d\u0442\u0435\u043d\u0442 \u2014 \u043e\u0442 \xabMod OLD\xbb, \u0430 \u044d\u0442\u0430 \u0441\u0431\u043e\u0440\u043a\u0430 \u2014 \u0441 \xabMod\xbb.' in said
+              and u'\u0442\u043e\u043b\u044c\u043a\u043e \xabMod OLD\xbb: 2 \u0438\u0437 4.' in said and u'\u0442\u043e\u043b\u044c\u043a\u043e \xabMod\xbb: 0 \u0438\u0437 3.' in said
+              and u'build_addon.bat --pack "Mod OLD"' in said,
+              'and the owner is told, %s, whose content it is and which build to take: %r' % (where, said[-1400:]))
+    # ... put there by the tool as it was before it knew of versions: by the file name alone
+    root, path = addon('taken by name before', {'models/slav/m/male_10.mdl': mdl('zcity/m/male_10.mdl'), 'models/slav/m/male_10.vvd': b'vvd',
+                                                'models/slav/m/eli.mdl': mdl('zcity/m/eli.mdl')})
+    before = tree(root)
+    code, text = sort('--addon', root, '--names-list', path)
+    got = tree(root)
+    got.pop(sort_content.REPORT, None)
+    check(code == 0 and got == before, 'models of the other version that lie at the places of the addon are left there: %s' % sorted(got))
+    check(u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415: \u043f\u043e\u0445\u043e\u0436\u0435, \u0432\u0430\u0448 \u043a\u043e\u043d\u0442\u0435\u043d\u0442 \u2014 \u043e\u0442 \xabMod OLD\xbb' in text
+          and u'\u043b\u0435\u0436\u0430\u0442 \u043d\u0430 \u043c\u0435\u0441\u0442\u0430\u0445 \xabMod\xbb, \u0430 \u0441\u043e\u0431\u0440\u0430\u043d\u044b \u0434\u043b\u044f \u043f\u0443\u0442\u0435\u0439 \xabMod OLD\xbb: 2.' in text
+          and u'\u0442\u043e\u043b\u044c\u043a\u043e \xabMod\xbb: 0 \u0438\u0437 3.' in text,
+          'and are not taken for the files of the addon: the owner is told whose they are: %r' % text[-1400:])
+
+    # ... and then the build with the other version is taken: the same files, seen from there
+    root, path = addon('taken by name before, the other build', {
+        'models/zcity/m/male_10.mdl': mdl('slav/m/male_10.mdl'), 'models/zcity/m/male_10.vvd': b'vvd',
+        'models/zcity/m/eli.mdl': mdl('slav/m/eli.mdl'), 'models/zcity/m/unknown.mdl': mdl('unknown.mdl')})
+    code, text = sort('--addon', root, '--names-list', path)
+    got = tree(root)
+    report = got.pop(sort_content.REPORT, b'').decode('utf-8-sig')
+    check(code == 0 and sorted(got) == ['lua/' + TABLE_LUA, 'models/slav/m/eli.mdl', 'models/slav/m/male_10.mdl', 'models/slav/m/male_10.vvd',
+                                        'models/zcity/m/unknown.mdl'],
+          'models that lie at the places of the other version and say they were compiled for the places of the addon are '
+          'moved there, with their files: %s' % sorted(got))
+    check(u'\u043f\u043e\u0445\u043e\u0436\u0435, \u0432\u0430\u0448 \u043a\u043e\u043d\u0442\u0435\u043d\u0442' not in text and u'\u043d\u0430\u0437\u0432\u0430\u043d\u043d\u044b\u0445 \u0432 Lua: 1 \u0438\u0437 3' in text
+          and u'\u043e\u043d\u0438 \u043f\u0435\u0440\u0435\u043b\u043e\u0436\u0435\u043d\u044b \u0442\u0443\u0434\u0430 (models/slav/m/eli.mdl, models/slav/m/male_10.mdl)' in report,
+          'they are files of the addon then, and the report tells of the move: %r' % text[-900:])
+
+    root, path = addon('no list of versions', {'materials/7/male_10.mdl': mdl('zcity/m/male_10.mdl')})
+    plain = os.path.join(os.path.dirname(path), 'plain.txt')
+    list_content.write_run_list(plain, [name for name in named if name.endswith('.mdl')],
+                                {TABLE_LUA: build_addon.read_bytes(os.path.join(root, 'lua', TABLE_LUA)).decode('utf-8')})
+    code, text = sort('--addon', root, '--names-list', plain)
+    got = tree(root)
+    check(code == 0 and 'models/slav/m/male_10.mdl' in got and u'\u0434\u0440\u0443\u0433\u0430\u044f \u0432\u0435\u0440\u0441\u0438\u044f' not in text,
+          '(an addon whose list knows no other version works as before)')
+
+
 def test_missing_by_pack(tmp):
     """What is not there is told pack by pack: such a file comes with the content of that pack, or
     of something the pack depends on - it was not lost on the way. And a pack that was put beside
@@ -2082,6 +2602,7 @@ def main():
         test_missing_by_pack(tmp)
         test_namesakes_of_a_pack(tmp)
         test_the_build_takes_lua(tmp)
+        test_versions_of_a_pack(tmp)
         test_numbered_folders_of_the_owner(tmp)
         test_random_packings(tmp)
     finally:

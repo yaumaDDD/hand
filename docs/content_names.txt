@@ -713,3 +713,27 @@ ZCITY Clothing+  [луашки для привязок всей одежды.zip
         male_09.mdl
 
 637 names in all
+
+Z-City Appearance Mod LEGACY  [луашки для привязок 3.zip]
+    НЕ В СБОРКЕ. Это другая версия аддона «Z-City Appearance Mod»: у обеих одни и те же Lua-файлы,
+    в игре может быть только одна. Сборка берёт «Z-City Appearance Mod»; эту берёт
+    build_addon.bat --pack "Z-City Appearance Mod LEGACY" (в выпуске на GitHub это архив zcity_csgo_gloves_legacy.zip).
+    Файлы, которые называет только эта версия (с этой сборкой игре они не нужны):
+    materials/models/humans/slav/mossman/                            2 names
+        mossman_face.vmt
+        mossman_hair.vmt
+    models/zcity/f/                                                  4 names
+        mossman.mdl
+        rochelle.mdl
+        scientist_female.mdl
+        zoey.mdl
+    models/zcity/m/                                                  9 names
+        barney.mdl
+        bill.mdl
+        cheaple.mdl
+        cohrt.mdl
+        eli.mdl
+        johnwick.mdl
+        leet.mdl
+        male_10.mdl
+        travis.mdl

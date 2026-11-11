@@ -12,6 +12,7 @@ on:
       - 'zcity_csgo_gloves/lua/**'
       - 'zcity_csgo_gloves/sort_content.bat'
       - '.github/workflows/test.yml'
+      - '.github/workflows/release.yml'    # (tools/test_content.py reads it)
   workflow_dispatch:
 
 permissions:
@@ -41,6 +42,10 @@ jobs:
 
       - name: Test the Lua code
         run: python tools/test_lua.py
+
+      # (the repository holds two versions of the Appearance Mod: everything once more with the other one)
+      - name: Test the Lua code with the other version of the Appearance Mod
+        run: python tools/test_lua.py --pack "Z-City Appearance Mod LEGACY"
 
       - name: Test the placing of drop-in content
         run: python tools/test_content.py

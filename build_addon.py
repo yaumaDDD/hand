@@ -24,6 +24,7 @@ About 1.5 GB of free disk space is used while building; the result is about 270 
 import argparse
 import collections
 import os
+import posixpath
 import re
 import shutil
 import struct
@@ -366,8 +367,12 @@ def step_dropins(extractor, temp, out, by_hand=()):
     A file of this addon is never replaced; of two different files with one path the one from
     the source that comes later by name is used - but not of two Lua files: which of two versions
     of a script is meant cannot be told here, and dropping one without a word would lose what it
-    adds, so the build stops. by_hand - the materials and models that were put into the folders
-    of the addon itself (see step_skeleton) - come last.
+    adds, so the build stops. Unless the two are known to be versions of one addon
+    (zcg_layout.PACK_VERSIONS): then one of them is taken whole and the other is left out whole -
+    its Lua and everything else but its materials and models, which are sorted by name and come
+    first, so that no file of the version that was taken is replaced by one of them. The entry
+    of its source says so ('versions'). by_hand - the materials and models that were put into the
+    folders of the addon itself (see step_skeleton) - come last.
     Returns (a report for each source, the Report of place_content, the paths the Lua names,
     what running that Lua told - see run_lua)."""
     report, placed, content, lua = [], {}, [], []
@@ -378,12 +383,41 @@ def step_dropins(extractor, temp, out, by_hand=()):
         raise BuildError('%s: the archive is in the repository both whole and in parts (.001, .002 ...); '
                          'remove one of the two' % ', '.join(twice))
     forget_old_dropins(temp, sources)
+
+    # the pack of every file (the title in the addon.json above it), and which packs are left out
+    # because another version of them is taken
+    listed, with_lua = [], set()
     for number, (name, kind, paths) in enumerate(sources, 1):
+        files = dropin_files(extractor, temp, name, kind, paths)
+        on_disk = dict(files)
+        lower = L.lower_names(on_disk)
+        titles, of_folder = {}, {}
+        for inner, _full in files:
+            folder = posixpath.dirname(inner.replace('\\', '/'))
+            if folder not in of_folder:
+                of_folder[folder] = L.pack_title(lower, lambda path: read_bytes(on_disk[path]), inner)
+            titles[inner] = of_folder[folder]
+            dest = L.dropin_destination(inner)
+            if dest and dest.startswith('lua/') and dest.endswith('.lua'):
+                with_lua.add(titles[inner])
+        listed.append((number, name, kind, paths, files, titles))
+    for title in L.CHOSEN_PACKS:
+        if title not in L.version_titles():
+            raise BuildError('--pack "%s": no such version is known. The packs that have versions (PACK_VERSIONS in '
+                             'tools/zcg_layout.py): %s' % (title, ', '.join('"%s"' % known for known in L.version_titles())))
+        if title not in with_lua:
+            raise BuildError('--pack "%s": no drop-in source brings the Lua of that pack' % title)
+    left = L.versions_left_out(with_lua)
+    versions, pack_at = collections.OrderedDict(), {}
+
+    for number, name, kind, paths, files, titles in listed:
         counts = collections.Counter()
-        left_out, notes, no_place = 0, [], []
-        for inner, full in dropin_files(extractor, temp, name, kind, paths):
+        left_out, notes, no_place, mine = 0, [], [], []
+        for inner, full in files:
+            title = titles[inner]
             if place_content.kind_of(inner):
-                content.append(place_content.Item(name, inner, full, L.dropin_destination(inner), number))
+                # (of a version that is left out: before every other source, so that it replaces nothing)
+                content.append(place_content.Item(name, inner, full, L.dropin_destination(inner), 0 if title in left else number))
                 continue
             dest = L.dropin_destination(inner)
             if dest is None:
@@ -392,6 +426,16 @@ def step_dropins(extractor, temp, out, by_hand=()):
                 continue
             data = read_bytes(full)
             digest = hashlib.sha1(data).digest()
+            if title in left:
+                version = versions.get((title, name))
+                if version is None:
+                    version = versions[(title, name)] = dict(title=title, instead=left[title], source=name, lua={}, other=0)
+                    mine.append(version)
+                if dest.startswith('lua/') and dest.endswith('.lua'):
+                    version['lua'][dest] = data
+                else:
+                    version['other'] += 1
+                continue
             target = os.path.join(out, dest)
             if dest in placed:
                 if placed[dest][1] == digest:
@@ -399,7 +443,11 @@ def step_dropins(extractor, temp, out, by_hand=()):
                 if dest.endswith('.lua'):
                     raise BuildError('two drop-in sources bring different Lua files for one place, %s: "%s" and "%s". '
                                      'Only one can be in the addon, and what the other adds would be lost: remove or '
-                                     'rename one of the two.' % (dest, placed[dest][0], name))
+                                     'rename one of the two. (Two versions of one addon? Name their titles - %s and %s - '
+                                     'in PACK_VERSIONS of tools/zcg_layout.py: one of them is then taken whole.)'
+                                     % (dest, placed[dest][0], name,
+                                        '"%s"' % pack_at[dest] if pack_at.get(dest) else 'no addon.json there',
+                                        '"%s"' % title if title else 'no addon.json there'))
                 notes.append('%s: another version is in %s, the one from here is used' % (dest, placed[dest][0]))
             elif os.path.exists(target):
                 notes.append('%s: the file of this addon is kept' % dest)
@@ -411,23 +459,47 @@ def step_dropins(extractor, temp, out, by_hand=()):
             with open(target, 'wb') as f:
                 f.write(data)
             placed[dest] = (name, digest)
+            pack_at[dest] = title
             if dest.endswith('.lua'):
                 lua.append(data)
         report.append(dict(name=name, kind=kind, parts=len(paths), counts=counts, left_out=left_out, notes=notes,
-                           no_place=no_place))
+                           no_place=no_place, versions=mine))
     if by_hand:
         name = L.ADDON_DIRNAME
         for inner, full in by_hand:
             content.append(place_content.Item(name, inner, full, L.dropin_destination(inner), len(sources) + 1))
         report.append(dict(name=name, kind='folder', parts=1, counts=collections.Counter(), left_out=0, notes=[],
-                           no_place=[]))
+                           no_place=[], versions=[]))
+
+    # a version that was left out, measured against the one that was taken
+    for version in versions.values():
+        theirs = dict((dest, placed[dest]) for dest, title in pack_at.items() if title == version['instead'])
+        version['from'] = sorted(set(source for source, _digest in theirs.values()))
+        version['instead_lua'] = sorted(dest for dest in theirs if dest.startswith('lua/') and dest.endswith('.lua'))
+        version['same'] = sum(1 for dest, data in version['lua'].items()
+                              if dest in placed and placed[dest][1] == hashlib.sha1(data).digest())
+        version['differ'] = sum(1 for dest in version['lua'] if dest in placed) - version['same']
+        # A Lua file only this version has: the folder of the owner may hold it, from an addon
+        # that was built with this version - the new addon is copied over the old one, and
+        # nothing is deleted then. An empty file takes its place.
+        version['stubs'] = []
+        for dest in sorted(version['lua']):
+            target = os.path.join(out, dest)
+            if dest in placed or os.path.exists(target):
+                continue
+            data = STUB_LUA % (version['title'], version['instead'])
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, 'w', encoding='ascii', newline='\n') as f:
+                f.write(data)
+            placed[dest] = ('', hashlib.sha1(data.encode('ascii')).digest())
+            version['stubs'].append(dest)
 
     # what that Lua wants to find in the materials and models folders: what its text spells out,
     # and what it puts into the appearance tables when it is run
     named = set()
     for data in lua:
         named |= list_content.names_in(data.decode('utf-8-sig', 'replace'))
-    ran = run_lua(out) if lua else dict(result=None, files={}, tried=False)
+    ran = run_lua(out, list(versions.values())) if lua else dict(result=None, files={}, tried=False, left_out=[])
     ran['only'] = set()
     if ran['result'] is not None:
         ran['only'] = set(ran['result'].names) - named - list_content.stock_names()
@@ -435,8 +507,15 @@ def step_dropins(extractor, temp, out, by_hand=()):
         named -= ran['result'].stock
     if named:
         named -= list_content.stock_names()
+    # the files only a version that was left out names: they have their places too - a file of
+    # that version is not taken for a namesake of the version in the addon - and nobody asks for them
+    spare = set()
+    for entry in ran['left_out']:
+        entry['names'] -= named
+        entry['own'] &= named
+        spare |= entry['names']
 
-    result = place_content.place(content, named, lambda path: os.path.isfile(os.path.join(out, path)))
+    result = place_content.place(content, named, lambda path: os.path.isfile(os.path.join(out, path)), spare)
     by_name = dict((entry['name'], entry) for entry in report)
     for dest, item in result.placed:
         copy(item.path, os.path.join(out, dest))
@@ -446,12 +525,16 @@ def step_dropins(extractor, temp, out, by_hand=()):
     return report, result, named, ran
 
 
-def run_lua(out):
+def run_lua(out, versions=()):
     """Runs the Lua of the assembled addon the way the game would (tools/lua_names.py) and reads
     the appearance tables. Returns dict(result = a lua_names.Result, or None where Lua cannot be
     run; files = {path below lua/: text} of the Lua that is not the gloves' own; tried = True).
     What the tables hold then is written into the addon (BOUND_LUA): in the game zcg_content
-    compares the tables with it. bound = how many entries that list has."""
+    compares the tables with it. bound = how many entries that list has.
+    versions: the packs that were left out because another version of them is in the addon
+    (step_dropins). Each is run once in the place of that one, for the names only it names
+    (names) and the names the addon as it is names and it does not (own):
+    left_out = [dict(title, instead, source, names, own)]."""
     bound = os.path.join(out, 'lua', BOUND_LUA)
     if os.path.isfile(bound):
         os.remove(bound)
@@ -460,13 +543,37 @@ def run_lua(out):
     result = lua_names.run_addon(everything)[0] if lua_names.available() else None
     listed = 0
     titles = dict((path, title) for path, title in list_content.pack_titles(HERE).items() if path in files)
+
+    used = set()
+    for text in files.values():
+        used |= list_content.names_in(text)
+    if result is not None:
+        used |= set(result.names)
+        used -= result.stock
+    used -= list_content.stock_names()
+    left_out = []
+    for version in versions:
+        theirs = dict((dest[len('lua/'):], lua_names.lua_text(data)) for dest, data in version['lua'].items())
+        instead = set(dest[len('lua/'):] for dest in version['instead_lua'])
+        names = list_content.other_version_names(everything, instead, theirs, text_only=result is None)
+        names -= list_content.stock_names()
+        left_out.append(dict(title=version['title'], instead=version['instead'], source=version['source'],
+                             names=names - used, own=used - names))
+
     if result is not None:
         by_file = bound_entries(result)
         listed = sum(len(entries) for entries in by_file.values())
         if listed:
-            write_bound(bound, by_file, titles)
+            write_bound(bound, by_file, titles, left_out)
             check_bound(bound, by_file, everything)
-    return dict(result=result, files=files, tried=True, bound=listed, titles=titles)
+    return dict(result=result, files=files, tried=True, bound=listed, titles=titles, left_out=left_out)
+
+
+# what stands at the place of a Lua file that only a left-out version of a pack has
+STUB_LUA = ('-- Left empty on purpose by build_addon.py.\n'
+            '-- "%s" has a Lua file here. This addon was built with "%s" instead - another version of the\n'
+            '-- same addon, which has none. The empty file is here to replace that one in a folder that was\n'
+            '-- updated by copying the new addon over the old one.\n')
 
 
 # the entries of the appearance tables that the Lua of the clothing packs makes, for the game
@@ -525,8 +632,9 @@ def check_bound(path, by_file, lua_files):
                                 ', such as %r' % (missing[0][0],) if missing else ''))
 
 
-def write_bound(path, by_file, titles=None):
-    """by_file: bound_entries(); titles: {Lua file: the title of the pack it came with}"""
+def write_bound(path, by_file, titles=None, left_out=()):
+    """by_file: bound_entries(); titles: {Lua file: the title of the pack it came with};
+    left_out: the versions of packs that are not in the addon, each with the names only it names"""
     lines = [
         '-- Written by build_addon.py; made anew with every build of the addon.',
         '--',
@@ -544,13 +652,36 @@ def write_bound(path, by_file, titles=None):
             lines.append('\t\t{ %s, %s%s },' % (lua_string(entry), lua_string(value), '' if side is None else ', %d' % side))
         lines.append('\t},')
     lines.append('}')
+    def text(value):
+        # (a title is text: written as UTF-8, which is what the console of the game shows)
+        return lua_string(lua_names.lua_text((u'%s' % value).encode('utf-8')))
+
     named = sorted(by for by in by_file if (titles or {}).get(by))
     if named:
         lines += ['', '-- the packs these Lua files came with: zcg_content names them next to a missing file', 'ZCGloves.BoundPacks = {']
         for by in named:
-            # (a title is text: written as UTF-8, which is what the console of the game shows)
-            title = lua_names.lua_text((u'%s' % titles[by]).encode('utf-8'))
-            lines.append('\t[%s] = %s,' % (lua_string(by), lua_string(title)))
+            lines.append('\t[%s] = %s,' % (lua_string(by), text(titles[by])))
+        lines.append('}')
+    if left_out:
+        lines += ['',
+                  '-- Packs whose Lua is NOT in this addon: each is another version of a pack that is, and the game can',
+                  '-- only have one of the two (zcg_layout.PACK_VERSIONS). pack = the pack that is here instead.',
+                  'ZCGloves.BoundLeftOut = {']
+        for entry in sorted(left_out, key=lambda entry: entry['title']):
+            lines.append('\t[%s] = %s,' % (text(entry['title']), text(entry['instead'])))
+        lines += ['}',
+                  '-- the files only such a pack names: the game does not need them with this addon',
+                  'ZCGloves.BoundOther = {']
+        for entry in sorted(left_out, key=lambda entry: entry['title']):
+            for name in sorted(entry['names']):
+                lines.append('\t[%s] = %s,' % (lua_string(name), text(entry['title'])))
+        lines += ['}',
+                  '-- the files this addon names and such a pack does not: which of the two kinds is installed tells',
+                  '-- which version the content on this computer belongs to',
+                  'ZCGloves.BoundOnly = {']
+        for entry in sorted(left_out, key=lambda entry: entry['title']):
+            for name in sorted(entry.get('own', ())):
+                lines.append('\t[%s] = %s,' % (lua_string(name), text(entry['title'])))
         lines.append('}')
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='ascii', newline='\n') as f:
@@ -587,9 +718,39 @@ def step_sort_tool(out, ran=None):
         names = set(result.names) - stock if result is not None else set()
         by = dict((name, result.names[name]['by']) for name in names)
         list_content.write_run_list(os.path.join(dest, list_content.RUN_LIST), names, ran['files'], ran=result is not None,
-                                    failed=lua_failed(ran), by=by, titles=ran.get('titles'))
+                                    failed=lua_failed(ran), by=by, titles=ran.get('titles'),
+                                    left_out=[(entry['title'], entry['instead'], entry['names'] - stock,
+                                               entry.get('own', set()) - stock)
+                                              for entry in ran.get('left_out', ())])
         listed = len(names)
     return len(SORT_TOOL), len(stock), listed
+
+
+def version_lines(versions, ran):
+    """what the build says about the packs of a source that were left out because another version
+    of them is in the addon (step_dropins)"""
+    out = []
+    names = dict((entry['title'], entry['names']) for entry in ran.get('left_out', ()))
+    for version in versions:
+        spare = names.get(version['title'], ())
+        out.append('      NOT TAKEN: "%s" is another version of "%s" (%s). Both bring the same Lua files'
+                   % (version['title'], version['instead'], ', '.join(version['from']) or '?'))
+        out.append('          (%d of its %d differ), and the game can only have one of the two. The addon is built with'
+                   % (version['differ'], len(version['lua'])))
+        out.append('          "%s", whole; the %d Lua files of this one%s are left out, whole.'
+                   % (version['instead'], len(version['lua']),
+                      ' and %d other files' % version['other'] if version['other'] else ''))
+        if spare:
+            first = sorted(spare)[0]
+            out.append('          %d materials and models are named by this version only, such as %s:' % (len(spare), first))
+            out.append('          the game does not need them with this addon. sort_content.bat knows them, so as not to take')
+            out.append('          such a file for a namesake that is needed.')
+        for dest in version['stubs']:
+            out.append('          %s: only this version has that file. An empty one is put there: it replaces the file in a'
+                       % dest)
+            out.append('          folder that was updated by copying the new addon over the old one.')
+        out.append('          To build with this version instead:  build_addon.bat --pack "%s"' % version['title'])
+    return out
 
 
 def lua_failed(ran):
@@ -886,9 +1047,17 @@ def step_verify(out, foreign=()):
     return problems, len(checked_vmts)
 
 
-def make_zip(out):
-    """<out>.zip with the addon folder inside; byte for byte the same for the same content"""
-    path = out + '.zip'
+def zip_path(out):
+    """where the archive of the addon in out goes: <out>.zip - with the ending of its version
+    when the build was told to take one that has an archive of its own in a release
+    (L.VERSION_ZIPS: build/zcity_csgo_gloves_legacy.zip), so that it does not replace the other"""
+    ending = L.build_zip_name()[len(L.ADDON_DIRNAME):]
+    return out + ending
+
+
+def make_zip(out, path=None):
+    """<out>.zip (or path) with the addon folder inside; byte for byte the same for the same content"""
+    path = path or out + '.zip'
     top = os.path.basename(out)
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
         for rel, full in sorted(walk_files(out)):
@@ -936,8 +1105,14 @@ def main():
     ap.add_argument('--gloves-only', action='store_true',
                     help='leave out the drop-in archives (the Lua, materials and models of other addons that lie '
                          'in the repository root): the gloves alone, as up to version 1.3.0')
-    ap.add_argument('--zip', action='store_true', help='also pack the result into <out>.zip')
+    ap.add_argument('--pack', action='append', default=[], metavar='TITLE',
+                    help='of the drop-in packs that are versions of one addon - they bring the same Lua files, and the '
+                         'game can only have one (PACK_VERSIONS in tools/zcg_layout.py) - take this one, by the title in '
+                         'its addon.json: --pack "Z-City Appearance Mod LEGACY". By default the first one listed there.')
+    ap.add_argument('--zip', action='store_true',
+                    help='also pack the result into <out>.zip (with --pack "Z-City Appearance Mod LEGACY": <out>_legacy.zip)')
     args = ap.parse_args()
+    L.CHOSEN_PACKS[:] = args.pack
 
     # archive names are not always ASCII; a console that cannot show them must not stop the build
     for stream in (sys.stdout, sys.stderr):
@@ -973,7 +1148,9 @@ def main():
         print('  %d oversized textures replaced by their 1024 px DXT5 versions (saves %s)' % (replaced, mb(saved)))
 
     foreign = ()
-    listing = os.path.join(os.path.dirname(out), 'content_report.txt')
+    # (the report of a build that was told to take a version with an archive of its own is named after
+    # it, like the archive: content_report_legacy.txt - it does not replace the report of the other build)
+    listing = os.path.join(os.path.dirname(out), 'content_report%s.txt' % zip_path('')[:-len('.zip')])
     if os.path.isfile(listing):
         os.remove(listing)      # of an earlier build; written again below when there is content
     for name in L.unread_archives(HERE):
@@ -1003,8 +1180,12 @@ def main():
                 if entry['no_place']:
                     left += ': ' + ', '.join(entry['no_place'][:3]) + (' ...' if len(entry['no_place']) > 3 else '')
                 left += ')'
-            print('  drop-in %s: %s%s' % (label, ', '.join(parts) or 'NOTHING for the addon - no Lua, no materials, no models',
-                                          left))
+            nothing = 'NOTHING for the addon - no Lua, no materials, no models'
+            if entry['versions'] and not parts:
+                nothing = 'NOT TAKEN, see below'
+            print('  drop-in %s: %s%s' % (label, ', '.join(parts) or nothing, left))
+            for line in version_lines(entry['versions'], ran):
+                print(line)
             for note in entry['notes'][:10]:
                 print('      note: ' + note)
             if len(entry['notes']) > 10:
@@ -1033,7 +1214,8 @@ def main():
                   '%d materials name %d textures, %d of them have no file'
                   % (content.models, content.materials_wanted, len(content.missing_materials),
                      materials, content.textures_wanted, len(content.missing_textures)))
-            content_report.write(listing, sources, content, named, 'build_addon.py')
+            content_report.write(listing, sources, content, named, 'build_addon.py', spare=dict(
+                (name, entry['title']) for entry in ran.get('left_out', ()) for name in entry['names']))
             print('      (a name without a file may be a part of the game or of Z-City; the lists are in %s)' % listing)
 
     print('Checking')
@@ -1056,7 +1238,7 @@ def main():
         '%s %d' % (key, groups[key][0]) for key in ('models', 'textures', 'materials', 'icons', 'lua') if groups[key][0])))
 
     if args.zip:
-        archive = make_zip(out)
+        archive = make_zip(out, zip_path(out))
         print('  zip: %s (%s)' % (archive, mb(os.path.getsize(archive))))
 
     print('')

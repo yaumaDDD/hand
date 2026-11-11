@@ -3,8 +3,10 @@
 
 Used by build_addon.py (repo root) and by the helper scripts in tools/.
 """
+import json
 import os
 import re
+import zipfile
 
 ADDON_DIRNAME = "zcity_csgo_gloves"
 
@@ -122,6 +124,14 @@ PROJECT_DIRS = (ADDON_DIRNAME, 'tools', 'docs', 'build')
 OWN_CONTENT = ("materials/" + ADDON_DIRNAME + "/", ARMS_MAT_DIR + "/", MODELS_DIR + "/")
 
 
+# the Lua of the gloves themselves, as paths below lua/ (any other Lua in the addon came with a pack)
+OWN_LUA = ('autorun/%s.lua' % ADDON_DIRNAME, ADDON_DIRNAME + '/')
+
+
+def is_own_lua(path):
+    return path.lower().startswith(OWN_LUA)
+
+
 def is_own_content(path):
     return path.replace("\\", "/").lower().startswith(OWN_CONTENT)
 
@@ -198,6 +208,128 @@ def zip_name(info):
         except (UnicodeEncodeError, UnicodeDecodeError):
             pass
     return name
+
+
+# ---------------------------------------------------------------------------------------
+# Packs, and versions of one pack
+# ---------------------------------------------------------------------------------------
+# A drop-in source may hold several addons, each with its addon.json; the title written there
+# is the name of the pack ("Z-City Appearance Mod").
+#
+# Some packs are versions of one addon: they bring the same Lua files, changed. The game can
+# only have one of them - a Lua file has one path - and a version is a whole: the menu of one
+# with the tables of the other is how things break. So of the packs of one tuple below the first
+# one that is there is taken, whole, and the others are left out, whole - their Lua and whatever
+# else they bring but materials and models, which are sorted by name anyway and never replace a
+# file of the version that was taken. The build says so; nothing is dropped without a word:
+# two packs that bring different Lua for one path and are not listed here stop the build.
+#
+# To take another version: python build_addon.py --pack "<title>", or put it first here.
+PACK_VERSIONS = (
+    ("Z-City Appearance Mod", "Z-City Appearance Mod LEGACY"),
+)
+# titles the build was told to take (--pack): they come before the order above
+CHOSEN_PACKS = []
+# A release carries one archive for each version (.github/workflows/release.yml builds them; the
+# folder inside is the same): title -> the name of the archive. The tools name it where the
+# content of the owner turns out to be that of the other version.
+VERSION_ZIPS = {
+    "Z-City Appearance Mod": ADDON_DIRNAME + ".zip",
+    "Z-City Appearance Mod LEGACY": ADDON_DIRNAME + "_legacy.zip",
+}
+
+
+def build_zip_name(chosen=None):
+    """the name of the archive of a build that was told to take these versions (titles; by default
+    the ones --pack named): that of the first of them that has one, else <addon>.zip"""
+    for title in (CHOSEN_PACKS if chosen is None else chosen):
+        if title in VERSION_ZIPS:
+            return VERSION_ZIPS[title]
+    return ADDON_DIRNAME + ".zip"
+
+
+def lower_names(paths):
+    """{path in lower case: the path} - for pack_title"""
+    return dict((path.replace("\\", "/").lower(), path) for path in paths)
+
+
+def pack_title(names, read, inner):
+    """Title of the pack a file of a drop-in source belongs to: the one in the addon.json of the
+    nearest folder above it ("x/addon.json", or "x.json" beside the folder x).
+    names: lower_names() of the paths of the source; read(path) -> the bytes of a file of it.
+    Returns the title; the path of the json when that has no title; None when there is none."""
+    parts = [p for p in inner.replace("\\", "/").split("/") if p]
+    for k in range(len(parts) - 1, 0, -1):
+        for candidate in ("/".join(parts[:k]) + ".json", "/".join(parts[:k]) + "/addon.json"):
+            real = names.get(candidate.lower())
+            if real is None:
+                continue
+            try:
+                title = json.loads(read(real).decode("utf-8-sig", "replace")).get("title")
+            except (ValueError, AttributeError):
+                title = None
+            if isinstance(title, str) and title.strip():
+                return title.strip()
+            return candidate
+    return None
+
+
+def versions_left_out(titles, chosen=None):
+    """titles: the packs that are there. Returns {title of a pack that is left out: title of the
+    version of it that is taken}."""
+    chosen = CHOSEN_PACKS if chosen is None else chosen
+    titles = set(titles)
+    left = {}
+    for group in PACK_VERSIONS:
+        there = [title for title in group if title in titles]
+        if len(there) < 2:
+            continue
+        told = [title for title in there if title in chosen]
+        taken = told[0] if told else there[0]
+        for title in there:
+            if title != taken:
+                left[title] = taken
+    return left
+
+
+def version_titles():
+    """every title that is a version of something (for a message)"""
+    return [title for group in PACK_VERSIONS for title in group]
+
+
+def dropin_lua(root, chosen=None):
+    """The Lua the .zip drop-in archives of a repository root bring - for the tools that read
+    the archives themselves. (The build unpacks every kind of source and asks the same questions:
+    build_addon.step_dropins.) Returns (taken, left_out):
+        taken      [(path in the addon "lua/...", bytes, archive, title of its pack or None)],
+                   archive by archive; one path may come twice
+        left_out   [(title, the title taken instead, archive, [(path, bytes)])] - the packs that
+                   are versions of a pack that was taken (PACK_VERSIONS)"""
+    found = []
+    for archive in dropin_archives(root):
+        if not archive.lower().endswith(".zip"):
+            continue
+        with zipfile.ZipFile(archive) as z:
+            infos = dict((zip_name(info), info) for info in z.infolist())
+            names = lower_names(infos)
+            titles = {}
+            for inner, info in sorted(infos.items()):
+                dest = None if info.is_dir() else dropin_destination(inner)
+                if not dest or not dest.startswith("lua/") or not dest.endswith(".lua"):
+                    continue
+                folder = inner.rsplit("/", 1)[0] if "/" in inner else ""
+                if folder not in titles:
+                    titles[folder] = pack_title(names, lambda path: z.read(infos[path]), inner)
+                found.append((dest, z.read(info), os.path.basename(archive), titles[folder]))
+    left = versions_left_out(set(title for _dest, _data, _archive, title in found), chosen)
+    taken, out = [], {}
+    for dest, data, archive, title in found:
+        if title in left:
+            out.setdefault((title, archive), []).append((dest, data))
+        else:
+            taken.append((dest, data, archive, title))
+    left_out = [(title, left[title], archive, files) for (title, archive), files in sorted(out.items())]
+    return taken, left_out
 
 
 # ---------------------------------------------------------------------------------------

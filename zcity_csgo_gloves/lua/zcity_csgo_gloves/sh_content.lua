@@ -518,6 +518,69 @@ function ZCG.BoundMissing()
 	return count, missing
 end
 
+-- Packs whose Lua is not in this addon because another version of them is: two versions of one
+-- addon bring the same Lua files, and the game can only have one (the build takes one of them,
+-- whole). ZCG.BoundLeftOut: title of such a pack -> the title of the version that is here;
+-- ZCG.BoundOther: file -> the title of the pack that alone names it; ZCG.BoundOnly: a file this
+-- addon names and such a pack does not -> the title of that pack. Returns
+-- { { title = , instead = , files = how many files only it names, there = ... are installed,
+--     own = how many files only the version in the addon names, ownThere = ... are installed,
+--     other = true when the content here is that of the pack that is not in the addon: files of
+--             it are here and none of the other kind - or one or two of them while most of its
+--             own are here: a stray file or two do not make a version }, ... }
+-- sorted by title; empty without such packs.
+function ZCG.OtherVersions()
+	local found = {}
+	local left = ZCG.BoundLeftOut
+	if not istable(left) then return found end
+	local function count(list, title)
+		local all, there = 0, 0
+		for path, pack in pairs(istable(list) and list or {}) do
+			if pack == title and isstring(path) then
+				all = all + 1
+				if has(path) then there = there + 1 end
+			end
+		end
+		return all, there
+	end
+	for title, instead in pairs(left) do
+		local item = { title = tostring(title), instead = tostring(instead) }
+		item.files, item.there = count(ZCG.BoundOther, title)
+		item.own, item.ownThere = count(ZCG.BoundOnly, title)
+		item.other = item.there > 0 and item.own > 0
+			and (item.ownThere == 0 or (item.ownThere <= 2 and item.there * 2 > item.files))
+		found[#found + 1] = item
+	end
+	table.sort(found, function(a, b) return a.title < b.title end)
+	return found
+end
+
+-- trouble: entries of this addon are not in the tables - the other version, installed as an addon
+-- of its own, is one way to get there
+local function tellVersions(out, trouble)
+	for _, item in ipairs(ZCG.OtherVersions()) do
+		out("[CS:GO Gloves] this addon is built with \"" .. item.instead .. "\". \"" .. item.title
+			.. "\" is another version of the same addon and is not in it: the game can only have one of the two")
+		if item.files > 0 then
+			out("  " .. item.there .. " of the " .. item.files .. " files that only \"" .. item.title .. "\" names are here"
+				.. (item.there > 0 and ": the game does not use them with this addon" or ""))
+		end
+		if item.own > 0 then
+			out("  " .. item.ownThere .. " of the " .. item.own .. " files that only \"" .. item.instead .. "\" names are here")
+			if item.other then
+				out("  IT LOOKS LIKE THE CONTENT HERE IS THAT OF \"" .. item.title .. "\": this addon looks for the files of \""
+					.. item.instead .. "\" and finds " .. (item.ownThere == 0 and "none" or "next to none")
+					.. " of them. Take the build of this addon that has \"" .. item.title
+					.. "\" (the other archive of the release) and copy its folder over this one")
+			end
+		end
+		if trouble then
+			out("  if \"" .. item.title .. "\" is installed as an addon of its own as well, its Lua files have the same names as"
+				.. " the ones in this addon and take their place - that makes a list like the one above. Keep one of the two")
+		end
+	end
+end
+
 -- the lines of zcg_content about that, through out(text); returns how many entries are not there
 function ZCG.BoundReport(out)
 	local count, missing = ZCG.BoundMissing()
@@ -525,6 +588,7 @@ function ZCG.BoundReport(out)
 	if #missing == 0 then
 		out("[CS:GO Gloves] the clothing Lua of this addon: all " .. count
 			.. " clothes, faces, models and accessories it adds are in the appearance tables")
+		tellVersions(out, false)
 		return 0
 	end
 
@@ -554,6 +618,7 @@ function ZCG.BoundReport(out)
 	end
 	out("  a Lua file that is named here did not run through (look for its name next to \"error\" further up in the"
 		.. " console, on the server too), or something else made these tables anew or uses the same names")
+	tellVersions(out, true)
 	return #missing
 end
 

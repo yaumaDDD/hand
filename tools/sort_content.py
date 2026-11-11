@@ -94,6 +94,11 @@ class Names(object):
         self.failed = []            # (Lua file, error): stopped with an error where the addon was built
         self.by = {}                # name -> the Lua file that names it (below lua/)
         self.titles = {}            # Lua file -> the title of the pack it came with
+        # Packs whose Lua is not in the addon: another version of them is (the build took that
+        # one, zcg_layout.PACK_VERSIONS).
+        self.instead = {}           # title of such a pack -> title of the pack that is in the addon
+        self.spare = {}             # a file only such a pack names -> its title
+        self.only = {}              # a file the addon names and such a pack does not -> the title of that pack
 
     def pack(self, name):
         """the pack that names a file: its title, else its Lua file; '' when that is not known"""
@@ -116,7 +121,7 @@ def names_of(folders, run_list=None):
     (and without the Lua of the gloves: it only speaks of files the addon has from the start):
     what the text of the Lua spells out, and what the build of the addon found by running it
     (run_list: that list, by default the one beside this script). Returns a Names."""
-    own = ('autorun/%s.lua' % L.ADDON_DIRNAME, L.ADDON_DIRNAME + '/')
+    own = L.OWN_LUA
     result = Names()
     seen = {}
     for number, folder in enumerate(folders):
@@ -150,6 +155,12 @@ def names_of(folders, run_list=None):
         by, titles = list_content.read_run_who(run_list)
         result.by.update(by)
         result.titles = titles
+        spare, result.instead = list_content.read_run_other(run_list)
+        # (a name the Lua in the folder names after all is a name of the addon)
+        result.spare = dict((name, title) for name, title in spare.items()
+                            if name not in result.named and name not in stock)
+        result.only = dict((name, title) for name, title in list_content.read_run_only(run_list).items()
+                           if name in result.named and name not in stock)
     result.named -= stock
     return result
 
@@ -429,6 +440,11 @@ def summary(addon, names, brought, report, job, dry, problems):
         out.append(u'  тоже не будет. Ошибка: %s' % names.failed[0][1])
     if not names.stock_known:
         out.append(u'  (списка имён самого Z-City рядом нет: в «не хватает» попадут и его файлы)')
+    for title, taken in sorted(names.instead.items()):
+        count = sum(1 for pack in names.spare.values() if pack == title)
+        out.append(u'  В этой сборке «%s». «%s» — другая версия того же аддона, её Lua в сборке нет:' % (taken, title))
+        out.append(u'  в игре может быть только одна из двух. Файлы, которые называет только та версия (имён: %d),' % count)
+        out.append(u'  игре с этой сборкой не нужны; в «не хватает» они не попадают.')
     beside = stray(addon)
     if beside:
         out.append(u'ВНИМАНИЕ: в папке аддона есть папки с материалами и моделями, в которые не смотрит ни игра, ни')
@@ -490,6 +506,14 @@ def summary(addon, names, brought, report, job, dry, problems):
             out.append(u'  файл, имени которого прежняя версия не знала, она не взяла, и он остался в той папке.')
     else:
         out.append(u'Все названные файлы на месте.')
+    out += content_report.version_lines(content_report.versions_found(report, names.instead, names.spare, names.only))
+    other = [text for text in report.notes if getattr(text, 'kind', None) == 'other version']
+    if other:
+        out.append(u'ВНИМАНИЕ: файлов, которые по имени подошли бы на пустые места, но оказались файлами другой версии'
+                   u' аддона: %d' % len(other))
+        out.append(u'  (например «%s»). На места, которые называет Lua сборки, они не взяты: туда нужны файлы'
+                   % (other[0].args[0],))
+        out.append(u'  версии, которая в сборке. Подробности — в отчёте, «Замечания».')
     if report.notes:
         out.append(u'Замечаний: %d (файлы-тёзки, которые нечем различить, и т. п.) — см. отчёт' % len(report.notes))
     return out
@@ -527,7 +551,7 @@ def main(argv=None):
         say(u'Читаю файлы контента ...')
         items, lower_case, extra, brought = collect(addon, args.sources, temp)
         say(u'Ищу каждому файлу место (файлов: %d) ...' % len(items))
-        report = P.place(items, named, L.is_own_content)
+        report = P.place(items, named, L.is_own_content, set(names.spare))
         job = plan(addon, items, lower_case, extra, report)
 
         problems = []
@@ -545,7 +569,8 @@ def main(argv=None):
         if job.aside:
             more += [u'', u'Убрано в %s (причины):' % ASIDE] + [u'    %s — файлов: %d' % pair for pair in sorted(reasons.items())]
         listing = os.path.join(addon, REPORT)
-        content_report.write(listing, brought, report, named, 'sort_content.py', more, names.who if names.by else None)
+        content_report.write(listing, brought, report, named, 'sort_content.py', more, names.who if names.by else None,
+                             names.spare)
         say()
         say(u'Подробный отчёт: %s' % listing)
         if not args.dry_run and not problems:

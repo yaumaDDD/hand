@@ -2,6 +2,12 @@
 # zcity_csgo_gloves.zip.  Publish a release and the zip appears on it a few minutes later
 # (with content_report.txt next to it when the repository holds materials or models of other
 # addons: where each of them was put, and what is still missing).
+#
+# The repository holds two versions of the Appearance Mod, and a build can only have one of them
+# (tools/zcg_layout.py, PACK_VERSIONS): the release gets an archive for each -
+# zcity_csgo_gloves.zip with the one the build takes by default and zcity_csgo_gloves_legacy.zip
+# with the other. The names are those of VERSION_ZIPS there; tools/test_content.py checks that
+# this file and that list agree.
 name: Release
 
 on:
@@ -19,7 +25,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
@@ -37,23 +43,32 @@ jobs:
       - name: Test the Lua code
         run: python tools/test_lua.py
 
+      - name: Test the Lua code with the other version of the Appearance Mod
+        run: python tools/test_lua.py --pack "Z-City Appearance Mod LEGACY"
+
       - name: Test the placing of drop-in content
         run: python tools/test_content.py
 
       - name: Test sort_content as it is shipped
         run: python tools/test_sort_tool.py
 
+      # (the unpacked archives are kept for the second build)
       - name: Build the addon
-        run: python build_addon.py --zip
+        run: python build_addon.py --zip --keep-temp
 
-      - name: Attach the zip to the release
+      - name: Build the addon with the other version of the Appearance Mod
+        run: python build_addon.py --zip --pack "Z-City Appearance Mod LEGACY"
+
+      - name: Attach the archives to the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          sha256sum build/zcity_csgo_gloves.zip
-          gh release upload "$TAG" build/zcity_csgo_gloves.zip --clobber
-          # what the build did with the materials and models of other addons, when it found any
-          if [ -f build/content_report.txt ]; then
-            gh release upload "$TAG" build/content_report.txt --clobber
-          fi
+          sha256sum build/zcity_csgo_gloves.zip build/zcity_csgo_gloves_legacy.zip
+          gh release upload "$TAG" build/zcity_csgo_gloves.zip build/zcity_csgo_gloves_legacy.zip --clobber
+          # what the builds did with the materials and models of other addons, when they found any
+          for report in build/content_report.txt build/content_report_legacy.txt; do
+            if [ -f "$report" ]; then
+              gh release upload "$TAG" "$report" --clobber
+            fi
+          done

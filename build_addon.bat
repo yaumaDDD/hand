@@ -1,6 +1,8 @@
 @echo off
 rem Builds the Garry's Mod addon into build\zcity_csgo_gloves - see README.md.
 rem Arguments are passed on to build_addon.py, for example:  build_addon.bat --zip
+rem The repository holds two versions of the Appearance Mod, and an addon can only have one.
+rem To build with the other one:  build_addon.bat --pack "Z-City Appearance Mod LEGACY"
 setlocal
 cd /d "%~dp0"
 

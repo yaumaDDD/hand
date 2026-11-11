@@ -260,6 +260,81 @@ return function(testdir, luaroot)
 		eq(logged("the clothing Lua of this addon: all 8 clothes, faces, models and accessories it adds are in the appearance tables"), 1,
 			"zcg_content says that everything the clothing Lua adds is there")
 		check(M.log[1]:find("content check on the client", 1, true) ~= nil, "after the content check")
+		eq(#ZCG.OtherVersions() .. "|" .. logged("this addon is built with"), "0|0", "versions: an addon without a second version of a pack says nothing about one")
+
+		-- A pack that has two versions: the build took one, and wrote down the other one with the
+		-- files that only it names.
+		ZCG.BoundLeftOut = { ["Mod OLD"] = "Mod" }
+		ZCG.BoundOther = { ["models/old/m/male_10.mdl"] = "Mod OLD", ["models/old/m/eli.mdl"] = "Mod OLD",
+			["materials/models/old/face.vmt"] = "Mod OLD", ["models/elsewhere/x.mdl"] = "Another", [5] = "Mod OLD" }
+		M.files["models/old/m/eli.mdl"] = true
+		local versions = ZCG.OtherVersions()
+		eq(#versions .. "|" .. versions[1].title .. "|" .. versions[1].instead .. "|" .. versions[1].files .. "|" .. versions[1].there,
+			"1|Mod OLD|Mod|3|1", "versions: the pack that is not in the addon, the one that is, and the files only the first one names")
+		eq(versions[1].own .. "|" .. versions[1].ownThere, "0|0", "versions: a build that does not tell which files only its own version names")
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("this addon is built with \"Mod\". \"Mod OLD\" is another version of the same addon and is not in it: the game can only have one of the two"), 1,
+			"versions: zcg_content tells which version the addon is built with")
+		eq(logged("  1 of the 3 files that only \"Mod OLD\" names are here: the game does not use them with this addon"), 1,
+			"versions: and how many files of the other one are installed for nothing")
+		eq(logged("is installed as an addon of its own as well"), 0, "versions: (no word about trouble while the tables are whole)")
+		eq(logged("IT LOOKS LIKE") .. "|" .. logged("files that only \"Mod\" names"), "0|0", "versions: nor a guess about the content without the list for it")
+
+		-- the files only the version in the addon names: which kind is installed tells whose content it is
+		ZCG.BoundOnly = { ["models/new/m/male_10.mdl"] = "Mod OLD", ["models/new/m/eli.mdl"] = "Mod OLD", ["models/elsewhere/y.mdl"] = "Another" }
+		versions = ZCG.OtherVersions()
+		eq(versions[1].own .. "|" .. versions[1].ownThere, "2|0", "versions: the files only the version in the addon names are counted")
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("  0 of the 2 files that only \"Mod\" names are here"), 1, "versions: zcg_content tells how many of them are installed")
+		eq(logged("IT LOOKS LIKE THE CONTENT HERE IS THAT OF \"Mod OLD\": this addon looks for the files of \"Mod\" and finds none of them. "
+			.. "Take the build of this addon that has \"Mod OLD\" (the other archive of the release) and copy its folder over this one"), 1,
+			"versions: files of the other version and none of this one - the content is that of the other version, and it says so")
+		M.files["models/new/m/eli.mdl"] = true
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("  1 of the 2 files that only \"Mod\" names are here") .. "|" .. logged("IT LOOKS LIKE"), "1|0",
+			"versions: with files of both it only counts")
+		M.files["models/new/m/eli.mdl"] = nil
+		-- a stray file of the version in the addon among the files of the other one
+		local only, other = {}, {}
+		for i = 1, 10 do
+			only["models/new/m/n" .. i .. ".mdl"] = "Mod OLD"
+			other["models/old/m/o" .. i .. ".mdl"] = "Mod OLD"
+			if i <= 7 then M.files["models/old/m/o" .. i .. ".mdl"] = true end
+		end
+		local keptOther = ZCG.BoundOther
+		ZCG.BoundOnly, ZCG.BoundOther = only, other
+		M.files["models/new/m/n1.mdl"] = true
+		versions = ZCG.OtherVersions()
+		eq(versions[1].there .. "/" .. versions[1].files .. " " .. versions[1].ownThere .. "/" .. versions[1].own .. " " .. tostring(versions[1].other),
+			"7/10 1/10 true", "versions: most files of the other version and one of this one - still the content of the other version")
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("this addon looks for the files of \"Mod\" and finds next to none of them"), 1, "versions: and zcg_content says so")
+		M.files["models/new/m/n2.mdl"], M.files["models/new/m/n3.mdl"] = true, true
+		eq(ZCG.OtherVersions()[1].other, false, "versions: with more of this one there is no verdict")
+		for i = 1, 10 do
+			M.files["models/new/m/n" .. i .. ".mdl"], M.files["models/old/m/o" .. i .. ".mdl"] = nil, nil
+		end
+		M.files["models/new/m/n1.mdl"], M.files["models/old/m/o1.mdl"], M.files["models/old/m/o2.mdl"] = true, true, true
+		eq(ZCG.OtherVersions()[1].other, false, "versions: nor with a few files of either")
+		M.files["models/new/m/n1.mdl"], M.files["models/old/m/o1.mdl"], M.files["models/old/m/o2.mdl"] = nil, nil, nil
+		ZCG.BoundOther = keptOther
+		ZCG.BoundOnly = { ["models/new/m/male_10.mdl"] = "Mod OLD", ["models/new/m/eli.mdl"] = "Mod OLD", ["models/elsewhere/y.mdl"] = "Another" }
+		M.files["models/old/m/eli.mdl"] = nil
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("  0 of the 3 files that only \"Mod OLD\" names are here") .. "|" .. logged("  0 of the 2 files that only \"Mod\" names are here")
+			.. "|" .. logged("IT LOOKS LIKE"), "1|1|0", "versions: with files of neither there is nothing to guess from")
+		M.files["models/old/m/eli.mdl"] = true
+		ZCG.BoundOnly = nil
+		M.files["models/old/m/eli.mdl"] = nil
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("  0 of the 3 files that only \"Mod OLD\" names are here") .. "|" .. logged("the game does not use them"), "1|0",
+			"versions: none of them installed is told plainly")
 
 		-- one name dropped, one replaced by something else
 		AP.Clothes[1]["Drill 07"] = nil
@@ -279,6 +354,15 @@ return function(testdir, luaroot)
 		eq(logged("    Clothes/1/Drill 07 = zcity_drill/sheet_16   [not there]"), 1, "the name that is gone")
 		eq(logged("    PlayerModels/1/Male 10 = models/slav/m/male_10.mdl   [there is models/other/male_10.mdl instead]"), 1,
 			"the name that was replaced")
+		eq(logged("this addon is built with \"Mod\". \"Mod OLD\" is another version") .. "|"
+			.. logged("  if \"Mod OLD\" is installed as an addon of its own as well, its Lua files have the same names as the ones in this addon and take their place"),
+			"1|1", "versions: with entries missing, the other version installed beside this addon is named as a cause")
+		ZCG.BoundLeftOut, ZCG.BoundOther, ZCG.BoundOnly = { "not a title" }, "not a table", 7
+		M.errors = {}
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(#M.errors .. "|" .. logged("this addon is built with \"not a title\". \"1\" is another version"), "0|1", "versions: a list that is not what it should be is no error")
+		ZCG.BoundLeftOut, ZCG.BoundOther, ZCG.BoundOnly = nil, nil, nil
 
 		eq(M.written["zcg_bound.txt"], nil, "a short list is not written into a file")
 
@@ -640,7 +724,18 @@ return function(testdir, luaroot)
 	local defaults = cut("EnsureAppearanceTableDefaults", "(local function EnsureAppearanceTableDefaults%(panel%).-\nend)\n")
 	local compat = cut("OpenCompatibilityMenuForPart", "(local function OpenCompatibilityMenuForPart%(.-\nend)\n")
 	local findButtons = cut("the code that wraps the buttons", "(    local function FindButtons%(parent%).-\n    end)\n\n    FindButtons%(panel%)")
-	check(source:find('hook.Run("HG_AppearanceMenuReady", zpan)', 1, true) ~= nil, "the mod still announces a wrapped window with HG_AppearanceMenuReady")
+	-- The mod tells when it has wrapped the buttons of a window - the version of it the build takes
+	-- by default. Its LEGACY version (build_addon.py --pack) says nothing: this addon then finds the
+	-- wrapped button with its own timer, which looks at the open window every half a second.
+	local announces = source:find('hook.Run("HG_AppearanceMenuReady", zpan)', 1, true) ~= nil
+	if rawget(_G, "ZCG_APPMOD_TITLE") == "Z-City Appearance Mod LEGACY" then
+		check(not announces, "the LEGACY version of the mod does not announce a wrapped window (the timer of this addon finds it)")
+	else
+		check(announces, "the mod still announces a wrapped window with HG_AppearanceMenuReady")
+	end
+	local function announce(panel)
+		if announces then hook.Run("HG_AppearanceMenuReady", panel) else M.advance(0.6) end
+	end
 	if not (resolve and gloves and defaults and compat and findButtons) then return checks, failures end
 
 	-- the one piece of the game's dialect in there: "continue" (skips gloves the player does not own)
@@ -740,7 +835,7 @@ return function(testdir, luaroot)
 	local mods = button.DoClick
 	check(mods ~= below, "(the handler of the mod is on the button)")
 
-	hook.Run("HG_AppearanceMenuReady", main)
+	announce(main)
 	check(button.DoClick ~= mods and button.DoClick == button.zcg_mod, "this addon gets on top of the mod when it announces the window")
 	local top = button.DoClick
 	M.advance(2)
@@ -873,7 +968,7 @@ return function(testdir, luaroot)
 	eq(modifyAppearanceMenu(second), true, "(the mod wraps it first)")
 	eq(button2.__AppearanceOriginalDoClick, stock2, "(and keeps the stock handler)")
 	ZCG.AttachEditor = attach
-	hook.Run("HG_AppearanceMenuReady", second)
+	announce(second)
 	eq(second.viewer.zcg_wrapped, true, "this addon attaches when the mod announces the window")
 	check(button2.__AppearanceOriginalDoClick ~= stock2, "its menu goes below the handler of the mod")
 	check(button2.DoClick == button2.zcg_mod, "and its other handler on top")
@@ -925,7 +1020,7 @@ return function(testdir, luaroot)
 	M.advance(0.05)
 	local button3 = glovesButton(third)
 	modifyAppearanceMenu(third)
-	hook.Run("HG_AppearanceMenuReady", third)
+	announce(third)
 	local menu3 = button3.__AppearanceOriginalDoClick
 	third.AppearanceTable.AModel = "Nobody" -- the mod falls back ...
 	ZCG.Config.MenuText = 5 -- ... to a menu that cannot be built

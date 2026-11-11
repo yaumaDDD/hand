@@ -300,6 +300,9 @@ class Target(object):
         self.group = group        # a model looks for a material in each of its folders: any one will do
         self.sure = sure
         self.asked = asked        # the file that names it, None for Lua
+        # a texture: a material the addon needs names it (not only materials of a version of a
+        # pack that is not in the addon)
+        self.needed = True
 
 
 # The remarks of a report and the reasons why a file was left out, in plain English. A report in
@@ -319,7 +322,19 @@ NOTES = {
                  'there; this one was not taken for it: nothing says that it is the one. If it is, put it there',
     'same name unused': '%s is not used. The Lua names a file of that name in %s and none is there; this one was '
                         'not taken for it: nothing says that it is the one. If it is, put it there',
+    'other version': '%s was put at %s: %s, and that is the place it has in a version of a pack that is not in this '
+                     'addon. The Lua of the addon names a file of that name in %s and none is there; this one was not '
+                     'taken for it. If it is the one after all, put it there',
+    'compiled for other': '%d models lie where the Lua of the addon names a model, and say themselves that they were '
+                          'compiled for the place the same model has in a version of the pack that is not in this addon '
+                          '(%s). They may be the models of that version: if they look wrong in the game, replace them',
+    'came back': '%d models lay at places of a version of the pack that is not in this addon, and say themselves that '
+                 'they were compiled for places the Lua of this addon names, where nothing lay: they were put there (%s)',
 }
+# the reasons in an 'other version' note
+SPARE_SAYS = 'it says itself that it belongs there'                 # a model: the path it was compiled for
+SPARE_TEXTURE = 'its own texture is named in that folder'           # a material
+SPARE_FOLDERS = 'its folders are those of that place'
 REPLACED = 'a later source has this file'
 OWN_FILE = 'the file of this addon is kept'
 NAMESAKES = 'not told from its namesakes, see the notes'
@@ -345,6 +360,12 @@ class Report(object):
         # Items put where they were packed for want of anything better: nobody names them and
         # nothing is known of their folders, or they are not told from their namesakes
         self.as_packed = []
+        # (path in the addon, Item) - files that only a version of a pack names which is not in
+        # the addon (the spare names of place()): put at their places, needed by nobody
+        self.spare = []
+        # (path in the addon, the spare path) - models that lie where the Lua of the addon names a
+        # model and say themselves that they were compiled for the place of that other version
+        self.misplaced = []
         self.missing_named = []       # paths the Lua names
         self.missing_materials = []   # (model in the addon, material name, the paths it is looked for at)
         self.missing_textures = []    # (material in the addon, parameter, texture path)
@@ -379,11 +400,17 @@ def relation(path, wanted):
     return 'foreign', same
 
 
-def place(items, named, own):
+def place(items, named, own, spare=()):
     """Decides where every supplied file goes.
     items: Item list; named: game paths the Lua names; own(path): the addon has that file itself.
+    spare: game paths that only the Lua of a pack names which is NOT in the addon - another
+    version of a pack that is (zcg_layout.PACK_VERSIONS). The game does not need these files
+    with this addon, and none of them is ever missing. They are known for one thing: a file
+    that is one of them for sure is put at its own place, and so is not taken by its file name
+    for a namesake that the Lua of the addon names. See of_another_version below.
     Returns a Report; nothing is copied here."""
     items = sorted((i for i in items if i.kind), key=lambda i: (i.order, i.inner))
+    spare = set(spare) - set(named)
     report = Report()
     taken = {}
     by_name = collections.defaultdict(list)
@@ -764,6 +791,8 @@ def place(items, named, own):
 
     for path in named:
         known.add(posixpath.dirname(path))
+    for path in spare:      # (a file that lies in a folder of the other version is at home there)
+        known.add(posixpath.dirname(path))
     for item in materials:
         if item.replaced:
             continue
@@ -789,13 +818,17 @@ def place(items, named, own):
     def compiled_for(item, target):
         return item.model_name is not None and 'models/' + item.model_name == target.path
 
-    def its_own_path(item):
-        """a model nobody names, packed outside of any models folder: the path it was compiled for
-        (when it has one: recompiled models often carry their bare file name)"""
+    def compiled_path(item):
+        """the path a model says it was compiled for (when it has one: recompiled models often
+        carry their bare file name)"""
         name = item.model_name
-        if item.default is None and name and '/' in name and posixpath.basename(name) == item.name:
+        if name and '/' in name and posixpath.basename(name) == item.name:
             return 'models/' + name
         return None
+
+    def its_own_path(item):
+        """a model nobody names, packed outside of any models folder: the path it was compiled for"""
+        return compiled_path(item) if item.default is None else None
 
     def where_compiled(item):
         """a model that lies at the very path it was compiled for is not meant for another name"""
@@ -803,6 +836,65 @@ def place(items, named, own):
             return item.default
         return None
 
+    # ---- the files of a version that is not in the addon -------------------------------------
+    spare_named, wanted_named = collections.defaultdict(list), collections.defaultdict(list)
+    for path in sorted(spare):
+        spare_named[posixpath.basename(path)].append(path)
+    for path in named:
+        wanted_named[posixpath.basename(path)].append(path.split('/'))
+    asked_by_lua = set(named)
+    spared = {}     # id(item) -> why it is known to be a file of the other version
+
+    came_back = []
+
+    def of_another_version(kind, says, said, comes_back=False):
+        """The files that are, for sure, files only a version left out of the addon names. Each
+        of them is put at the place that version names before anything is looked for, and so is
+        not taken by its file name for a namesake the Lua of the addon names
+        (models/zcity/m/male_10.mdl of one version, models/slav/m/male_10.mdl of the other).
+        For sure is: a file that lies there; and, of the files that lie in a folder nobody names
+        anything in ("models 7"), one whose folders are those of that place - more of them than
+        of any place the Lua of the addon names - and one that says itself that this is its
+        place (says(item): a model knows the path it was compiled for; said: that reason).
+        A file that says nothing goes where the Lua of the addon wants a file of that name, as
+        ever: that is the version the owner has.
+        comes_back: the other way round. A file that lies at a place of the other version and
+        says itself that it belongs at a place the Lua of the addon names, where nothing lies,
+        is put there. (Before it knew of versions this tool took such models by their file
+        names; with the other version in the addon they lie at the places of the first.)"""
+        for item in items:
+            if item.kind != kind or item.dests or item.replaced or item.name not in spare_named:
+                continue
+            dest = why = None
+            if item.default in spare:
+                dest = item.default
+                claim = says(item) if comes_back else None
+                if claim in asked_by_lua and at.get(claim) is None and settle(item, claim, 'name'):
+                    came_back.append(claim)
+                    continue
+            elif not at_home(item) and item.default not in asked_by_lua:
+                parts = path_of(item)
+                rivals = max([common_suffix(parts, wanted) for wanted in wanted_named.get(item.name, ())] or [0])
+                best = None
+                for path in spare_named[item.name]:
+                    how, same = relation(parts, path.split('/'))
+                    if how != 'sibling' and same >= 2 and same > rivals and (best is None or same > best[0]):
+                        best = (same, path)
+                claim = says(item)
+                if best is not None:
+                    dest, why = best[1], SPARE_FOLDERS
+                elif claim in spare:
+                    dest, why = claim, said
+            if dest is not None and settle(item, dest, 'place' if why is None else 'name'):
+                spared[id(item)] = why
+
+    def only_spare(item):
+        """it is in use at places of the other version only: what it asks for is not needed"""
+        return bool(item.dests) and all(dest in spare for dest in item.dests)
+
+    of_another_version('mdl', compiled_path, SPARE_SAYS, comes_back=True)
+    if came_back:
+        report.notes.append(Note('came back', len(came_back), ', '.join(sorted(came_back)[:3]) + (' ...' if len(came_back) > 3 else '')))
     resolve('mdl', [Target(path) for path in sorted(named) if path.endswith('.mdl')], compiled_for,
             where_compiled, proof_is_sure=True)
     rest('mdl', its_own_path)
@@ -837,7 +929,10 @@ def place(items, named, own):
             report.notes.append(Note('no materials', item.dests[0], found))
             continue
         folders, names = found
-        report.models += 1
+        # (a model of a version that is not in the addon: its materials are given their places
+        # like those of any model, and none of them counts as wanted or missing)
+        counts = not only_spare(item)
+        report.models += counts
         for name in names:
             group = []
             for folder in folders or ['']:
@@ -845,7 +940,8 @@ def place(items, named, own):
                 if path not in group:
                     group.append(path)
             group = tuple(group)
-            model_wants.append((item, name, group))
+            if counts:
+                model_wants.append((item, name, group))
             for path in group:
                 of_models.append(Target(path, near=[item.folder], group=group, asked=item))
 
@@ -890,6 +986,7 @@ def place(items, named, own):
         return dest if how == 'shift' and same >= 2 else None
 
     material_targets = list(wanted.values()) + of_models
+    of_another_version('vmt', says_where, SPARE_TEXTURE)
     resolve('vmt', material_targets, texture_lies_there, says_where)
 
     # A material packed with its own texture says where the two belong: in the folder the texture
@@ -979,14 +1076,18 @@ def place(items, named, own):
     for item in materials:
         if not item.dests:
             continue
+        needed = not only_spare(item)
         for key, name, sure in item.material.textures:
             path = 'materials/' + name + '.vtf'
             target = textures.get(path)
             if target is None:
                 target = textures[path] = Target(path, sure=False, asked=(item, key))
+                target.needed = False
             target.near.add(item.folder)
-            if sure and not target.sure:
+            # (of the materials that name it, one that the addon needs is the one to tell about)
+            if sure and (not target.sure or (needed and not target.needed)):
                 target.sure, target.asked = True, (item, key)
+            target.needed = target.needed or (needed and sure)
     resolve('vtf', list(textures.values()))
     copies('vtf', list(textures.values()))
     rest('vtf')
@@ -995,6 +1096,8 @@ def place(items, named, own):
     for dest in sorted(taken):
         item = taken[dest]
         report.placed.append((dest, item))
+        if dest in spare:
+            report.spare.append((dest, item))
         if dest != item.default:
             src, dst = item.parts[:-1], dest.split('/')[:-1]
             same = common_suffix(src, dst)
@@ -1044,6 +1147,14 @@ def place(items, named, own):
                 or item.crowded is not None or any(dest in asked for dest in item.dests) \
                 or undecided.get(id(item)) in report.notes:
             continue
+        if id(item) in spared:
+            # A file of the other version, by its own word or by its folders, and the name of
+            # the addon is empty: told, with the reason - somebody may know better.
+            if spared[id(item)] is not None:
+                folders = sorted(posixpath.dirname(path) + '/' for path in empty[item.name])
+                report.notes.append(Note('other version', item, posixpath.dirname(item.dests[0]) + '/', spared[id(item)],
+                                         ', '.join(folders[:4]) + (' ...' if len(folders) > 4 else '')))
+            continue
         if item.kind == 'mdl' and item.model_name and '/' in item.model_name:
             continue
         if item.dests and posixpath.dirname(item.dests[0]) in homes:
@@ -1059,6 +1170,15 @@ def place(items, named, own):
         else:
             report.notes.append(Note('same name unused', item, folders))
 
+    # A model at a place of the addon that says it was compiled for the place of the other
+    # version: it lay there, or an earlier version of this tool took it by its file name.
+    odd = sorted(dest for dest, item in taken.items()
+                 if item.kind == 'mdl' and dest not in spare and item.model_name and 'models/' + item.model_name in spare
+                 and posixpath.basename(item.model_name) == item.name and dest in asked)
+    if odd:
+        report.misplaced = [(dest, 'models/' + taken[dest].model_name) for dest in odd]
+        report.notes.append(Note('compiled for other', len(odd), ', '.join(odd[:3]) + (' ...' if len(odd) > 3 else '')))
+
     report.missing_named = [path for path in sorted(named)
                             if path.endswith(('.mdl', '.vmt')) and free(path)]
     report.materials_wanted = len(model_wants)
@@ -1066,11 +1186,11 @@ def place(items, named, own):
         if all(free(path) for path in group):
             report.missing_materials.append((item.dests[0], name, group))
     for target in list(wanted.values()):
-        if target.asked is not None and free(target.path):
+        if target.asked is not None and free(target.path) and not only_spare(target.asked):
             report.missing_textures.append((target.asked.dests[0] if target.asked.dests else str(target.asked),
                                             'include', target.path))
     for target in textures.values():
-        if not target.sure:
+        if not target.sure or not target.needed:
             continue
         report.textures_wanted += 1
         if free(target.path):

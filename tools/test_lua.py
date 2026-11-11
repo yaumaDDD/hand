@@ -16,10 +16,10 @@
 This catches typos, nil calls and logic mistakes. It does NOT replace a test in the game: the
 imitation only behaves the way the author believes the game behaves.
 """
+import collections
 import os
 import sys
 import tempfile
-import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -31,6 +31,7 @@ import zcg_layout as L  # noqa: E402
 
 LUA_ROOT = os.path.normpath(os.path.join(HERE, '..', L.ADDON_DIRNAME, 'lua'))
 TESTS = os.path.join(HERE, 'lua_tests')
+LEGACY = 'Z-City Appearance Mod LEGACY'
 
 
 def runtime():
@@ -48,20 +49,17 @@ def runtime():
 
 
 def appearance_mod_source():
-    """The menu file of the Z-City Appearance Mod (apperance.zip in the repository root), unpacked
-    for the scenario in lua_tests/test_appmod.lua. None when the archive is not there."""
-    archive = os.path.join(os.path.dirname(HERE), 'apperance.zip')
-    if not os.path.isfile(archive):
-        return None
-    with zipfile.ZipFile(archive) as z:
-        for name in z.namelist():
-            if name.endswith('appearancemod_buttons.lua'):
-                text = z.read(name).decode('utf-8-sig', 'replace').replace('\r\n', '\n')
-                fd, path = tempfile.mkstemp(prefix='zcg_appmod_', suffix='.lua')
-                with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as f:
-                    f.write(text)
-                return path
-    return None
+    """The menu file of the Z-City Appearance Mod - of the version of it the build takes out of
+    the drop-in archives - unpacked for the scenario in lua_tests/test_appmod.lua. Returns (the
+    file, the title of its pack), or (None, None) when no archive brings it."""
+    for dest, data, _archive, title in L.dropin_lua(ROOT)[0]:
+        if dest.endswith('appearancemod_buttons.lua'):
+            text = data.decode('utf-8-sig', 'replace').replace('\r\n', '\n')
+            fd, path = tempfile.mkstemp(prefix='zcg_appmod_', suffix='.lua')
+            with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(text)
+            return path, title
+    return None, None
 
 
 # ---- GLua that is run: `continue` --------------------------------------------------------------
@@ -381,9 +379,12 @@ def names_tests():
         text |= list_content.names_in(source)
     text -= list_content.stock_names()
     check(not [name for name in drill if name in text], '(the text of that file does not show them)')
+    # (the Appearance Mod has two versions, zcg_layout.PACK_VERSIONS: the numbers are those of the
+    # one the build takes - the other one with --pack)
+    legacy = LEGACY in set(title for _dest, _data, _archive, title in L.dropin_lua(ROOT)[0])
     faces = sorted(name for name in set(got.names) - text if '_facemap' in name)
-    check(len(faces) == 13 and 'materials/models/bloo_ltcom_zel/citizens/facemaps/lake_facemap6.vmt' in faces,
-          'and 13 faces whose names are put together in loops: %s' % faces)
+    check(len(faces) == (12 if legacy else 13) and 'materials/models/bloo_ltcom_zel/citizens/facemaps/lake_facemap6.vmt' in faces,
+          'and %d faces whose names are put together in loops: %s' % (12 if legacy else 13, faces))
     check(sorted(set(got.names) - text) == sorted(drill + faces), 'nothing else is found by running only: %s'
           % sorted(set(got.names) - text - set(drill) - set(faces)))
     check('materials/null.vmt' not in got.names, '"null", the material that draws nothing, is no file to look for')
@@ -392,26 +393,84 @@ def names_tests():
     kinds = sorted(set(entry['entry'].split('/')[0] for entry in got.lost))
     check(kinds == ['PlayerModels'], 'only player models are replaced by a later file, no clothes and no faces: %s' % kinds)
     own = [entry for entry in got.lost if entry['by'] not in lua_names.stock_files()]
-    check(len(own) == 15 and all(entry['path'].startswith('models/zcityadodser/') and entry['now'].startswith('models/slav/') for entry in own),
-          'the 15 of Clothing+, by those of the Appearance Mod: %d' % len(own))
+    if legacy:
+        check(not own, 'the LEGACY Appearance Mod leaves the player models of Clothing+ as they are: %d' % len(own))
+    else:
+        check(len(own) == 15 and all(entry['path'].startswith('models/zcityadodser/') and entry['now'].startswith('models/slav/')
+                                     for entry in own), 'the 15 of Clothing+, by those of the Appearance Mod: %d' % len(own))
     ported = lua_names.run_addon(files, port=True)[0]
     check(got.ran == ported.ran and got.names == ported.names and got.lost == ported.lost and got.stock == ported.stock,
           'the copy of the loader of Z-City loads the files in the order the loader itself does')
+    patch = 'autorun/client/zzz_hg_appearance_patch.lua'     # (only the version that is not LEGACY has it)
     check(got.ran['server'][0] == 'autorun/loader.lua' and 'autorun/zcity_drill_clothes.lua' in got.ran['server']
-          and 'autorun/client/zzz_hg_appearance_patch.lua' in got.ran['client']
-          and 'autorun/client/zzz_hg_appearance_patch.lua' not in got.ran['server'], 'the autorun files run, each on its side')
+          and (patch in got.ran['client']) == (not legacy) and patch not in got.ran['server'],
+          'the autorun files run, each on its side')
     again = lua_names.run_addon(files)[0]
     check(again.names == got.names and again.lost == got.lost, 'running it twice tells the same')
     listed = dict((title, wanted) for _archive, title, wanted in list_content.collect()[0])
     check(len(listed.get('[ZCITY] Drill Clothes', ())) == 22, 'the listing of tools/list_content.py has the Drill clothes: %s'
           % sorted(listed))
+
+    # ---- two versions of one pack: one is taken whole, the other is left out whole
+    current = 'Z-City Appearance Mod'
+    titles = collections.Counter(title for _dest, _data, _archive, title in L.dropin_lua(ROOT)[0])
+    out = L.dropin_lua(ROOT)[1]
+    check((LEGACY in titles) != (current in titles) and len(out) == 1 and out[0][0] == (current if legacy else LEGACY)
+          and out[0][1] == (LEGACY if legacy else current),
+          'of the two versions of the Appearance Mod one is taken: %s; left out: %s'
+          % (sorted(title for title in titles if title in (LEGACY, current)), [entry[:3] for entry in out]))
+    paths = [dest for dest, _data, _archive, _title in L.dropin_lua(ROOT)[0]]
+    check(len(paths) == len(set(paths)), 'and so no Lua file comes twice: %s'
+          % sorted(dest for dest in set(paths) if paths.count(dest) > 1))
+    for chosen, taken_title, count, left_count in (([], current, 5, 4), ([LEGACY], LEGACY, 4, 5), ([current], current, 5, 4)):
+        taken, left = L.dropin_lua(ROOT, chosen=chosen)
+        mine = [dest for dest, _data, _archive, title in taken if title == taken_title]
+        check(len(mine) == count and len(left) == 1 and len(left[0][3]) == left_count
+              and not [title for _dest, _data, _archive, title in taken if title == left[0][0]],
+              'asked for %s: the %d Lua files of "%s" are taken, the %d of the other version are not: %d, %s'
+              % (chosen or 'nothing', count, taken_title, left_count, len(mine), [(e[0], len(e[3])) for e in left]))
+    other = dict((title, wanted) for _archive, title, _instead, wanted in list_content.left_out())
+    spare = sorted(other.get(current if legacy else LEGACY, ()))
+    if legacy:
+        check(len(spare) > 50 and 'models/slav/m/male_10.mdl' in spare and not [name for name in spare if name in got.names],
+              'the files only the other version names are known: %d' % len(spare))
+    else:
+        check(len(spare) == 15 and len([name for name in spare if name.startswith('models/zcity/')]) == 13
+              and 'models/zcity/m/male_10.mdl' in spare and 'materials/models/humans/slav/mossman/mossman_face.vmt' in spare
+              and not [name for name in spare if name in got.names],
+              'the files only the LEGACY version names are known - 13 models and 2 materials: %s' % spare)
+    check(not [name for name in spare if any(name in wanted for wanted in listed.values())],
+          'and none of them is in the listing of the build')
+    # the version that is left out runs through as well: it can be built with --pack
+    saved = list(L.CHOSEN_PACKS)
+    L.CHOSEN_PACKS[:] = [current if legacy else LEGACY]
+    try:
+        swapped = dict((path, text) for path, (text, _archive) in lua_names.dropin_files(ROOT).items())
+    finally:
+        L.CHOSEN_PACKS[:] = saved
+    theirs = lua_names.run_addon(swapped)[0]
+    check(not theirs.errors and len(theirs.names) > 500 and set(theirs.names) != set(got.names),
+          'the Lua of the other version runs through too, and names other files: %d names, %s' % (len(theirs.names), theirs.errors))
+    check(L.versions_left_out(['a', 'b']) == {} and L.versions_left_out([LEGACY]) == {} and L.versions_left_out([current]) == {}
+          and L.versions_left_out([LEGACY, current, 'a'], chosen=[]) == {LEGACY: current}
+          and L.versions_left_out([LEGACY, current], chosen=[LEGACY]) == {current: LEGACY}
+          and L.versions_left_out([LEGACY, current], chosen=['a']) == {LEGACY: current},
+          'the rule: of the versions that are there the first one listed, or the one that was asked for')
     return checks[0], problems
 
 
 def main():
     global LUA_ROOT
-    if len(sys.argv) > 1:  # another copy of the addon's lua folder
-        LUA_ROOT = os.path.abspath(sys.argv[1])
+    args = sys.argv[1:]
+    # --pack TITLE: as for build_addon.py - the version of a pack to take (zcg_layout.PACK_VERSIONS)
+    while '--pack' in args:
+        at = args.index('--pack')
+        if at + 1 >= len(args):
+            raise SystemExit('--pack needs the title of a pack')
+        L.CHOSEN_PACKS.append(args[at + 1])
+        del args[at:at + 2]
+    if args:  # another copy of the addon's lua folder
+        LUA_ROOT = os.path.abspath(args[0])
     failed = 0
 
     rt = runtime()
@@ -432,20 +491,24 @@ def main():
 
     # The Lua of the drop-in archives is in the dialect of the game: compiled after a conversion.
     # A problem there is printed but does not fail the run - those files are not ours to fix.
+    # (a pack that is a version of one the build takes is left out there, and here)
     dropin = 0
-    for archive in L.dropin_archives(ROOT):
-        if not archive.lower().endswith('.zip'):
-            continue
-        with zipfile.ZipFile(archive) as z:
-            for info in z.infolist():
-                dest = None if info.is_dir() else L.dropin_destination(L.zip_name(info))
-                if dest and dest.endswith('.lua'):
-                    dropin += 1
-                    err = compile_(glua.to_lua(z.read(info).decode('utf-8-sig', 'replace')), dest)
-                    if err:
-                        print('WARNING %s: %s' % (os.path.basename(archive), err))
+    taken, left_out = L.dropin_lua(ROOT)
+    for dest, data, archive, _title in taken:
+        dropin += 1
+        err = compile_(glua.to_lua(data.decode('utf-8-sig', 'replace')), dest)
+        if err:
+            print('WARNING %s: %s' % (archive, err))
     if dropin:
         print('syntax: %d Lua files of the drop-in archives checked' % dropin)
+    for title, instead, archive, files in left_out:
+        for dest, data in files:
+            err = compile_(glua.to_lua(data.decode('utf-8-sig', 'replace')), dest)
+            if err:
+                print('WARNING %s: %s' % (archive, err))
+        print('note: "%s" (%s) is a version of "%s", which is the one the build takes. Its %d Lua files are checked '
+              'as well, and are not in the build: python tools/test_lua.py --pack "%s" runs everything with them'
+              % (title, archive, instead, len(files), title))
 
     # where the files of a drop-in archive go
     rules = {
@@ -477,9 +540,11 @@ def main():
     for line in problems:
         print('    FAILED  ' + line)
 
-    mod_source = appearance_mod_source()
+    mod_source, mod_title = appearance_mod_source()
     if mod_source is None:
-        print('note: apperance.zip is not in the repository, test_appmod.lua has nothing to run')
+        print('note: no drop-in archive brings the Appearance Mod, test_appmod.lua has nothing to run')
+    elif L.CHOSEN_PACKS:
+        print('note: the scenarios run with the menu of "%s"' % mod_title)
 
     for name in sorted(os.listdir(TESTS)):
         if not (name.startswith('test_') and name.endswith('.lua')):
@@ -487,6 +552,7 @@ def main():
         rt = runtime()  # a fresh Lua state per file: the mock replaces globals
         if mod_source is not None:
             rt.globals().ZCG_APPMOD_BUTTONS = mod_source.replace('\\', '/')
+            rt.globals().ZCG_APPMOD_TITLE = mod_title
         run = rt.eval('function(path, testdir, luaroot)\n'
                       '  local ok, a, b = xpcall(function() return dofile(path)(testdir, luaroot) end, debug.traceback)\n'
                       '  if not ok then return -1, a end\n'
