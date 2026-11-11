@@ -5,7 +5,7 @@
 if SERVER then AddCSLuaFile() end
 
 ZCGloves = ZCGloves or {}
-ZCGloves.Version = "2.3.0"
+ZCGloves.Version = "2.4.0"
 
 local DIR = "zcity_csgo_gloves/"
 
@@ -28,6 +28,8 @@ end
 
 shared("sh_config.lua")
 shared("sh_data.lua")
+-- (the build writes this one when the addon carries the Lua of clothing packs: see sh_content.lua)
+if file.Exists(DIR .. "sh_bound.lua", "LUA") then shared("sh_bound.lua") end
 shared("sh_core.lua")
 shared("sh_materials.lua")
 shared("sh_content.lua")

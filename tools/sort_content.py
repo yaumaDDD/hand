@@ -14,6 +14,11 @@ tools/place_content.py does that, the same code the build of the addon uses - an
 place. Nothing is deleted and no file of the addon is overwritten: what cannot be used is moved to
 the folder _not_used, and everything is written down in sort_content_report.txt.
 
+The text of the Lua does not show every name: some are put together while the Lua runs, some are
+written from inside the materials folder. There is no Lua to run here, so the build of the addon
+ran it and left the names beside this script (lua_names.txt, see list_content.py); they are looked
+for as well. A Lua file that was added or changed since is only read - the script says so.
+
 The addon is the folder this script was shipped in (<addon>/sort_content/); --addon names another.
 Needs Python 3.7+ and nothing else (sort_content.bat fetches a portable one when there is none).
 """
@@ -73,20 +78,52 @@ def find_addon(given):
     return addon
 
 
-def names_of(folders):
-    """the materials and models the Lua in these folders names, without those of Z-City itself
-    (and without the Lua of the gloves: it only speaks of files the addon has from the start)"""
+class Names(object):
+    """what the Lua of the addon names"""
+    def __init__(self):
+        self.named = set()          # materials/x.vmt, models/y.mdl - without those of Z-City itself
+        self.files = 0              # Lua files that were read
+        self.stock_known = False    # is the list of Z-City's own names beside the scripts?
+        self.listed = None          # names the build found by running the Lua; None: no such list here
+        self.by_running = 0         # ... how many of them the text does not show
+        self.not_run = False        # the list says that the Lua could not be run where the addon was built
+        self.changed = []           # Lua files that are not the ones the list was made from
+        self.failed = []            # (Lua file, error): stopped with an error where the addon was built
+
+
+def names_of(folders, run_list=None):
+    """The materials and models the Lua in these folders names, without those of Z-City itself
+    (and without the Lua of the gloves: it only speaks of files the addon has from the start):
+    what the text of the Lua spells out, and what the build of the addon found by running it
+    (run_list: that list, by default the one beside this script). Returns a Names."""
     own = ('autorun/%s.lua' % L.ADDON_DIRNAME, L.ADDON_DIRNAME + '/')
-    named, files = set(), 0
-    for folder in folders:
+    result = Names()
+    seen = {}
+    for number, folder in enumerate(folders):
         for rel, full in walk_files(folder):
             if not rel.lower().endswith('.lua') or rel.lower().startswith(own):
                 continue
-            files += 1
+            result.files += 1
             with open(full, 'rb') as f:
-                named |= list_content.names_in(f.read().decode('utf-8-sig', 'replace'))
+                text = f.read().decode('utf-8-sig', 'replace')
+            result.named |= list_content.names_in(text)
+            # (the list knows the Lua of the addon itself: the first folder)
+            seen[rel.lower() if number == 0 else u'%s/%s' % (folder, rel)] = list_content.lua_fingerprint(text)
     stock = list_content.stock_names()
-    return named - stock, files, bool(stock)
+    result.stock_known = bool(stock)
+
+    listed, made_from, ran = list_content.read_run_list(run_list)
+    if made_from is not None:
+        result.listed = len(listed)
+        result.not_run = not ran
+        result.by_running = len(listed - result.named - stock)
+        result.named |= listed
+        result.changed = sorted(name for name, digest in seen.items() if made_from.get(name) != digest)
+        # (a file that was changed since is not the one that failed)
+        result.failed = sorted((name, message) for name, message in list_content.read_run_failed(run_list).items()
+                               if name in seen and made_from.get(name) == seen[name])
+    result.named -= stock
+    return result
 
 
 def unpack(archive, temp):
@@ -318,12 +355,32 @@ def apply(addon, job):
 
 
 # ---- telling about it ------------------------------------------------------------------------
-def summary(addon, named, lua_files, stock_known, brought, report, job, dry, problems):
+def summary(addon, names, brought, report, job, dry, problems):
     """the lines for the screen and for the head of the report"""
     name = os.path.basename(addon)
+    named = names.named
     out = [u'Аддон: %s' % addon,
-           u'Lua аддона (файлов: %d) называет материалов и моделей: %d' % (lua_files, len(named))]
-    if not stock_known:
+           u'Lua аддона (файлов: %d) называет материалов и моделей: %d' % (names.files, len(named))]
+    if names.by_running:
+        out.append(u'  из них %d в тексте Lua не видны — их нашла сборка аддона, запустив этот Lua' % names.by_running)
+    if names.listed is None or names.not_run:
+        out.append(u'  ВНИМАНИЕ: списка имён, найденных запуском Lua, рядом нет%s. Имена, которые Lua'
+                   % (u' (аддон собран там, где Lua запустить было нечем)' if names.not_run else u''))
+        out.append(u'  составляет на ходу или пишет без «models/» и «materials/», этому инструменту не известны:')
+        out.append(u'  такой файл он может принять за тёзку из другого набора. Возьмите аддон из выпуска на GitHub.')
+    elif names.changed:
+        out.append(u'  ВНИМАНИЕ: Lua-файлов, добавленных или изменённых после сборки аддона: %d (%s%s).'
+                   % (len(names.changed), u', '.join(names.changed[:3]), u' ...' if len(names.changed) > 3 else u''))
+        out.append(u'  Они только прочитаны: имена, которые такой Lua составляет на ходу или пишет без «models/» и')
+        out.append(u'  «materials/», не известны, и его файл может быть принят за тёзку из другого набора.')
+        out.append(u'  Чтобы и они учитывались, Lua нужно добавить в сборку аддона (в репозиторий).')
+    if names.failed:
+        out.append(u'  ВНИМАНИЕ: при сборке аддона Lua-файлы остановились на ошибке: %d (%s%s).'
+                   % (len(names.failed), u', '.join(name for name, _message in names.failed[:3]),
+                      u' ...' if len(names.failed) > 3 else u''))
+        out.append(u'  Что такой файл добавляет после места ошибки, не известно — и в игре этой одежды, скорее всего,')
+        out.append(u'  тоже не будет. Ошибка: %s' % names.failed[0][1])
+    if not names.stock_known:
         out.append(u'  (списка имён самого Z-City рядом нет: в «не хватает» попадут и его файлы)')
     for entry in brought:
         where = u'в папках materials и models аддона' if entry['name'] == name and entry is brought[-1] \
@@ -385,6 +442,8 @@ def main(argv=None):
     parser.add_argument('sources', nargs='*', help='folders or .zip archives with more content to take in')
     parser.add_argument('--addon', help='the addon folder (default: the one this script lies in)')
     parser.add_argument('--lua', action='append', default=[], help='another folder with Lua that names files')
+    parser.add_argument('--names-list', help='the list of the names found by running the Lua '
+                                             '(default: %s beside this script)' % list_content.RUN_LIST)
     parser.add_argument('--dry-run', action='store_true', help='only tell what would be done')
     args = parser.parse_args(argv)
 
@@ -397,7 +456,8 @@ def main(argv=None):
                 say(u'Прошлый запуск был прерван: файлов доведено до места: %d' % resumed)
 
         say(u'Читаю Lua аддона ...')
-        named, lua_files, stock_known = names_of([os.path.join(addon, 'lua')] + args.lua)
+        names = names_of([os.path.join(addon, 'lua')] + args.lua, args.names_list)
+        named = names.named
         say(u'Читаю файлы контента ...')
         items, lower_case, extra, brought = collect(addon, args.sources, temp)
         say(u'Ищу каждому файлу место (файлов: %d) ...' % len(items))
@@ -409,7 +469,7 @@ def main(argv=None):
             say(u'Перекладываю ...')
             problems = apply(addon, job)
 
-        head = summary(addon, named, lua_files, stock_known, brought, report, job, args.dry_run, problems)
+        head = summary(addon, names, brought, report, job, args.dry_run, problems)
         say()
         for line in head:
             say(line)

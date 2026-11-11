@@ -9,7 +9,8 @@ An addon is made up in a temporary folder - its Lua, its own content, clothing c
 by hand - with the scripts the build ships (build_addon.step_sort_tool) and sort_content.bat next
 to them. Then:
   * everywhere: the script is run by a Python that knows nothing but its own library ("-I", like
-    the portable Python sort_content.bat fetches), from another folder;
+    the portable Python sort_content.bat fetches), from another folder; once more with Lua that
+    names its materials in a table, and the list of names the build makes for that by running it;
   * on Windows: sort_content.bat itself is run, with the Python that is installed and - when
     ZCG_TEST_PORTABLE is set, it needs the internet - with the portable one it fetches, kept in a
     folder with a Russian name as the profile of a Russian user has.
@@ -44,10 +45,30 @@ def shipped(folder):
     return want
 
 
+def Told(names):
+    """what running the Lua tells (a lua_names.Result), written by hand where Lua cannot be run"""
+    result = build_addon.lua_names.Result()
+    result.names = dict((name, {'by': T.TABLE_LUA, 'who': 'clothes'}) for name in names)
+    return result
+
+
+def shipped_with_names(folder):
+    """an installed addon whose Lua names materials in a table, with the list of them the build
+    leaves for the tool. Returns (was the Lua really run, the names in the list)."""
+    T.a_table_addon(folder)
+    ran = build_addon.run_lua(folder)
+    real = ran['result'] is not None
+    if not real:
+        ran['result'] = Told(T.TABLE_NAMES)
+    _scripts, _stock, listed = build_addon.step_sort_tool(folder, ran)
+    return real, listed
+
+
 def result(folder):
-    """the files of the addon without the tool and its report"""
+    """the files of the addon without the tool, its report and the list the build writes for the game"""
     got = T.tree(folder)
     report = got.pop(sort_content.REPORT, None)
+    got.pop('lua/' + build_addon.BOUND_LUA, None)
     for rel in list(got):
         if rel == BAT or rel.startswith(build_addon.SORT_TOOL_DIR + '/'):
             del got[rel]
@@ -104,6 +125,26 @@ def main():
         judge('the shipped script', addon, want, done)
         text = done.stdout.decode('utf-8', 'replace')
         check(u'\u0413\u043e\u0442\u043e\u0432\u043e' in text, 'it tells in Russian that it is done')
+
+        # ---- names that only running the Lua shows: the build leaves them beside the script
+        addon = os.path.join(tmp, u'names (1)', 'addons', L.ADDON_DIRNAME)
+        real, listed = shipped_with_names(addon)
+        script = os.path.join(addon, build_addon.SORT_TOOL_DIR, 'sort_content.py')
+        names = sorted(os.listdir(os.path.dirname(script)))
+        check(names == sorted(build_addon.SORT_TOOL + ('stock_names.txt', 'lua_names.txt')),
+              'the shipped folder holds the list of the names found by running: %s' % names)
+        check(listed == 3, 'the three names of the made-up Lua are in it (%s; the Lua was %s)'
+              % (listed, 'run' if real else 'not run here: written by hand'))
+        check(real == os.path.isfile(os.path.join(addon, 'lua', build_addon.BOUND_LUA)),
+              'where the Lua was run the build leaves the list of what it adds for the game (and only there)')
+        done = subprocess.run([sys.executable, '-I', '-B', script], cwd=tmp, env=env, **quiet)
+        got, report = result(addon)
+        text = done.stdout.decode('utf-8', 'replace')
+        check(done.returncode == 0 and sorted(got) == T.TABLE_SORTED,
+              'the shipped script puts a material named in a table at its own place, not at its namesake\'s: %s' % sorted(got))
+        check(u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415' not in text, 'and has nothing to warn of')
+        if done.returncode != 0 or sorted(got) != T.TABLE_SORTED:
+            show('the shipped script, names by running', done)
 
         if os.name != 'nt':
             print('  (not on Windows: sort_content.bat itself is not run)')

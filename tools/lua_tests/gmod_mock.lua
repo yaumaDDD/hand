@@ -174,8 +174,21 @@ return function(realm)
 	-- ------------------------------------------------------------------ files
 	M.files = {} -- path -> true ("GAME" search path)
 	M.included, M.csfiles = {}, {}
+	-- "LUA": the scripts a test hands in, M.luafiles[path] = source; include() runs them. (The
+	-- files of the addon under test are not listed there: a scenario gets no script it did not
+	-- ask for, whichever folder the tests are pointed at.)
+	M.luafiles = {}
 	file = {}
-	function file.Exists(path, where) return M.files[path] == true end
+	function file.Exists(path, where)
+		if where == "LUA" then return M.luafiles[path] ~= nil end
+		return M.files[path] == true
+	end
+	-- what was written into garrysmod/data: M.written[path] = text
+	M.written = {}
+	function file.Write(path, text)
+		assert(type(path) == "string" and type(text) == "string", "file.Write(path, text)")
+		M.written[path] = text
+	end
 
 	-- Reading: M.filedata[path] = { [offset] = "bytes", ... } - what the file holds at some
 	-- places, zero bytes everywhere else - or the whole file as one string. A path without an
@@ -259,7 +272,12 @@ return function(realm)
 	end
 	function include(path)
 		M.included[#M.included + 1] = path
-		local f = assert(loadfile(M.luaroot .. "/" .. path))
+		local f
+		if M.luafiles[path] ~= nil then
+			f = assert(loadstring(M.luafiles[path], "@" .. path))
+		else
+			f = assert(loadfile(M.luaroot .. "/" .. path))
+		end
 		return f()
 	end
 

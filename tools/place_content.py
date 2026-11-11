@@ -37,8 +37,13 @@ What a material says about itself - its texture lies with it, named in some fold
 namesakes apart and places files nobody names. It does not outweigh the Lua: a material the Lua
 names at one path only, lying in a folder that says nothing ("materials 5"), goes to that path
 even when its texture is named elsewhere - materials and their textures are often kept apart.
+Such a material tells what the folder of its texture means for the files packed with it: a
+namesake lying there - a material the Lua names in several folders - with its texture named in
+that same folder is of the same pack, and goes where the Lua names it for that pack.
 The same file under one name in several folders (as many copies as names) fills those names:
-which copy goes where does not matter.
+which copy goes where does not matter. A material that has a place and is made of the very
+texture a missing material is called after ("zcity_drill/sheet_16" for
+materials/zcity_drill/sheet_16.vmt) is used for that one as well.
 
 A file that lies in a folder somebody names files in is at home there: it is moved for a
 shifted path only, never for a name it merely shares with a file that is missing. A folder
@@ -55,7 +60,8 @@ of a materials / models folder it is left out.
 What cannot be decided is reported and never guessed:
     * a file that fits several names by its file name alone,
     * several different files that fit one name equally,
-    * a name with no file (it may be a part of the game or of Z-City),
+    * a name with no file (it may be a part of the game or of Z-City) - and with it every
+      supplied file of that name that was not taken for it, wherever it went,
     * a file that no name and no folder claims.
 
 Materials and textures are put below materials/ only, models below models/; a file of the
@@ -307,6 +313,12 @@ NOTES = {
                      'give their folders the names of the folders they come from',
     'unreadable': '%s cannot be read: %s',
     'no materials': '%s: its materials are not followed (%s)',
+    'also here': '%s: no file lay there, and the material at %s is made of the texture of this very name, so it is '
+                 'this material: it is used here as well. If another material belongs at %s, that one is missing',
+    'same name': '%s now lies in %s, where nobody names it. The Lua names a file of that name in %s and none is '
+                 'there; this one was not taken for it: nothing says that it is the one. If it is, put it there',
+    'same name unused': '%s is not used. The Lua names a file of that name in %s and none is there; this one was '
+                        'not taken for it: nothing says that it is the one. If it is, put it there',
 }
 REPLACED = 'a later source has this file'
 OWN_FILE = 'the file of this addon is kept'
@@ -879,7 +891,81 @@ def place(items, named, own):
 
     material_targets = list(wanted.values()) + of_models
     resolve('vmt', material_targets, texture_lies_there, says_where)
+
+    # A material packed with its own texture says where the two belong: in the folder the texture
+    # is named in. Where the Lua names the material at one path only, the Lua was believed
+    # instead (above) - and that tells what this folder of textures means for the files packed
+    # there: the materials of "materials 14" whose textures are named in models/drill_pack went
+    # to zcity_drill. So a sheet_16.vmt lying with them, its texture named in models/drill_pack
+    # too, is of that pack - and of the folders the Lua names a sheet_16.vmt in, it is the one
+    # of zcity_drill. (Left to itself it would follow its texture, to a place no Lua looks at.)
+    pack_of = collections.defaultdict(set)
+
+    def packed_as(item, claim):
+        source, folder = item.folder
+        keys = [(source, folder, posixpath.dirname(claim))]
+        if folder:      # (an upload cut into several archives has the same folder in each of them)
+            keys.append((None, folder, posixpath.dirname(claim)))
+        return keys
+
+    for item in materials:
+        if item.dests and item.how[0] == 'name' and not item.replaced:
+            claim = beside_its_texture(item)
+            if claim is not None and claim != item.dests[0]:
+                for key in packed_as(item, claim):
+                    pack_of[key].add(posixpath.dirname(item.dests[0]))
+    of_the_pack = collections.OrderedDict()
+    for item in materials:
+        if item.dests or item.replaced or at_home(item):
+            continue
+        claim = beside_its_texture(item)
+        if claim is None:
+            continue
+        for key in packed_as(item, claim):
+            folders = pack_of.get(key)
+            if folders:
+                break
+        else:
+            continue
+        fits = [target for target in wanted.values()
+                if target.asked is None and not satisfied(target)
+                and posixpath.basename(target.path) == item.name and posixpath.dirname(target.path) in folders
+                and relation(path_of(item), target.path.split('/'))[0] != 'sibling']
+        if len(fits) == 1:
+            of_the_pack[fits[0].path] = (item, posixpath.dirname(claim))
+    for path, (item, folder) in of_the_pack.items():
+        # Another file of that name that lies with its texture, named in that folder too, is
+        # another version of this material, whatever it is packed with. Two versions are not
+        # told apart: none is taken, as with any two files for one name.
+        rivals = [other for other in by_name.get(item.name, ())
+                  if other is not item and other.kind == 'vmt' and not other.dests and not at_home(other)
+                  and posixpath.dirname(beside_its_texture(other) or '') == folder and not other.same_as(item)]
+        if rivals:
+            for one in [item] + rivals:
+                undecided[id(one)] = Note('several files', path, len(rivals) + 1)
+            continue
+        settle(item, path, 'name')
+    count_votes('vmt')
+
     copies('vmt', material_targets)
+
+    # A material the Lua names that is still missing, and a material of that name which has a
+    # place and is made of the very texture this name stands for - "zcity_drill/sheet_16" for
+    # materials/zcity_drill/sheet_16.vmt. It is this material, whatever took it to the other
+    # place. (Up to 2.3.0 sort_content.py did not know the names a Lua file writes without
+    # "materials/" and gave such a file to its namesake of another pack; there it lies at a
+    # named path now, and a file that lies at a named path stays.) It is used here as well -
+    # nothing is taken away from the other place - and a note tells about it.
+    for target in wanted.values():
+        if target.asked is not None or satisfied(target):
+            continue
+        stem = target.path[len('materials/'):-len('.vmt')]
+        same = [item for item in by_name.get(posixpath.basename(target.path), ())
+                if item.kind == 'vmt' and item.dests and item.material.base == stem]
+        if same and all(one.same_as(same[0]) for one in same[1:]):
+            there = same[0].dests[0]
+            if settle(same[0], target.path, 'name'):
+                report.notes.append(Note('also here', target.path, there, there))
     # where the materials that nobody names will go counts for their folders too
     for item in materials:
         if not item.dests and not item.replaced and not at_home(item):
@@ -937,6 +1023,41 @@ def place(items, named, own):
         else:
             why = PLACE_TAKEN
         report.left_out.append((item, why))
+
+    # A name of the Lua that stays empty, and a supplied file of that name that is in nobody's
+    # use: it was not taken because nothing says that it is the one - and nothing says that it
+    # is not. Told with the place the file went to, so that it can be found - and told again by
+    # every later run, when the file lies there: as long as the name is empty.
+    # (Not told: a file in a folder where the Lua or a model names files - it is at home there;
+    # a second version of a file that has its place; a model that knows the path it was compiled
+    # for; and a file that is or went next door to the name, .../male_03/x for .../male_04/x:
+    # that is another file.)
+    asked = set(named)
+    asked.update(target.path for target in material_targets)
+    homes = set(posixpath.dirname(path) for path in asked)
+    empty = collections.defaultdict(list)
+    for path in sorted(named):
+        if path.endswith(('.mdl', '.vmt')) and free(path):
+            empty[posixpath.basename(path)].append(path)
+    for item in items:
+        if item.name not in empty or item.kind not in ('vmt', 'mdl') or item.replaced \
+                or item.crowded is not None or any(dest in asked for dest in item.dests) \
+                or undecided.get(id(item)) in report.notes:
+            continue
+        if item.kind == 'mdl' and item.model_name and '/' in item.model_name:
+            continue
+        if item.dests and posixpath.dirname(item.dests[0]) in homes:
+            continue
+        folders = sorted(posixpath.dirname(path) + '/' for path in empty[item.name]
+                         if relation(path_of(item), path.split('/'))[0] != 'sibling'
+                         and not (item.dests and relation(item.dests[0].split('/'), path.split('/'))[0] == 'sibling'))
+        if not folders:
+            continue
+        folders = ', '.join(folders[:4]) + (' ...' if len(folders) > 4 else '')
+        if item.dests:
+            report.notes.append(Note('same name', item, posixpath.dirname(item.dests[0]) + '/', folders))
+        else:
+            report.notes.append(Note('same name unused', item, folders))
 
     report.missing_named = [path for path in sorted(named)
                             if path.endswith(('.mdl', '.vmt')) and free(path)]

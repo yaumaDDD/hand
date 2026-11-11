@@ -17,6 +17,8 @@ unpacks the archives and puts everything where the game expects it:
 Needs Python 3.7+ and one of
     * the py7zr module          (python -m pip install py7zr)
     * 7-Zip / p7zip             (7z, 7za, 7zr or 7zz in PATH, or installed in Program Files)
+and, for the Lua of the clothing packs to be run (tools/lua_names.py: the names it builds while
+running are found only that way), the lupa module (python -m pip install lupa).
 About 1.5 GB of free disk space is used while building; the result is about 270 MB.
 """
 import argparse
@@ -40,6 +42,7 @@ import patch_models  # noqa: E402
 import vmt  # noqa: E402
 import zcg_layout as L  # noqa: E402
 import list_content  # noqa: E402
+import lua_names  # noqa: E402
 import place_content  # noqa: E402
 import content_report  # noqa: E402
 
@@ -361,9 +364,12 @@ def step_dropins(extractor, temp, out, by_hand=()):
     each of them where the Lua, a model or a material that names it looks for it.
 
     A file of this addon is never replaced; of two different files with one path the one from
-    the source that comes later by name is used. by_hand - the materials and models that were put
-    into the folders of the addon itself (see step_skeleton) - come last.
-    Returns (a report for each source, the Report of place_content, the paths the Lua names)."""
+    the source that comes later by name is used - but not of two Lua files: which of two versions
+    of a script is meant cannot be told here, and dropping one without a word would lose what it
+    adds, so the build stops. by_hand - the materials and models that were put into the folders
+    of the addon itself (see step_skeleton) - come last.
+    Returns (a report for each source, the Report of place_content, the paths the Lua names,
+    what running that Lua told - see run_lua)."""
     report, placed, content, lua = [], {}, [], []
     sources = L.dropin_sources(HERE)
     names = [name for name, _kind, _paths in sources]
@@ -390,6 +396,10 @@ def step_dropins(extractor, temp, out, by_hand=()):
             if dest in placed:
                 if placed[dest][1] == digest:
                     continue
+                if dest.endswith('.lua'):
+                    raise BuildError('two drop-in sources bring different Lua files for one place, %s: "%s" and "%s". '
+                                     'Only one can be in the addon, and what the other adds would be lost: remove or '
+                                     'rename one of the two.' % (dest, placed[dest][0], name))
                 notes.append('%s: another version is in %s, the one from here is used' % (dest, placed[dest][0]))
             elif os.path.exists(target):
                 notes.append('%s: the file of this addon is kept' % dest)
@@ -412,10 +422,17 @@ def step_dropins(extractor, temp, out, by_hand=()):
         report.append(dict(name=name, kind='folder', parts=1, counts=collections.Counter(), left_out=0, notes=[],
                            no_place=[]))
 
-    # what that Lua wants to find in the materials and models folders
+    # what that Lua wants to find in the materials and models folders: what its text spells out,
+    # and what it puts into the appearance tables when it is run
     named = set()
     for data in lua:
         named |= list_content.names_in(data.decode('utf-8-sig', 'replace'))
+    ran = run_lua(out) if lua else dict(result=None, files={}, tried=False)
+    ran['only'] = set()
+    if ran['result'] is not None:
+        ran['only'] = set(ran['result'].names) - named - list_content.stock_names()
+        named |= set(ran['result'].names)
+        named -= ran['result'].stock
     if named:
         named -= list_content.stock_names()
 
@@ -426,7 +443,108 @@ def step_dropins(extractor, temp, out, by_hand=()):
         by_name[item.source]['counts'][dest.split('/', 1)[0]] += 1
     for item, _why in result.left_out:
         by_name[item.source]['left_out'] += 1
-    return report, result, named
+    return report, result, named, ran
+
+
+def run_lua(out):
+    """Runs the Lua of the assembled addon the way the game would (tools/lua_names.py) and reads
+    the appearance tables. Returns dict(result = a lua_names.Result, or None where Lua cannot be
+    run; files = {path below lua/: text} of the Lua that is not the gloves' own; tried = True).
+    What the tables hold then is written into the addon (BOUND_LUA): in the game zcg_content
+    compares the tables with it. bound = how many entries that list has."""
+    bound = os.path.join(out, 'lua', BOUND_LUA)
+    if os.path.isfile(bound):
+        os.remove(bound)
+    everything = lua_names.folder_files(os.path.join(out, 'lua'))
+    files = dict((path, text) for path, text in everything.items() if not lua_names.is_own(path))
+    result = lua_names.run_addon(everything)[0] if lua_names.available() else None
+    listed = 0
+    if result is not None:
+        by_file = bound_entries(result)
+        listed = sum(len(entries) for entries in by_file.values())
+        if listed:
+            write_bound(bound, by_file)
+            check_bound(bound, by_file, everything)
+    return dict(result=result, files=files, tried=True, bound=listed)
+
+
+# the entries of the appearance tables that the Lua of the clothing packs makes, for the game
+BOUND_LUA = L.ADDON_DIRNAME + '/sh_bound.lua'
+
+
+def lua_string(text):
+    """a Lua string literal for a text of Lua (lua_names.lua_text): the same bytes, written in
+    plain ASCII - whatever encoding the name of a piece of clothing has, it arrives as it was"""
+    out = []
+    for byte in bytearray(lua_names.lua_bytes(text)):
+        c = chr(byte)
+        if c in '\\"':
+            out.append('\\' + c)
+        elif 32 <= byte < 127:
+            out.append(c)
+        else:
+            out.append('\\%03d' % byte)
+    return '"' + ''.join(out) + '"'
+
+
+def bound_entries(result):
+    """{Lua file: [(entry, value, side)]} - side None: on both sides, 1: on the server only,
+    2: on the clients only. Without what is only added when its file is installed."""
+    server, client = result.entries.get('server', {}), result.entries.get('client', {})
+    by_file = {}
+    for entry in sorted(set(server) | set(client)):
+        if entry in result.if_installed:
+            continue
+        if server.get(entry) == client.get(entry):
+            value, by = server[entry]
+            by_file.setdefault(by, []).append((entry, value, None))
+            continue
+        for side, table in ((1, server), (2, client)):
+            if entry in table:
+                value, by = table[entry]
+                by_file.setdefault(by, []).append((entry, value, side))
+    return by_file
+
+
+def check_bound(path, by_file, lua_files):
+    """The list is for the check of the addon itself (ZCG.BoundMissing in sh_content.lua): run the
+    Lua once more, let that check read the file as written and see that it finds every entry -
+    a list the game reads differently from the way it was meant would cry wolf on every server."""
+    with open(path, 'rb') as f:
+        text = lua_names.lua_text(f.read())
+    result = lua_names.run_addon(lua_files, bound=text)[0]
+    for number, realm in enumerate(lua_names.REALMS, 1):
+        want = sum(1 for entries in by_file.values() for _entry, _value, side in entries if side in (None, number))
+        count, missing = result.bound.get(realm, (None, []))
+        if count != want or missing:
+            raise BuildError('%s does not say what it was written to say: read back on the %s, the check of the addon '
+                             'looks for %s entries of %d and does not find %d of them%s. This is a fault of '
+                             'build_addon.py or tools/lua_names.py, not of the Lua.'
+                             % (BOUND_LUA, realm, count, want, len(missing),
+                                ', such as %r' % (missing[0][0],) if missing else ''))
+
+
+def write_bound(path, by_file):
+    lines = [
+        '-- Written by build_addon.py; made anew with every build of the addon.',
+        '--',
+        '-- What the Lua of the clothing packs in this addon puts into the appearance tables of Z-City when a',
+        '-- game starts - found by running that Lua while the addon was built (tools/lua_names.py):',
+        '--     Lua file = { { where in the tables, the value [, 1 = on the server only, 2 = on clients only] }, ... }',
+        '-- The console command zcg_content compares the tables of the running game with this list. An entry',
+        '-- that is not there was lost on the way: its Lua file did not load, or something made the table anew.',
+        '',
+        'ZCGloves.Bound = {',
+    ]
+    for by in sorted(by_file):
+        lines.append('\t[%s] = {' % lua_string(by))
+        for entry, value, side in by_file[by]:
+            lines.append('\t\t{ %s, %s%s },' % (lua_string(entry), lua_string(value), '' if side is None else ', %d' % side))
+        lines.append('\t},')
+    lines.append('}')
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='ascii', newline='\n') as f:
+        f.write('\n'.join(lines) + '\n')
 
 
 # sort_content.bat of the skeleton does on the computer of the addon's owner what step_dropins
@@ -436,19 +554,84 @@ SORT_TOOL = ('sort_content.py', 'place_content.py', 'content_report.py', 'list_c
              'zcg_layout.py', 'vmt.py')
 
 
-def step_sort_tool(out):
-    """The scripts of sort_content.bat, and the list of the files Z-City names itself: the tool
-    has no z_city.zip to read them from and must not go looking for them among the content.
-    Returns (scripts, names in the list)."""
+def step_sort_tool(out, ran=None):
+    """The scripts of sort_content.bat with two lists, because the tool has neither z_city.zip nor
+    a Lua to run where it works:
+      * the files Z-City names itself - it must not go looking for them among the content;
+      * the names the Lua of the addon puts into the appearance tables when it is run (ran: what
+        run_lua returned) - the text of the Lua does not show all of them.
+    Returns (scripts, names in the first list, names in the second one or None)."""
     dest = os.path.join(out, SORT_TOOL_DIR)
     for name in SORT_TOOL:
         copy(os.path.join(HERE, 'tools', name), os.path.join(dest, name))
-    stock = sorted(list_content.stock_names())
+    result = ran['result'] if ran else None
+    stock = set(list_content.stock_names())
+    if result is not None:
+        stock |= result.stock
     with open(os.path.join(dest, list_content.STOCK_LIST), 'w', encoding='utf-8', newline='\n') as f:
         f.write('# Materials, models and sounds that the Lua of Z-City names itself (read out of z_city.zip by\n'
                 '# build_addon.py). They come with the gamemode: sort_content.py does not ask for them.\n')
-        f.write('\n'.join(stock) + '\n')
-    return len(SORT_TOOL), len(stock)
+        f.write('\n'.join(sorted(stock)) + '\n')
+    listed = None
+    if ran and ran['tried']:
+        names = set(result.names) - stock if result is not None else set()
+        list_content.write_run_list(os.path.join(dest, list_content.RUN_LIST), names, ran['files'], ran=result is not None,
+                                    failed=lua_failed(ran))
+        listed = len(names)
+    return len(SORT_TOOL), len(stock), listed
+
+
+def lua_failed(ran):
+    """{Lua file: the error} - the Lua of the clothing packs that stopped with an error when it was run"""
+    failed = {}
+    if ran['result'] is not None:
+        for _realm, name, message in ran['result'].errors:
+            if name in ran['files']:
+                failed.setdefault(name, message.split('\n')[0])
+    return failed
+
+
+def lua_run_lines(ran):
+    """what running the Lua told, for the screen"""
+    if not ran['tried']:
+        return []
+    result = ran['result']
+    if result is None:
+        return ['  NOT RUN: the Lua of the clothing packs could not be run here - the lupa module is missing',
+                '      (python -m pip install lupa). Names that Lua puts together while running, or writes from',
+                '      inside the materials folder, stay unknown to sort_content.bat: it may take such a file for',
+                '      a namesake of another pack.']
+    out = []
+    only = sorted(ran['only'])
+    out.append('  that Lua was run (tools/lua_names.py): %d of these names are not to be read in its text%s'
+               % (len(only), ', such as %s' % only[0] if only else ''))
+    if ran.get('bound'):
+        out.append('      the %d clothes, faces, models and accessories it puts into the appearance tables are written into'
+                   % ran['bound'])
+        out.append('      lua/%s: in the game zcg_content tells which of them are not there' % BOUND_LUA)
+    # a name one file of a pack put into the tables and a later file replaced or dropped
+    stock = set(lua_names.stock_files())
+    lost = [entry for entry in result.lost if entry['by'] not in stock]
+    if lost:
+        out.append('      note: %d names that one Lua file puts into the appearance tables are replaced or dropped '
+                   'by a later one (python tools/lua_names.py):' % len(lost))
+        by_pair = collections.OrderedDict()
+        for entry in lost:
+            by_pair.setdefault((entry['by'], entry['during']), []).append(entry)
+        for (by, during), entries in by_pair.items():
+            first = entries[0]
+            out.append('          %s -> %s: %d, such as %s (%s)%s'
+                       % (by, during, len(entries), first['path'], first['who'],
+                          ', now %s' % first['now'] if first['now'] else ', dropped'))
+    for realm, name, message in result.errors[:10]:
+        out.append('  STOPPED WITH AN ERROR: %s, run as the %s: %s' % (name, realm, message.split('\n')[0]))
+    if len(result.errors) > 10:
+        out.append('      ... and %d more' % (len(result.errors) - 10))
+    if result.errors:
+        out.append('      What such a file adds after that place is in no list - and not in the game either, if the game')
+        out.append('      stops there too (the imitation of the game in tools/lua_names.lua may be what is wrong).')
+        out.append('      sort_content.bat tells the owner of the addon about it.')
+    return out
 
 
 def read_bytes(path):
@@ -790,9 +973,10 @@ def main():
         if os.path.isfile(bat):
             os.remove(bat)
     else:
-        scripts, stock = step_sort_tool(out)
-        print('  sort_content.bat: %d scripts, %d names of Z-City itself that it leaves alone' % (scripts, stock))
-        sources, content, named = step_dropins(extractor, temp, out, by_hand)
+        sources, content, named, ran = step_dropins(extractor, temp, out, by_hand)
+        scripts, stock, listed = step_sort_tool(out, ran)
+        print('  sort_content.bat: %d scripts, %d names of Z-City itself that it leaves alone%s'
+              % (scripts, stock, '' if listed is None else ", %d names the addon's Lua gives when it is run" % listed))
         foreign = [dest for dest, _item in content.placed]
         for entry in sources:
             counts = entry['counts']
@@ -802,9 +986,14 @@ def main():
             label = entry['name'] + ('/' if entry['kind'] == 'folder' else '')
             if entry['kind'] == 'volumes':
                 label += ' (%d parts)' % entry['parts']
-            print('  drop-in %s: %s%s' % (label, ', '.join(parts) or 'nothing for the addon',
-                                          ' (%d files without a place in an addon left out)' % entry['left_out']
-                                          if entry['left_out'] else ''))
+            left = ''
+            if entry['left_out']:
+                left = ' (%d files without a place in an addon left out' % entry['left_out']
+                if entry['no_place']:
+                    left += ': ' + ', '.join(entry['no_place'][:3]) + (' ...' if len(entry['no_place']) > 3 else '')
+                left += ')'
+            print('  drop-in %s: %s%s' % (label, ', '.join(parts) or 'NOTHING for the addon - no Lua, no materials, no models',
+                                          left))
             for note in entry['notes'][:10]:
                 print('      note: ' + note)
             if len(entry['notes']) > 10:
@@ -813,6 +1002,8 @@ def main():
             present = sum(1 for name in named if os.path.isfile(os.path.join(out, name)))
             print('  the drop-in Lua names %d materials and models of its own: %d are in the addon, %d are not '
                   '(python tools/list_content.py)' % (len(named), present, len(named) - present))
+        for line in lua_run_lines(ran):
+            print(line)
         if content.placed or content.left_out:
             moves = sorted(content.moves.items(), key=lambda kv: (-kv[1], kv[0]))
             if moves:

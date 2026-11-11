@@ -11,10 +11,14 @@ names have to be put into the materials and models folders of the addon. This sc
 names out of the Lua text, leaves out the ones Z-City itself uses (z_city.zip) and prints where
 the rest is expected.
 
-It reads text, it does not run it: a name that the Lua puts together from pieces ("face" .. i)
-shows up as its first piece only. The exact answer for a running game is the console command
-zcg_content of the addon.
+Reading the text finds what is written out as "models/..." or "materials/...". A name the Lua
+puts together from pieces ("face" .. i) or writes from inside the materials folder
+("zcity_drill/sheet_16") is not found that way, so the Lua is also run, where that is possible
+(tools/lua_names.py, it needs the lupa module): the listing has both. The names found by running
+go into the addon as a list (RUN_LIST) for sort_content.py, which cannot run Lua where it works.
+The exact answer for a running game is the console command zcg_content of the addon.
 """
+import hashlib
 import json
 import os
 import re
@@ -56,10 +60,16 @@ def strip_comments(text):
     return '\n'.join(out)
 
 
+def readable(text):
+    """a text of Lua that was read byte for byte (lua_names.lua_text): what is not UTF-8 in it
+    as the question marks any other way of reading it gives - fit to be written anywhere"""
+    return text.encode('utf-8', 'surrogateescape').decode('utf-8', 'replace')
+
+
 def names_in(text):
     """game files named by a piece of Lua: set of paths like materials/x.vmt, models/y.mdl"""
     found = set()
-    for _quote, name in LITERAL.findall(strip_comments(text)):
+    for _quote, name in LITERAL.findall(strip_comments(readable(text))):
         name = name.strip().lower().rstrip('/')
         ext = os.path.splitext(name)[1]
         if name.startswith('models/') and ext == '.mdl':
@@ -98,6 +108,80 @@ def stock_names():
 _STOCK = []     # read once
 
 
+# ---- the names found by running the Lua, as the build ships them next to these scripts --------
+RUN_LIST = 'lua_names.txt'
+
+
+def lua_fingerprint(text):
+    """what tells whether a Lua file is still the one a list was made from (the same for a text
+    read byte for byte and one read with question marks for what is not UTF-8)"""
+    return hashlib.sha1(readable(text).replace('\r\n', '\n').encode('utf-8')).hexdigest()
+
+
+def write_run_list(path, names, lua_files, ran=True, failed=None):
+    """names: game paths; lua_files: {path below lua/: text} the names were found in.
+    ran=False: the Lua could not be run where the addon was built - the list says so.
+    failed: {Lua file: the error} - the files that stopped with an error when they were run."""
+    lines = [
+        '# Materials and models that the Lua of this addon puts into the appearance tables of Z-City -',
+        '# found by RUNNING that Lua while the addon was built (build_addon.py, tools/lua_names.py).',
+        '# sort_content.py looks for these names on top of the ones it reads in the text of the Lua:',
+        '# it has no Lua to run on the computer of the addon\'s owner.',
+        '# "lua <sha1> <file>" - the Lua files the list was made from.',
+        '# "failed <file><tab><error>" - a Lua file that stopped with an error: what it adds after that is not here.',
+    ]
+    if not ran:
+        lines.append('not-run')
+    for name in sorted(lua_files):
+        lines.append('lua %s %s' % (lua_fingerprint(lua_files[name]), name))
+    for name in sorted(failed or ()):
+        lines.append('failed %s\t%s' % (name, ' '.join(readable(u'%s' % failed[name]).split())))
+    lines += sorted(names)
+    # (a file name that cannot be written is written with question marks: it then counts as changed)
+    with open(path, 'w', encoding='utf-8', errors='replace', newline='\n') as f:
+        f.write('\n'.join(lines) + '\n')
+
+
+def read_run_list(path=None):
+    """(names, {Lua file below lua/: fingerprint}, was the Lua run) out of the list;
+    (set(), None, False) when there is no list"""
+    path = path or os.path.join(HERE, RUN_LIST)
+    if not os.path.isfile(path):
+        return set(), None, False
+    names, made_from, ran = set(), {}, True
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if line == 'not-run':
+                ran = False
+            elif line.startswith('lua '):
+                parts = line.split(' ', 2)
+                if len(parts) == 3:
+                    made_from[parts[2]] = parts[1]
+            elif line.startswith('failed '):
+                continue        # (read_run_failed)
+            else:
+                names.add(line)
+    return names, made_from, ran
+
+
+def read_run_failed(path=None):
+    """{Lua file below lua/: the error} - the files the list says stopped with an error when the
+    addon was built"""
+    path = path or os.path.join(HERE, RUN_LIST)
+    failed = {}
+    if os.path.isfile(path):
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.startswith('failed '):
+                    name, _tab, message = line[len('failed '):].rstrip('\r\n').partition('\t')
+                    if name.strip():
+                        failed[name.strip()] = message.strip()
+    return failed
+
+
 def addon_title(z, names, inner):
     """title of the addon a file of a drop-in archive belongs to (from the addon.json next to it)"""
     parts = inner.split('/')
@@ -112,13 +196,16 @@ def addon_title(z, names, inner):
 
 
 def collect():
-    """[(archive, addon title, {game path: [Lua files that name it]})] and the names of Z-City"""
+    """[(archive, addon title, {game path: [Lua files that name it]})] and the names of Z-City.
+    The names are read in the text of the Lua and, where Lua can be run (lupa), found by running
+    it as well; what the files of Z-City itself put into its tables is left out either way."""
+    if _COLLECTED:
+        return _COLLECTED[0]
     stock = stock_names()
-    result = []
+    by_title, order, owner = {}, [], {}
     for archive in L.dropin_archives(ROOT):
         if not archive.lower().endswith('.zip'):
             continue
-        by_title = {}
         with zipfile.ZipFile(archive) as z:
             names = {L.zip_name(info): info for info in z.infolist()}
             for inner, info in sorted(names.items()):
@@ -126,12 +213,50 @@ def collect():
                 if not dest or not dest.endswith('.lua'):
                     continue
                 title = addon_title(z, names, inner) or os.path.basename(archive)
-                wanted = by_title.setdefault(title, {})
+                key = (os.path.basename(archive), title)
+                if key not in by_title:
+                    by_title[key] = {}
+                    order.append(key)
+                owner[dest] = key       # (of two files for one path the later archive has it)
                 for name in names_in(z.read(info).decode('utf-8-sig', 'replace')) - stock:
-                    wanted.setdefault(name, []).append(dest)
-        for title, wanted in sorted(by_title.items()):
-            result.append((os.path.basename(archive), title, wanted))
+                    by_title[key].setdefault(name, []).append(dest)
+
+    ran = run_names()
+    if ran is not None:
+        for name, info in ran.names.items():
+            key = owner.get('lua/' + info['by'])
+            if key is not None and name not in stock and name not in by_title[key]:
+                by_title[key][name] = ['lua/' + info['by']]
+        for wanted in by_title.values():
+            for name in ran.stock.intersection(wanted):
+                del wanted[name]
+
+    order.sort(key=lambda key: (key[0], key[1]))
+    result = [(archive, title, by_title[(archive, title)]) for archive, title in order]
+    _COLLECTED.append((result, stock))
     return result, stock
+
+
+_COLLECTED = []     # made once
+
+
+def run_names():
+    """what running the Lua of the drop-in archives finds (a lua_names.Result), None where Lua
+    cannot be run or the tool for that was not shipped (sort_content/ in an installed addon)"""
+    if not _RAN:
+        result = None
+        try:
+            import lua_names
+        except ImportError:
+            lua_names = None
+        if lua_names is not None and lua_names.available():
+            files = dict((path, text) for path, (text, _archive) in lua_names.dropin_files(ROOT).items())
+            result = lua_names.run_addon(files)[0]
+        _RAN.append(result)
+    return _RAN[0]
+
+
+_RAN = []           # run once
 
 
 FILES_HEAD = u'''\

@@ -16,6 +16,11 @@
 -- A file that is missing where the game looks for it is often there all the same, a folder off
 -- (materials/gate/x.vmt for materials/models/gate/x.vmt): the command looks for it by its name
 -- and says so. Putting it in place is the job of sort_content.bat in the folder of the addon.
+--
+-- The names themselves can get lost as well: a Lua file of a clothing pack that did not load, an
+-- addon that makes a table anew after others have added to it. The build of this addon runs the
+-- Lua of the packs it carries and writes down what the tables hold then (sh_bound.lua, ZCG.Bound);
+-- zcg_content compares the tables of the running game with that and names what is not there.
 
 local ZCG = ZCGloves
 
@@ -26,26 +31,26 @@ local function clean(path)
 	return path
 end
 
--- every model and material the appearance tables name: path -> who wants it
--- (models as "models/x.mdl", materials without "materials/" and without ".vmt")
-function ZCG.ContentNeeds()
-	local models, materials = {}, {}
-
-	local function model(path, who)
-		if not isstring(path) or path == "" then return end
-		path = clean(path)
-		if models[path] == nil then models[path] = who end
-	end
-	local function material(path, who)
-		if not isstring(path) or path == "" then return end
-		path = clean(path)
-		path = string.gsub(path, "^materials/", "")
-		path = string.gsub(path, "%.vmt$", "")
-		if materials[path] == nil then materials[path] = who end
-	end
+-- Calls visit(kind, path, who, entry) for every file the appearance tables name:
+--   kind    "model" or "material"
+--   path    as the table has it
+--   who     what it is for ("male clothes Drill 01")
+--   entry   where in the tables it stands ("Clothes/1/Drill 01"): one value per entry
+-- (The tools of the addon run the Lua of the clothing packs outside of the game and read the
+-- tables with this very function - tools/lua_names.py - so that sort_content.bat looks for the
+-- same names zcg_content asks for.)
+function ZCG.ContentWalk(visit)
 	local function each(tbl, fn)
 		if not istable(tbl) then return end
 		for key, value in pairs(tbl) do fn(key, value) end
+	end
+	-- (not every value is a file: "null" is the game's name for a material that draws nothing,
+	-- "!name" is a material made by Lua)
+	local tell = visit
+	visit = function(kind, path, who, entry)
+		if not isstring(path) or path == "" then return end
+		if kind == "material" and (string.lower(path) == "null" or string.sub(path, 1, 1) == "!") then return end
+		tell(kind, path, who, entry)
 	end
 
 	local AP = istable(hg) and hg.Appearance
@@ -53,27 +58,51 @@ function ZCG.ContentNeeds()
 		for sex = 1, 2 do
 			local whose = sex == 2 and "female" or "male"
 			each(istable(AP.PlayerModels) and AP.PlayerModels[sex], function(name, entry)
-				if istable(entry) then model(entry.mdl, "player model " .. tostring(name)) end
+				if istable(entry) then
+					visit("model", entry.mdl, "player model " .. tostring(name), "PlayerModels/" .. sex .. "/" .. tostring(name))
+				end
 			end)
 			each(istable(AP.Clothes) and AP.Clothes[sex], function(id, path)
-				material(path, whose .. " clothes " .. tostring(id))
+				visit("material", path, whose .. " clothes " .. tostring(id), "Clothes/" .. sex .. "/" .. tostring(id))
 			end)
 		end
-		each(AP.FacemapsSlots, function(_, faces)
-			each(faces, function(name, path) material(path, "face " .. tostring(name)) end)
+		each(AP.FacemapsSlots, function(slot, faces)
+			each(faces, function(name, path)
+				visit("material", path, "face " .. tostring(name), "FacemapsSlots/" .. tostring(slot) .. "/" .. tostring(name))
+			end)
 		end)
 		-- (Z-City Appearance Mod) faces made of several materials
-		each(AP.MultiFacemaps, function(_, faces)
+		each(AP.MultiFacemaps, function(model, faces)
 			each(faces, function(name, slots)
-				each(slots, function(_, path) material(path, "face " .. tostring(name)) end)
+				each(slots, function(slot, path)
+					visit("material", path, "face " .. tostring(name),
+						"MultiFacemaps/" .. tostring(model) .. "/" .. tostring(name) .. "/" .. tostring(slot))
+				end)
 			end)
 		end)
 	end
 
 	each(istable(hg) and hg.Accessories, function(id, data)
 		if not istable(data) then return end
-		model(data.model, "accessory " .. tostring(id))
-		model(data.femmodel, "accessory " .. tostring(id))
+		visit("model", data.model, "accessory " .. tostring(id), "Accessories/" .. tostring(id) .. "/model")
+		visit("model", data.femmodel, "accessory " .. tostring(id), "Accessories/" .. tostring(id) .. "/femmodel")
+	end)
+end
+
+-- every model and material the appearance tables name: path -> who wants it
+-- (models as "models/x.mdl", materials without "materials/" and without ".vmt")
+function ZCG.ContentNeeds()
+	local models, materials = {}, {}
+
+	ZCG.ContentWalk(function(kind, path, who)
+		path = clean(path)
+		if kind == "model" then
+			if models[path] == nil then models[path] = who end
+		else
+			path = string.gsub(path, "^materials/", "")
+			path = string.gsub(path, "%.vmt$", "")
+			if materials[path] == nil then materials[path] = who end
+		end
 	end)
 
 	return models, materials
@@ -167,6 +196,81 @@ function ZCG.ContentMissing(askMaterials)
 end
 
 -- ---------------------------------------------------------------------------------------------
+-- is everything in the tables that the clothing Lua of this addon puts there?
+-- ---------------------------------------------------------------------------------------------
+-- ZCG.Bound: Lua file -> { { entry of the tables (as ZCG.ContentWalk names it), its value
+-- [, 1 = on the server only, 2 = on clients only] }, ... }. Returns how many entries this side
+-- should have and the ones it does not have that way, sorted:
+-- { { entry = , want = , by = Lua file, now = the value that is there instead, or nil }, ... }.
+-- nil without the list (an addon built without the Lua of clothing packs, or where Lua could not
+-- be run).
+function ZCG.BoundMissing()
+	local bound = ZCG.Bound
+	if not istable(bound) then return nil end
+
+	local now = {}
+	ZCG.ContentWalk(function(_, path, _, entry) now[entry] = clean(path) end)
+
+	local side = SERVER and 1 or 2
+	local count, missing = 0, {}
+	for by, entries in pairs(bound) do
+		for _, item in ipairs(istable(entries) and entries or {}) do
+			if istable(item) and isstring(item[1]) and isstring(item[2]) and (item[3] == nil or item[3] == side) then
+				count = count + 1
+				local have = now[item[1]]
+				if have ~= item[2] then
+					missing[#missing + 1] = { entry = item[1], want = item[2], by = tostring(by), now = have }
+				end
+			end
+		end
+	end
+	table.sort(missing, function(a, b)
+		if a.by ~= b.by then return a.by < b.by end
+		return a.entry < b.entry
+	end)
+	return count, missing
+end
+
+-- the lines of zcg_content about that, through out(text); returns how many entries are not there
+function ZCG.BoundReport(out)
+	local count, missing = ZCG.BoundMissing()
+	if not count then return 0 end
+	if #missing == 0 then
+		out("[CS:GO Gloves] the clothing Lua of this addon: all " .. count
+			.. " clothes, faces, models and accessories it adds are in the appearance tables")
+		return 0
+	end
+
+	out("[CS:GO Gloves] the clothing Lua of this addon: " .. #missing .. " of the " .. count
+		.. " clothes, faces, models and accessories it adds are NOT in the appearance tables the way it puts them there:")
+	local files, order = {}, {}
+	for _, item in ipairs(missing) do
+		if not files[item.by] then
+			files[item.by] = 0
+			order[#order + 1] = item.by
+		end
+		files[item.by] = files[item.by] + 1
+	end
+	for _, by in ipairs(order) do out("  lua/" .. by .. ": " .. files[by]) end
+	local lines = {}
+	for i, item in ipairs(missing) do
+		lines[i] = item.entry .. " = " .. item.want
+			.. (item.now and ("   [there is " .. item.now .. " instead]") or "   [not there]")
+	end
+	local shown = math.min(#lines, 40)
+	for i = 1, shown do out("    " .. lines[i]) end
+	if #lines > shown then
+		out("    ... and " .. (#lines - shown) .. " more")
+		for i, item in ipairs(missing) do lines[i] = "lua/" .. item.by .. ": " .. lines[i] end
+		local written = pcall(file.Write, "zcg_bound.txt", table.concat(lines, "\n") .. "\n")
+		if written then out("    the whole list is in garrysmod/data/zcg_bound.txt") end
+	end
+	out("  a Lua file that is named here did not run through (look for its name next to \"error\" further up in the"
+		.. " console, on the server too), or something else made these tables anew or uses the same names")
+	return #missing
+end
+
+-- ---------------------------------------------------------------------------------------------
 -- the same file name under another path
 -- ---------------------------------------------------------------------------------------------
 -- Looked for in the addons and in the game folder first; in everything the game has mounted only
@@ -241,7 +345,10 @@ function ZCG.ContentReport(out)
 	out("[CS:GO Gloves] content check on the " .. (SERVER and "server" or "client") .. ": the appearance tables name "
 		.. models .. " models and " .. materials .. " materials, the installed models are made of " .. own
 		.. " materials; " .. #missing .. " files are missing")
-	if #missing == 0 then return 0 end
+	if #missing == 0 then
+		ZCG.BoundReport(out)
+		return 0
+	end
 
 	-- are they there, in another folder?
 	local names = {}
@@ -272,6 +379,8 @@ function ZCG.ContentReport(out)
 			.. " the game only finds a file at its exact path")
 		out("  close the game and start sort_content.bat in the folder of this addon (addons/zcity_csgo_gloves):"
 			.. " it moves every file to its place")
+		out("  (a file it cannot tell from a namesake of another pack stays where it is: its report,"
+			.. " sort_content_report.txt, names such files - move those by hand)")
 	else
 		out("  put the files into the materials and models folders of this addon - in any folders - and start"
 			.. " sort_content.bat there: it moves every file to its place. Then start the game again")
@@ -280,7 +389,21 @@ function ZCG.ContentReport(out)
 	if own > 0 then
 		out("  a material that a model is made of and that is not installed leaves a purple and black part on that model")
 	end
+	ZCG.BoundReport(out)
 	return #missing
+end
+
+-- one line when the tables do not hold what the clothing Lua of this addon puts there (a minute
+-- after the start: that Lua may add things on timers)
+local function boundNotice()
+	timer.Simple(65, function()
+		local ok, count, missing = pcall(ZCG.BoundMissing)
+		if ok and count and istable(missing) and #missing > 0 then
+			ZCG.Print(#missing .. " of the " .. count .. " clothes, faces and models that the clothing Lua of this addon adds "
+				.. "are not in the appearance tables of the " .. (SERVER and "server" or "client")
+				.. " - type zcg_content for the list.")
+		end
+	end)
 end
 
 if SERVER then
@@ -297,6 +420,7 @@ if SERVER then
 	-- one line in the server console when player models or accessories have no model file:
 	-- that is always a mistake (ERROR models), unlike materials a dedicated server may not have
 	hook.Add("InitPostEntity", "zcg_content", function()
+		boundNotice()
 		timer.Simple(10, function()
 			local ok, models = pcall(ZCG.ContentNeeds)
 			if not ok or not istable(models) then return end
@@ -315,6 +439,7 @@ else
 
 	-- one line in the console of a player whose game lacks files of the appearance menu
 	hook.Add("InitPostEntity", "zcg_content", function()
+		boundNotice()
 		timer.Simple(15, function()
 			local ok, missing = pcall(ZCG.ContentMissing, false)
 			if ok and istable(missing) and #missing > 0 then

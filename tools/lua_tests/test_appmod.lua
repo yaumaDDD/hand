@@ -29,8 +29,13 @@ return function(testdir, luaroot)
 	Z.install()
 	local me = M.newPlayer("me", Z.MALE)
 	M.localplayer = me
+	-- (the list the build writes when the addon carries the Lua of clothing packs)
+	M.luafiles["zcity_csgo_gloves/sh_bound.lua"] = [[ZCGloves.Bound = { ["a.lua"] = { { "Clothes/1/\208\154 \"x\"", "models/x/y" } } }]]
 	include("autorun/zcity_csgo_gloves.lua")
 	local ZCG = ZCGloves
+	check(istable(ZCG.Bound) and ZCG.Bound["a.lua"][1][1] == "Clothes/1/\208\154 \"x\"",
+		"bound: a client reads the list the build wrote")
+	ZCG.Bound = nil
 
 	local function count(tbl)
 		local n = 0
@@ -102,6 +107,12 @@ return function(testdir, luaroot)
 			if line:find(BAND_F, 1, true) then listed = true end
 		end
 		check(listed, "zcg_content lists a missing file")
+		local told = false
+		for _, line in ipairs(M.log) do
+			if line:find("the whole list is in garrysmod/data/zcg_content.txt", 1, true) then told = true end
+		end
+		check(told and M.written["zcg_content.txt"] ~= nil and M.written["zcg_content.txt"]:find(BAND_F, 1, true) ~= nil,
+			"and writes the whole list into a file")
 
 		-- ---- the materials a model is made of
 		local SLAV = "models/slav/m/male_10.mdl"
@@ -162,6 +173,7 @@ return function(testdir, luaroot)
 		eq(logged("[a file of that name: materials/humans/slav/players_sheet.vtf"), 0, "a texture is not taken for a material")
 		eq(logged("3 of them have a file of the same name in another folder"), 1, "it counts them")
 		eq(logged("start sort_content.bat in the folder of this addon"), 1, "and names the tool that moves them")
+		eq(logged("sort_content_report.txt, names such files - move those by hand"), 1, "and where that tool tells what it left alone")
 		eq(logged("leaves a purple and black part on that model"), 1, "it says what a missing material of a model does")
 
 		-- nothing of that name anywhere: the files have to be brought first
@@ -192,6 +204,127 @@ return function(testdir, luaroot)
 		AP.Clothes[1].bib, AP.Clothes[2].swiss, AP.PlayerModels[1]["Male 10"] = nil, nil, nil
 		AP.FacemapsSlots, AP.MultiFacemaps, hg.Accessories = nil, nil, nil
 		eq(#M.errors, 0, "content: no errors: " .. table.concat(M.errors, " | "))
+	end
+
+	-- ================================================================ what the clothing Lua adds
+	-- The build of the addon runs the Lua of the clothing packs and writes down what the tables
+	-- hold then (ZCG.Bound, sh_bound.lua). zcg_content compares the tables of the game with it:
+	-- a name that is not there was lost on the way.
+	do
+		local AP = hg.Appearance
+		local function logged(text)
+			local n = 0
+			for _, line in ipairs(M.log) do
+				if line:find(text, 1, true) then n = n + 1 end
+			end
+			return n
+		end
+		local clothes = { AP.Clothes[1], AP.Clothes[2] }
+		M.advance(120) -- (what the start of the game above left to do)
+
+		eq(ZCG.BoundMissing(), nil, "bound: without the list of the build there is nothing to compare")
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("the clothing Lua of this addon"), 0, "and zcg_content says nothing about it")
+
+		ZCG.Bound = {
+			["autorun/zcity_drill_clothes.lua"] = {
+				{ "Clothes/1/Drill 01", "zcity_drill/players_sheet_02" },
+				{ "Clothes/2/Drill 01", "zcity_drill/players_sheet_02" },
+				{ "Clothes/1/Drill 07", "zcity_drill/sheet_16" },
+			},
+			["homigrad/new_appearance/sh_shared_pack.lua"] = {
+				{ "PlayerModels/1/Male 10", "models/slav/m/male_10.mdl" },
+				{ "FacemapsSlots/models/humans/male/group01/ted_facemap/Face 2", "models/faces/ted2" },
+				{ "MultiFacemaps/models/slav/m/male_10.mdl/Scar/a", "models/faces/scar_a" },
+				{ "Accessories/armband red/model", "models/zcband/band_team.mdl" },
+				{ "Clothes/1/of the server", "models/x/server", 1 },
+				{ "Clothes/1/of the clients", "models/x/client", 2 },
+			},
+		}
+		AP.Clothes[1]["Drill 01"] = "zcity_drill/players_sheet_02"
+		AP.Clothes[2]["Drill 01"] = "ZCity_Drill\\Players_Sheet_02" -- (capitals and the other slash: the same file)
+		AP.Clothes[1]["Drill 07"] = "zcity_drill/sheet_16"
+		AP.Clothes[1]["of the clients"] = "models/x/client"
+		AP.Clothes[1]["of another addon"] = "models/y/other"
+		AP.PlayerModels[1]["Male 10"] = { mdl = "models/slav/m/male_10.mdl", sex = false, submatSlots = {} }
+		AP.FacemapsSlots = { ["models/humans/male/group01/ted_facemap"] = { ["Face 2"] = "models/faces/ted2" } }
+		AP.MultiFacemaps = { ["models/slav/m/male_10.mdl"] = { Scar = { a = "models/faces/scar_a" } } }
+		hg.Accessories = { ["armband red"] = { model = "models/zcband/band_team.mdl" } }
+
+		local count, missing = ZCG.BoundMissing()
+		eq(count, 8, "bound: the entries a client should have (not the one of the server)")
+		eq(#missing, 0, "bound: they are all there")
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("the clothing Lua of this addon: all 8 clothes, faces, models and accessories it adds are in the appearance tables"), 1,
+			"zcg_content says that everything the clothing Lua adds is there")
+		check(M.log[1]:find("content check on the client", 1, true) ~= nil, "after the content check")
+
+		-- one name dropped, one replaced by something else
+		AP.Clothes[1]["Drill 07"] = nil
+		AP.PlayerModels[1]["Male 10"].mdl = "models/other/male_10.mdl"
+		count, missing = ZCG.BoundMissing()
+		eq(#missing, 2, "bound: a name that is gone and one that was replaced are found")
+		eq(missing[1].entry .. " | " .. tostring(missing[1].now) .. " | " .. missing[1].by,
+			"Clothes/1/Drill 07 | nil | autorun/zcity_drill_clothes.lua", "bound: the one that is gone, with its Lua file")
+		eq(missing[2].entry .. " | " .. tostring(missing[2].now) .. " | " .. missing[2].want,
+			"PlayerModels/1/Male 10 | models/other/male_10.mdl | models/slav/m/male_10.mdl", "bound: the one that was replaced, with what is there")
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("2 of the 8 clothes, faces, models and accessories it adds are NOT in the appearance tables"), 1,
+			"zcg_content says how many are not there")
+		eq(logged("  lua/autorun/zcity_drill_clothes.lua: 1"), 1, "by the Lua file that adds them")
+		eq(logged("  lua/homigrad/new_appearance/sh_shared_pack.lua: 1"), 1, "each of them")
+		eq(logged("    Clothes/1/Drill 07 = zcity_drill/sheet_16   [not there]"), 1, "the name that is gone")
+		eq(logged("    PlayerModels/1/Male 10 = models/slav/m/male_10.mdl   [there is models/other/male_10.mdl instead]"), 1,
+			"the name that was replaced")
+
+		eq(M.written["zcg_bound.txt"], nil, "a short list is not written into a file")
+
+		-- something makes the table anew after the packs have added to it
+		AP.Clothes = { { normal = "models/humans/male/group01/normal" }, {} }
+		count, missing = ZCG.BoundMissing()
+		eq(#missing, 5, "bound: a table that was made anew lost everything the packs had added")
+
+		-- a long list: the console gets its head, a file gets all of it
+		local few = ZCG.Bound
+		local many = {}
+		for i = 1, 50 do many[i] = { string.format("Clothes/2/Shirt %02d", i), "pack/shirt_" .. i } end
+		ZCG.Bound = { ["autorun/many.lua"] = many }
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("50 of the 50 clothes, faces, models and accessories it adds are NOT in the appearance tables"), 1, "bound: a long list is counted")
+		eq(logged("    Clothes/2/Shirt 40 = pack/shirt_40   [not there]") + logged("Shirt 41"), 1, "the console gets its first forty lines")
+		eq(logged("    ... and 10 more"), 1, "and the number of the rest")
+		eq(logged("    the whole list is in garrysmod/data/zcg_bound.txt"), 1, "and where all of them are")
+		local text = M.written["zcg_bound.txt"] or ""
+		check(text:find("lua/autorun/many.lua: Clothes/2/Shirt 50 = pack/shirt_50   [not there]\n", 1, true) ~= nil
+			and select(2, text:gsub("\n", "\n")) == 50, "the file has every entry, with its Lua file")
+		ZCG.Bound = few
+
+		-- one line after the start of the game, a minute later (the Lua may add things on timers)
+		M.log = {}
+		hook.Run("InitPostEntity")
+		M.advance(60)
+		eq(logged("that the clothing Lua of this addon adds are not in the appearance tables"), 0, "the player is not told before a minute has passed")
+		M.advance(6)
+		eq(logged("5 of the 8 clothes, faces and models that the clothing Lua of this addon adds are not in the appearance tables of the client"), 1,
+			"then once, with the way to the list")
+
+		-- a list the game cannot make sense of does no harm
+		ZCG.Bound = { ["x.lua"] = "not a list", [1] = { { "Clothes/1/a" }, "nor this", { "Clothes/1/b", "models/x/b" } } }
+		count, missing = ZCG.BoundMissing()
+		eq(count .. " " .. #missing .. " " .. tostring(missing[1] and missing[1].by), "1 1 1", "bound: a broken list is read as far as it makes sense")
+
+		ZCG.Bound = nil
+		AP.Clothes = clothes
+		for _, name in ipairs({ "Drill 01", "Drill 07", "of the clients", "of another addon" }) do
+			AP.Clothes[1][name], AP.Clothes[2][name] = nil, nil
+		end
+		AP.PlayerModels[1]["Male 10"] = nil
+		AP.FacemapsSlots, AP.MultiFacemaps, hg.Accessories = nil, nil, nil
+		eq(#M.errors, 0, "bound: no errors: " .. table.concat(M.errors, " | "))
 	end
 
 	-- ================================================================ the Appearance Mod

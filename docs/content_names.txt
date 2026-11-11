@@ -7,7 +7,8 @@ sort_content.bat - он сам найдёт каждому файлу место
 Список показывает, из каких папок игры Lua что-то берёт.
 
 Z-City Appearance Mod  [apperance.zip]
-    materials/models/bloo_ltcom_zel/citizens/facemaps/               1 names
+    materials/models/bloo_ltcom_zel/citizens/facemaps/               2 names
+        lakeetra_facemap6.vmt
         naomi_facemap_new.vmt
     materials/models/characters/citizen/male/facemaps/               4 names
         erdim_facemap.vmt
@@ -504,6 +505,31 @@ Z-City Appearance Mod  [apperance.zip]
         male_10.mdl
         travis.mdl
 
+[ZCITY] Drill Clothes  [еще лушашки для привязок + аддон json 2.zip]
+    materials/zcity_drill/                                          22 names
+        players_sheet_02.vmt
+        players_sheet_04.vmt
+        players_sheet_06.vmt
+        players_sheet_07.vmt
+        players_sheet_09.vmt
+        sheet_01.vmt
+        sheet_16.vmt
+        sheet_31.vmt
+        sheet_32.vmt
+        sheet_33.vmt
+        sheet_34.vmt
+        sheet_35.vmt
+        sheet_36.vmt
+        sheet_37.vmt
+        sheet_38.vmt
+        sheet_39.vmt
+        sheet_40.vmt
+        sheet_41.vmt
+        sheet_42.vmt
+        sheet_43.vmt
+        sheet_44.vmt
+        sheet_45.vmt
+
 Z-CITY | Maga's small clothes pack  [луашки для привязок всей одежды.zip]
     materials/models/gate/                                           9 names
         epl.vmt
@@ -611,10 +637,21 @@ Z-City | bib's custom shirts  [луашки для привязок всей о�
         default_p.mdl
 
 ZCITY Clothing+  [луашки для привязок всей одежды.zip]
-    materials/models/bloo_ltcom_zel/citizens/facemaps/               3 names
-        kim_facemap6.vmt
+    materials/models/bloo_ltcom_zel/citizens/facemaps/              14 names
+        chau_facemap6.vmt
         lake_facemap.vmt
+        lake_facemap2.vmt
+        lake_facemap3.vmt
+        lake_facemap4.vmt
+        lake_facemap5.vmt
+        lake_facemap6.vmt
         miranda_facemap.vmt
+        miranda_facemap2.vmt
+        miranda_facemap3.vmt
+        miranda_facemap4.vmt
+        miranda_facemap5.vmt
+        miranda_facemap6.vmt
+        van_facemap9.vmt
     materials/models/humans/female/group01/                          9 names
         adidas.vmt
         flowers.vmt
@@ -675,4 +712,4 @@ ZCITY Clothing+  [луашки для привязок всей одежды.zip
         male_08.mdl
         male_09.mdl
 
-603 names in all
+637 names in all

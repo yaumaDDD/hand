@@ -1530,6 +1530,435 @@ def test_sorting(tmp):
     check(code == 1, 'a source that does not exist is refused')
 
 
+# the clothes of "[ZCITY] Drill Clothes": materials named from inside the materials folder, in a
+# table of pairs - nothing the text of the Lua shows as the name of a file
+DRILL = ['players_sheet_02', 'players_sheet_04', 'players_sheet_06', 'players_sheet_07', 'players_sheet_09',
+         'sheet_01', 'sheet_16'] + ['sheet_%d' % n for n in range(31, 46)]
+
+
+def text_names():
+    """what the text of the drop-in Lua shows, whether or not Lua can be run here"""
+    named = set()
+    for archive in L.dropin_archives(ROOT):
+        if not archive.lower().endswith('.zip'):
+            continue
+        with zipfile.ZipFile(archive) as z:
+            for info in z.infolist():
+                dest = None if info.is_dir() else L.dropin_destination(L.zip_name(info))
+                if dest and dest.endswith('.lua'):
+                    named |= list_content.names_in(z.read(info).decode('utf-8-sig', 'replace'))
+    return named - list_content.stock_names()
+
+
+def test_namesakes_of_a_pack(tmp):
+    """A material the Lua names in several folders - sheet_16.vmt of the Drill clothes and of the
+    Appearance Mod - packed with its texture in a folder that says nothing, the texture named in
+    a folder of its own. What is packed with it tells which pack it is of; what is left
+    undecided is told; what an earlier version of the tool misplaced is put right."""
+    male = 'materials/models/humans/modern/male/'
+    twice = ('sheet_01', 'sheet_16', 'sheet_31')
+    named = set('materials/zcity_drill/%s.vmt' % name for name in DRILL) | set(male + name + '.vmt' for name in twice)
+
+    def pack(label, names, textures='models/drill_pack/', folder='materials 14'):
+        root = os.path.join(tmp, 'pack ' + label)
+        for name in names:
+            write(os.path.join(root, 'materials0000', folder, name + '.vmt'), material(textures + name))
+            write(os.path.join(root, 'materials0000', folder, name + '.vtf'), texture(textures + name))
+        return root
+
+    def placed_from(root):
+        items = [P.Item('addon', 'materials/' + rel, full, 'materials/' + rel.lower(), 1)
+                 for rel, full in sorted(build_addon.walk_files(root))]
+        report = P.place(items, set(named), lambda path: False)
+        where = collections.defaultdict(list)
+        for dest, item in report.placed:
+            where[item.inner.split('/', 1)[1]].append(dest)
+        return report, where
+
+    def kinds(report):
+        return sorted(getattr(note, 'kind', '?') for note in report.notes)
+
+    # the whole pack: the nineteen materials only the Drill Lua names say what "models/drill_pack" is
+    report, where = placed_from(pack('whole', DRILL))
+    wrong = sorted(name for name in DRILL
+                   if where.get('materials0000/materials 14/%s.vmt' % name) != ['materials/zcity_drill/%s.vmt' % name]
+                   or where.get('materials0000/materials 14/%s.vtf' % name) != ['materials/models/drill_pack/%s.vtf' % name])
+    check(not wrong, 'a pack that keeps its textures in a folder of their own: every material goes where the Lua '
+                     'names it, namesakes of another pack too, every texture where its material names it: not %s' % wrong)
+    check(not report.notes and not [path for path in report.missing_named if 'zcity_drill' in path],
+          'nothing of it is missing, nothing to remark: %s' % report.notes)
+    check(sorted(path for path in report.missing_named) == sorted(male + name + '.vmt' for name in twice),
+          'the namesakes of the other pack stay missing: nothing was taken for them')
+
+    # the three namesakes alone: nothing says which pack they are of
+    report, where = placed_from(pack('three', twice))
+    check(all(where.get('materials0000/materials 14/%s.vmt' % name) == ['materials/models/drill_pack/%s.vmt' % name] for name in twice),
+          'the namesakes alone are not taken for either name: they stay with their textures: %s' % dict(where))
+    check(kinds(report) == ['same name'] * 3, 'and each of them is told: %s' % kinds(report))
+    told = [note for note in report.notes if 'sheet_16.vmt' in note]
+    russian = content_report.note(told[0]) if told else u''
+    check(len(told) == 1 and 'materials/models/drill_pack/' in told[0]
+          and 'materials/models/humans/modern/male/, materials/zcity_drill/' in told[0],
+          'with the place it went to and the folders the Lua names such a file in: %s' % told)
+    check(u'materials/zcity_drill/' in russian and u'materials 14/sheet_16.vmt' in russian and russian != told[0],
+          'in Russian too: %s' % russian.encode('ascii', 'backslashreplace').decode('ascii'))
+    # the next run finds them where this one put them: the names are still empty, so it is told again
+    out = os.path.join(tmp, 'pack three, sorted')
+    for dest, item in report.placed:
+        build_addon.copy(item.path, os.path.join(out, dest))
+    items = [P.Item('addon', rel, full, rel, 1) for rel, full in sorted(build_addon.walk_files(out))]
+    again = P.place(items, set(named), lambda path: False)
+    check(all(dest == item.inner for dest, item in again.placed) and not again.left_out, 'supplied again, nothing moves')
+    check(kinds(again) == ['same name'] * 3 and any('materials/models/drill_pack/sheet_16.vmt' in note for note in again.notes),
+          'and the three are told again, where they lie now: %s' % again.notes)
+
+    # a file of another pack among them: its texture is named elsewhere, so the others tell nothing about it
+    root = pack('a stranger', [name for name in DRILL if name not in twice])
+    write(os.path.join(root, 'materials0000', 'materials 14', 'sheet_16.vmt'), material('models/other_pack/sheet_16'))
+    write(os.path.join(root, 'materials0000', 'materials 14', 'sheet_16.vtf'), texture('other'))
+    report, where = placed_from(root)
+    check(where.get('materials0000/materials 14/sheet_16.vmt') == ['materials/models/other_pack/sheet_16.vmt'],
+          'a namesake whose texture is named in another folder than those of the pack is not taken for it: %s'
+          % where.get('materials0000/materials 14/sheet_16.vmt'))
+    check(kinds(report) == ['same name'], 'it is told instead: %s' % kinds(report))
+
+    # the pack cut into two uploads with the same folder in each
+    root = pack('cut', [name for name in DRILL if name not in twice])
+    more = pack('cut more', twice)
+    items = [P.Item(source, 'materials/' + rel, full, None, order)
+             for order, (source, base) in enumerate((('one.zip', root), ('two.zip', more)), 1)
+             for rel, full in sorted(build_addon.walk_files(base))]
+    report = P.place(items, set(named), lambda path: False)
+    placed = dict(report.placed)
+    check(all('materials/zcity_drill/%s.vmt' % name in placed for name in DRILL) and not report.notes,
+          'cut into two archives with the same folder in each: the namesakes are known by the rest all the same: %s'
+          % sorted(name for name in DRILL if 'materials/zcity_drill/%s.vmt' % name not in placed))
+
+    # two different files that the rest of the pack speaks for alike: not told apart, none is taken
+    root = pack('two versions', [name for name in DRILL if name not in twice] + ['sheet_16'])
+    for name in ('players_sheet_02', 'sheet_16'):
+        write(os.path.join(root, 'materials0000', 'materials 15', name + '.vmt'),
+              material('models/drill_pack/' + name) + ('// another version\n' if name == 'sheet_16' else ''))
+        write(os.path.join(root, 'materials0000', 'materials 15', name + '.vtf'), texture('models/drill_pack/' + name))
+    report, where = placed_from(root)
+    taken = [inner for inner, dests in where.items() if 'materials/zcity_drill/sheet_16.vmt' in dests]
+    check(not taken and 'materials/zcity_drill/sheet_16.vmt' in report.missing_named,
+          'two different namesakes, each packed with files of the pack: none of the two is taken: %s' % taken)
+    check(kinds(report) == ['several files', 'version']
+          and any(note.kind == 'several files' and 'materials/zcity_drill/sheet_16.vmt' in note for note in report.notes),
+          'and that is told: %s' % report.notes)
+
+    # ---- what the tool of 2.3.0 left: the material at the place of its namesake, its texture where it belongs
+    def left_by_230(label, base='zcity_drill/sheet_16', more=()):
+        root = os.path.join(tmp, 'left ' + label)
+        write(os.path.join(root, 'models/humans/modern/male/sheet_16.vmt'), material(base))
+        write(os.path.join(root, 'zcity_drill/sheet_16.vtf'), texture('drill 16'))
+        for rel, data in more:
+            write(os.path.join(root, rel), data)
+        items = [P.Item('addon', 'materials/' + rel, full, 'materials/' + rel.lower(), 1)
+                 for rel, full in sorted(build_addon.walk_files(root))]
+        report = P.place(items, set(named), lambda path: False)
+        return report, dict(report.placed)
+
+    report, placed = left_by_230('as it was')
+    there, here = placed.get(male + 'sheet_16.vmt'), placed.get('materials/zcity_drill/sheet_16.vmt')
+    check(there is not None and here is there,
+          'a material lying at the place of its namesake, made of the very texture of the missing name, is used for that name as well')
+    check(kinds(report) == ['also here'] and 'materials/zcity_drill/sheet_16.vmt' in report.notes[0] and male + 'sheet_16.vmt' in report.notes[0],
+          'and that is told: %s' % report.notes)
+    check('materials/zcity_drill/sheet_16.vmt' not in report.missing_named and male + 'sheet_16.vmt' not in report.missing_named,
+          'neither name is missing then')
+    report, placed = left_by_230('another texture', base='zcity_drill/sheet_17')
+    check('materials/zcity_drill/sheet_16.vmt' not in placed and not report.notes,
+          'a material made of another texture is not: %s' % report.notes)
+    report, placed = left_by_230('both', more=[('materials 14/sheet_16.vmt', material('zcity_drill/sheet_16') + '// its own\n')])
+    here = placed.get('materials/zcity_drill/sheet_16.vmt')
+    check(here is not None and here.inner == 'materials/materials 14/sheet_16.vmt' and not report.notes,
+          'and with the file of that name at hand, that one is taken: %s' % here)
+
+
+# (a file Z-City's loader runs after its own sh_shared.lua, which makes the tables)
+TABLE_LUA = 'homigrad/new_appearance/sh_shared_table.lua'
+
+
+def a_table_addon(folder):
+    """an installed addon whose Lua names two materials in a table, from inside the materials
+    folder - one of them a namesake of a material it names in full and has no file for"""
+    files = {
+        'lua/' + TABLE_LUA: '''
+            hg.Appearance.Clothes[1].sheet16 = "models/humans/modern/male/sheet_16"
+            local drill = { {"Drill 07", "zcity_drill/sheet_16"}, {"Drill 01", "zcity_drill/players_sheet_02"} }
+            for _, item in ipairs(drill) do hg.Appearance.Clothes[1][item[1]] = item[2] end
+        ''',
+        'materials/material 5/sheet_16.vmt': material('zcity_drill/sheet_16'),
+        'materials/material 5/sheet_16.vtf': texture('drill 16'),
+        'materials/material 5/players_sheet_02.vmt': material('zcity_drill/players_sheet_02'),
+        'materials/material 5/players_sheet_02.vtf': texture('drill 02'),
+    }
+    for rel, data in files.items():
+        write(os.path.join(folder, rel), data)
+    return files
+
+
+# what running that Lua gives, and where its files belong
+TABLE_NAMES = ('materials/zcity_drill/sheet_16.vmt', 'materials/zcity_drill/players_sheet_02.vmt',
+               'materials/models/humans/modern/male/sheet_16.vmt')
+TABLE_SORTED = ['lua/' + TABLE_LUA, 'materials/zcity_drill/players_sheet_02.vmt', 'materials/zcity_drill/players_sheet_02.vtf',
+                'materials/zcity_drill/sheet_16.vmt', 'materials/zcity_drill/sheet_16.vtf']
+
+
+def test_names_found_by_running(tmp):
+    """Names the text of the Lua does not show reach sort_content.py as a list the build makes by
+    running that Lua. Without them a file is taken for its namesake of another pack."""
+    drill = set('materials/zcity_drill/%s.vmt' % name for name in DRILL)
+    text = text_names()
+    check(len(DRILL) == 22 and not (drill & text), 'the names of the Drill clothes are not to be read in the text of their Lua')
+    check('materials/models/humans/modern/male/sheet_16.vmt' in text and 'materials/models/humans/modern/male/sheet_31.vmt' in text,
+          'and two of them are namesakes of materials another pack names')
+
+    # the folder of the owner: the Drill files in a folder that says nothing; the namesakes of the
+    # other pack are not at hand
+    def trial(label, named, folder):
+        root = os.path.join(tmp, 'drill ' + label)
+        for name in DRILL:
+            write(os.path.join(root, 'materials0000', folder, name + '.vmt'), material('zcity_drill/' + name))
+            write(os.path.join(root, 'materials0000', folder, name + '.vtf'), texture('zcity_drill/' + name))
+        items = [P.Item('addon', 'materials/' + rel, full, 'materials/' + rel.lower(), 1)
+                 for rel, full in sorted(build_addon.walk_files(root))]
+        report = P.place(items, set(named), lambda path: False)
+        placed = dict((item.inner.rsplit('/', 1)[1], dest) for dest, item in report.placed)
+        return sorted(name + ext for name in DRILL for ext in ('.vmt', '.vtf')
+                      if placed.get(name + ext) != 'materials/zcity_drill/' + name + ext)
+
+    wrong = trial('known', text | drill, 'materials 14')
+    check(not wrong, 'with their names known every Drill file goes to materials/zcity_drill: not %s' % wrong)
+    wrong = trial('own folder', text | drill, 'ZCity_Drill')
+    check(not wrong, 'and from a folder called like theirs as well: not %s' % wrong)
+    # (what the build takes: with the names found by running where Lua can be run - else, as on
+    # the computer of the owner, with the list the build left; that is tried further down)
+    ran = list_content.run_names() is not None
+    wrong = trial('as the build knows them', named_by_the_lua() if ran else text | drill, 'materials 14')
+    check(not wrong, 'the names the build takes%s are enough for that: not %s' % ('' if ran else ' (not run here)', wrong))
+
+    # ---- the list
+    lua = {'autorun/drill.lua': u'local t = {{"Drill 07", "zcity_drill/sheet_16"}}\r\nprint("\u043e\u0434\u0435\u0436\u0434\u0430")\r\n',
+           'homigrad/new_appearance/sh_more.lua': u'hg.Appearance.Clothes[1].epl = "models/gate/epl"\n'}
+    lists = os.path.join(tmp, 'lists')
+    os.makedirs(lists)
+    path = os.path.join(lists, list_content.RUN_LIST)
+    list_content.write_run_list(path, ['materials/zcity_drill/sheet_16.vmt', 'materials/models/gate/epl.vmt'], lua)
+    names, made_from, ran = list_content.read_run_list(path)
+    check(names == {'materials/zcity_drill/sheet_16.vmt', 'materials/models/gate/epl.vmt'} and ran is True,
+          'the list of the names found by running is read back: %s' % sorted(names))
+    check(sorted(made_from) == sorted(lua), 'with the Lua files it was made from: %s' % sorted(made_from or ()))
+    check(made_from['autorun/drill.lua'] == list_content.lua_fingerprint(lua['autorun/drill.lua'].replace(u'\r\n', u'\n')),
+          'the line ends of a Lua file do not make it another file')
+    check(list_content.read_run_list(os.path.join(lists, 'none.txt')) == (set(), None, False), 'no list: nothing, and it is known')
+    not_run = os.path.join(lists, 'not run.txt')
+    list_content.write_run_list(not_run, [], lua, ran=False)
+    check(list_content.read_run_list(not_run) == (set(), dict((name, list_content.lua_fingerprint(text)) for name, text in lua.items()), False),
+          'a list made where Lua could not be run says so')
+    failing = os.path.join(lists, 'failed.txt')
+    error = "autorun/drill.lua:4: attempt to index local 't' (a nil value)"
+    list_content.write_run_list(failing, ['materials/models/gate/epl.vmt'], lua,
+                                failed={'autorun/drill.lua': error.replace(' (a', '\t(a') + '\nstack traceback:'})
+    check(list_content.read_run_failed(failing) == {'autorun/drill.lua': error + ' stack traceback:'}
+          and list_content.read_run_list(failing)[0] == {'materials/models/gate/epl.vmt'},
+          'a Lua file that stopped with an error is written into the list, on one line, and is not taken for a name: %s'
+          % list_content.read_run_failed(failing))
+    check(list_content.read_run_failed(path) == {} and list_content.read_run_failed(os.path.join(lists, 'none.txt')) == {},
+          'no such file, no such line')
+
+    # ---- what sort_content.py makes of it
+    folder = os.path.join(tmp, 'named', 'lua')
+    for name, data in lua.items():
+        write(os.path.join(folder, name), data)
+    # (the Lua of the gloves is not read)
+    write(os.path.join(folder, 'zcity_csgo_gloves', 'sh_data.lua'), 'local own = "models/zcity_csgo_gloves/x.mdl"')
+    got = sort_content.names_of([folder], path)
+    check(got.named == {'materials/zcity_drill/sheet_16.vmt', 'materials/models/gate/epl.vmt'} and got.files == 2,
+          'sort_content.py takes the names of the text and of the list: %s' % sorted(got.named))
+    check(got.listed == 2 and got.by_running == 1 and not got.changed and not got.not_run,
+          'and knows how many only running shows: %s of %s, changed %s' % (got.by_running, got.listed, got.changed))
+    got = sort_content.names_of([folder], os.path.join(lists, 'none.txt'))
+    check(got.named == {'materials/models/gate/epl.vmt'} and got.listed is None, 'without the list: the text alone, and that is known')
+    got = sort_content.names_of([folder], not_run)
+    check(got.not_run and got.listed == 0, 'a list of a build that could not run Lua is told apart')
+    check(not got.failed and sort_content.names_of([folder], failing).failed == [('autorun/drill.lua', error + ' stack traceback:')],
+          'sort_content.py knows which Lua file stopped with an error when the addon was built')
+    write(os.path.join(folder, 'autorun', 'drill.lua'), lua['autorun/drill.lua'] + u'-- changed\n')
+    write(os.path.join(folder, 'autorun', 'new.lua'), u'print(1)')
+    got = sort_content.names_of([folder], path)
+    check(got.changed == ['autorun/drill.lua', 'autorun/new.lua'], 'Lua that was changed or added after the build is named: %s' % got.changed)
+    check('materials/zcity_drill/sheet_16.vmt' in got.named, '(the names of the list are used all the same)')
+    check(sort_content.names_of([folder], failing).failed == [], 'a Lua file that was changed since is not the one that failed')
+
+    # ---- the whole tool: a material named in a table, a namesake of one the other pack names
+    def addon(label):
+        root = os.path.join(tmp, 'by running ' + label, 'zcity_csgo_gloves')
+        return root, a_table_addon(root)
+
+    root, files = addon('with the list')
+    path = os.path.join(lists, 'drill.txt')
+    list_content.write_run_list(path, TABLE_NAMES, {TABLE_LUA: files['lua/' + TABLE_LUA]})
+    code, text = sort('--addon', root, '--names-list', path)
+    got = tree(root)
+    got.pop(sort_content.REPORT, None)
+    check(code == 0 and sorted(got) == TABLE_SORTED,
+          'sort_content.py with the list: a material named in a table goes to its own place, not to its namesake\'s: %s' % sorted(got))
+    check(u'\u0432 \u0442\u0435\u043a\u0441\u0442\u0435 Lua \u043d\u0435 \u0432\u0438\u0434\u043d\u044b' in text
+          and u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415' not in text,
+          'it tells how many names only running shows, and has nothing to warn of: %r' % text[:500])
+
+    root, files = addon('without the list')
+    code, text = sort('--addon', root, '--names-list', os.path.join(lists, 'none.txt'), '--dry-run')
+    check(code == 0 and u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415' in text, 'without the list it warns: %r' % text[:500])
+
+    root, files = addon('changed Lua')
+    write(os.path.join(root, 'lua/autorun/mine.lua'), u'local t = {"zcity_mine/shirt_" .. 1}')
+    code, text = sort('--addon', root, '--names-list', path, '--dry-run')
+    check(code == 0 and u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415' in text and u'autorun/mine.lua' in text,
+          'a Lua file added after the build is named in a warning: %r' % text[:600])
+
+    root, files = addon('failed Lua')
+    failing = os.path.join(lists, 'drill failed.txt')
+    list_content.write_run_list(failing, TABLE_NAMES, {TABLE_LUA: files['lua/' + TABLE_LUA]}, failed={TABLE_LUA: TABLE_LUA + ':3: boom'})
+    code, text = sort('--addon', root, '--names-list', failing, '--dry-run')
+    check(code == 0 and u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415: \u043f\u0440\u0438 \u0441\u0431\u043e\u0440\u043a\u0435' in text
+          and TABLE_LUA + u':3: boom' in text,
+          'a Lua file that stopped with an error when the addon was built is named in a warning, with the error: %r' % text[:700])
+
+
+def test_the_build_takes_lua(tmp):
+    """build_addon.step_dropins with archives of Lua: what running it tells, an archive that
+    brings nothing, two versions of one script"""
+    repo = os.path.join(tmp, 'a repository')
+    table = '''
+        local drill = { {"Drill 07", "zcity_drill/sheet_16"} }
+        for _, item in ipairs(drill) do hg.Appearance.Clothes[1][item[1]] = item[2] end
+        hg.Appearance.Clothes[1].epl = "models/gate/epl"
+    '''
+
+    def archive(name, files):
+        os.makedirs(repo, exist_ok=True)
+        with zipfile.ZipFile(os.path.join(repo, name), 'w') as z:
+            for inner, data in files.items():
+                z.writestr(inner, data)
+
+    def build(label):
+        out = os.path.join(tmp, 'built ' + label)
+        real = build_addon.HERE
+        build_addon.HERE = repo
+        try:
+            return (out,) + tuple(build_addon.step_dropins(None, os.path.join(tmp, 'unpacked ' + label), out))
+        finally:
+            build_addon.HERE = real
+
+    archive('pack one.zip', {'drill/addon.json': '{"title": "Drill"}', 'drill/lua/' + TABLE_LUA: table})
+    archive('pack two.zip', {'rp_update/addon.json': '{"title": "RP"}'})
+    out, sources, _content, named, ran = build('first')
+    by_name = dict((entry['name'], entry) for entry in sources)
+    check(by_name['pack one.zip']['counts']['lua'] == 1 and os.path.isfile(os.path.join(out, 'lua', TABLE_LUA)),
+          'the build takes the Lua of an archive')
+    check(by_name['pack two.zip']['no_place'] == ['rp_update/addon.json'] and not sum(by_name['pack two.zip']['counts'].values()),
+          'an archive with nothing but an addon.json brings nothing, and the build knows which file that was')
+    check('materials/models/gate/epl.vmt' in named, 'the names in the text of the Lua are taken')
+    scripts, _stock, listed = build_addon.step_sort_tool(out, ran)
+    names, made_from, was_run = list_content.read_run_list(os.path.join(out, build_addon.SORT_TOOL_DIR, list_content.RUN_LIST))
+    check(sorted(made_from or ()) == [TABLE_LUA], 'the list for sort_content.py tells which Lua it was made from: %s' % sorted(made_from or ()))
+    bound = os.path.join(out, 'lua', build_addon.BOUND_LUA)
+    if ran['result'] is not None:
+        check('materials/zcity_drill/sheet_16.vmt' in named and ran['only'] == {'materials/zcity_drill/sheet_16.vmt'},
+              'the build runs the Lua: a name in a table is taken too (%s)' % sorted(ran['only']))
+        check(was_run and names == {'materials/zcity_drill/sheet_16.vmt', 'materials/models/gate/epl.vmt'} and listed == 2,
+              'and written into the list for sort_content.py: %s' % sorted(names))
+        check(any('1 of these names are not to be read' in line for line in build_addon.lua_run_lines(ran)), 'the build tells about it')
+
+        # what the tables hold then, for the game to compare its own with (zcg_content)
+        text = io.open(bound, encoding='ascii').read() if os.path.isfile(bound) else ''
+        check('\t[%s] = {\n\t\t{ "Clothes/1/Drill 07", "zcity_drill/sheet_16" },\n\t\t{ "Clothes/1/epl", "models/gate/epl" },\n\t},'
+              % build_addon.lua_string(TABLE_LUA) in text and ran['bound'] == 2,
+              'the build writes the entries that Lua makes into the addon, for the game: %s' % text[-300:])
+        check(any('lua/%s' % build_addon.BOUND_LUA in line for line in build_addon.lua_run_lines(ran)), 'and tells where')
+        entries = build_addon.bound_entries(ran['result'])
+        lua_files = build_addon.lua_names.folder_files(os.path.join(out, 'lua'))
+        try:
+            build_addon.check_bound(bound, entries, lua_files)
+            check(True, 'read back by the check of the addon, the list says what the tables hold')
+        except build_addon.BuildError as err:
+            check(False, 'read back by the check of the addon, the list says what the tables hold: %s' % err)
+        for label, wrong in (('another value', text.replace('zcity_drill/sheet_16', 'zcity_drill/sheet_17')),
+                             ('another name', text.replace('Clothes/1/epl', 'Clothes/1/Epl')),
+                             ('an entry less', text.replace('\t\t{ "Clothes/1/epl", "models/gate/epl" },\n', ''))):
+            wrong_file = os.path.join(tmp, 'wrong sh_bound.lua')
+            write(wrong_file, wrong)
+            try:
+                build_addon.check_bound(wrong_file, entries, lua_files)
+                check(False, 'a list that says something else (%s) stops the build' % label)
+            except build_addon.BuildError as err:
+                check(build_addon.BOUND_LUA in str(err), 'a list that says something else (%s) stops the build: %s' % (label, err))
+    else:
+        check('materials/zcity_drill/sheet_16.vmt' not in named and not ran['only'], 'where Lua cannot be run a name in a table is not taken')
+        check(not was_run and not names and listed == 0, 'the list for sort_content.py says that it was not run')
+        check(build_addon.lua_run_lines(ran)[0].startswith('  NOT RUN'), 'and the build says so in capitals')
+        check(not os.path.exists(bound) and not ran['bound'], 'and no list of entries is written for the game')
+
+    # a pack whose Lua is not UTF-8 (saved as Windows-1251): two names stay two names
+    jacket, sweater = u'\u041a\u0443\u0440\u0442\u043a\u0430'.encode('cp1251'), u'\u0421\u0432\u0438\u0442\u0435\u0440'.encode('cp1251')
+    cyrillic = TABLE_LUA.replace('.lua', '_cyrillic.lua')
+    archive('pack four.zip', {'cyrillic/lua/' + cyrillic:
+                              b'hg.Appearance.Clothes[1]["' + jacket + b'"] = "pack/jacket"\n'
+                              b'hg.Appearance.Clothes[1]["' + sweater + b'"] = "pack/sweater"\n'})
+    out, _sources, _content, named, ran = build('not utf-8')
+    build_addon.step_sort_tool(out, ran)
+    names, made_from, _was_run = list_content.read_run_list(os.path.join(out, build_addon.SORT_TOOL_DIR, list_content.RUN_LIST))
+    with open(os.path.join(out, 'lua', cyrillic), 'rb') as f:
+        on_disk = f.read().decode('utf-8-sig', 'replace')
+    check((made_from or {}).get(cyrillic) == list_content.lua_fingerprint(on_disk),
+          'a Lua file that is not UTF-8 has the fingerprint sort_content.py makes of the file in the addon')
+    if ran['result'] is not None:
+        check({'materials/pack/jacket.vmt', 'materials/pack/sweater.vmt'} <= named and {'materials/pack/jacket.vmt', 'materials/pack/sweater.vmt'} <= names,
+              'two clothes with names that are not UTF-8: the build takes both materials: %s' % sorted(named))
+        text = io.open(os.path.join(out, 'lua', build_addon.BOUND_LUA), encoding='ascii').read()
+        check('{ "Clothes/1/\\202\\243\\240\\242\\234\\224", "pack/jacket" },' in text
+              and '{ "Clothes/1/\\209\\226\\232\\242\\229\\240", "pack/sweater" },' in text and ran['bound'] == 4,
+              'and writes their names for the game byte for byte, in plain ASCII: %s' % text[-400:])
+    os.remove(os.path.join(repo, 'pack four.zip'))
+
+    # a pack whose Lua stops with an error half-way: what it adds after that is lost - not silently
+    broken = TABLE_LUA.replace('.lua', '_broken.lua')
+    archive('pack five.zip', {'broken/lua/' + broken: 'hg.Appearance.Clothes[1].first = "pack/first"\nlocal t = nil\nt.x = 1\n'
+                                                      'hg.Appearance.Clothes[1].second = "pack/second"\n'})
+    out, _sources, _content, named, ran = build('an error')
+    build_addon.step_sort_tool(out, ran)
+    failed = list_content.read_run_failed(os.path.join(out, build_addon.SORT_TOOL_DIR, list_content.RUN_LIST))
+    if ran['result'] is not None:
+        check('materials/pack/first.vmt' in named and 'materials/pack/second.vmt' not in named,
+              'a Lua file that stops with an error: what it did before counts, what comes after is not known')
+        check(list(failed) == [broken] and failed[broken].startswith(broken + ':3: attempt to index'),
+              'the list for sort_content.py names the file and the error: %s' % failed)
+        check(any(line.startswith('  STOPPED WITH AN ERROR: ' + broken) for line in build_addon.lua_run_lines(ran)),
+              'and the build says so in capitals')
+    else:
+        check(failed == {}, 'where Lua cannot be run no file is said to have failed')
+    os.remove(os.path.join(repo, 'pack five.zip'))
+
+    # two versions of one script: neither is dropped without a word
+    archive('pack three.zip', {'other/lua/' + TABLE_LUA: table})
+    try:
+        build('same twice')
+        check(True, 'the same Lua file in two archives is no trouble')
+    except build_addon.BuildError as err:
+        check(False, 'the same Lua file in two archives is no trouble: %s' % err)
+    archive('pack three.zip', {'other/lua/' + TABLE_LUA: table + 'hg.Appearance.Clothes[1].more = "models/gate/more"\n'})
+    try:
+        build('two versions')
+        check(False, 'two versions of one Lua file stop the build')
+    except build_addon.BuildError as err:
+        check('pack one.zip' in str(err) and 'pack three.zip' in str(err) and TABLE_LUA in str(err),
+              'two versions of one Lua file stop the build, and it names both archives: %s' % err)
+
+
 def main():
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, 'reconfigure'):
@@ -1550,6 +1979,9 @@ def main():
         test_sources(tmp)
         test_report(tmp)
         test_sorting(tmp)
+        test_names_found_by_running(tmp)
+        test_namesakes_of_a_pack(tmp)
+        test_the_build_takes_lua(tmp)
         test_numbered_folders_of_the_owner(tmp)
         test_random_packings(tmp)
     finally:

@@ -292,6 +292,34 @@ return function(testdir, luaroot)
 			if line:find("materials/models/humans/slav/hair.vmt  <-  material of " .. SLAV, 1, true) then listed = true end
 		end
 		check(listed, "zcg_content on the server lists the material a model lacks")
+
+		-- what the clothing Lua of the addon adds (ZCG.Bound, written by the build): the server
+		-- has its own side of the list
+		ZCG.Bound = { ["homigrad/new_appearance/sh_shared_pack.lua"] = {
+			{ "PlayerModels/1/Male 10", SLAV },
+			{ "Clothes/1/of the server", "models/x/server", 1 },
+			{ "Clothes/1/of the clients", "models/x/client", 2 },
+		} }
+		local count, missing = ZCG.BoundMissing()
+		eq(count .. " " .. #missing, "2 1", "bound on the server: its entries, without those of the clients")
+		eq(missing[1].entry, "Clothes/1/of the server", "bound on the server: the one that is not there")
+		M.log = {}
+		M.command("zcg_content", NULL)
+		local told = 0
+		for _, line in ipairs(M.log) do
+			if line:find("1 of the 2 clothes, faces, models and accessories it adds are NOT in the appearance tables", 1, true) then told = told + 1 end
+		end
+		eq(told, 1, "zcg_content in the server console tells about it")
+		M.log = {}
+		hook.Run("InitPostEntity")
+		M.advance(66)
+		told = 0
+		for _, line in ipairs(M.log) do
+			if line:find("are not in the appearance tables of the server - type zcg_content", 1, true) then told = told + 1 end
+		end
+		eq(told, 1, "and the server console gets one line after the start")
+		ZCG.Bound = nil
+
 		erin:Remove()
 		hg.Appearance.PlayerModels[1]["Male 10"] = nil
 	end
@@ -328,6 +356,26 @@ return function(testdir, luaroot)
 
 	reload({ PrecacheModels = false })
 	eq(#util.precached, 0, "precache can be switched off")
+
+	-- the list the build writes when the addon carries the Lua of clothing packs
+	local function sentToClients(path)
+		local n = 0
+		for _, name in ipairs(M.csfiles) do
+			if name == path then n = n + 1 end
+		end
+		return n
+	end
+	M.csfiles = {}
+	reload({})
+	eq(ZCGloves.Bound, nil, "bound: an addon without the list of the build loads without it")
+	eq(sentToClients("zcity_csgo_gloves/sh_bound.lua"), 0, "bound: and sends none to the clients")
+	M.luafiles["zcity_csgo_gloves/sh_bound.lua"] = [[ZCGloves.Bound = { ["a.lua"] = { { "Clothes/1/x", "models/x/y" } } }]]
+	M.csfiles = {}
+	reload({})
+	check(istable(ZCGloves.Bound) and ZCGloves.Bound["a.lua"][1][2] == "models/x/y", "bound: the server reads the list the build wrote")
+	eq(sentToClients("zcity_csgo_gloves/sh_bound.lua"), 1, "bound: and sends it to the clients")
+	eq(select(2, ZCGloves.BoundMissing())[1].entry, "Clothes/1/x", "bound: the check works with it")
+	M.luafiles["zcity_csgo_gloves/sh_bound.lua"] = nil
 
 	-- content missing on the server
 	M.files = {}
