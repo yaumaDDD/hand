@@ -93,6 +93,8 @@ jobs:
               if not os.path.isfile(path):
                   continue
               with open(path, encoding='utf-8', errors='replace') as f:
-                  text = f.read()[-3500:]
+                  text = f.read()
+              failed = [line for line in text.splitlines() if 'FAILED' in line or 'Traceback' in line]
+              text = '\n'.join(failed)[:2500] + '\n...\n' + text[-2500:]
               text = text.replace('%', '%25').replace('\r', '').replace('\n', '%0A')
               print('::notice title=%s::%s' % (name, text))

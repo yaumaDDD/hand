@@ -61,6 +61,14 @@ def show(label, done):
         print('    ' + line.encode('ascii', 'backslashreplace').decode('ascii'))
 
 
+def start(bat, *dropped, **kw):
+    """Starts a batch file the way Windows does on a double click, or when folders are dropped
+    onto it: cmd.exe /c ""the file" "what was dropped"" - the whole line in quotes of its own, so
+    that a "&" in a name stays a part of the name."""
+    line = u' '.join(u'"%s"' % part for part in (bat,) + dropped)
+    return subprocess.run(u'cmd.exe /d /c "%s"' % line, **kw)
+
+
 def judge(label, folder, want, done):
     got, report = result(folder)
     check(done.returncode == 0, '%s: exit code %s' % (label, done.returncode))
@@ -109,7 +117,7 @@ def main():
             T.write(os.path.join(outside, 'materials', 'gate', 'jacket.vtf'), T.texture('jacket'))
             want['materials/models/gate/jacket.vmt'] = T.material('models/gate/jacket').encode('utf-8')
             want['materials/models/gate/jacket.vtf'] = T.texture('jacket')
-            done = subprocess.run(['cmd', '/c', os.path.join(addon, BAT), outside], cwd=tmp, env=env, **quiet)
+            done = start(os.path.join(addon, BAT), outside, cwd=tmp, env=env, **quiet)
             judge('sort_content.bat', addon, want, done)
             show('sort_content.bat', done)
 
@@ -117,7 +125,7 @@ def main():
             lonely = os.path.join(tmp, 'lonely')
             os.makedirs(lonely)
             shutil.copyfile(os.path.join(ROOT, L.ADDON_DIRNAME, BAT), os.path.join(lonely, BAT))
-            done = subprocess.run(['cmd', '/c', os.path.join(lonely, BAT)], cwd=tmp, env=env, **quiet)
+            done = start(os.path.join(lonely, BAT), cwd=tmp, env=env, **quiet)
             check(done.returncode == 1 and b'is not next to this file' in done.stdout,
                   'sort_content.bat without its scripts says so: %s %r' % (done.returncode, done.stdout[-200:]))
 
@@ -128,7 +136,7 @@ def main():
                 profile = os.path.join(tmp, u'\u0412\u0430\u0441\u044f', 'AppData', 'Local')
                 os.makedirs(profile)
                 env2 = dict(env, ZCG_PORTABLE_PYTHON='1', LOCALAPPDATA=profile)
-                done = subprocess.run(['cmd', '/c', os.path.join(addon, BAT)], cwd=tmp, env=env2, **quiet)
+                done = start(os.path.join(addon, BAT), cwd=tmp, env=env2, **quiet)
                 judge('sort_content.bat with a portable Python', addon, want, done)
                 show('sort_content.bat with a portable Python', done)
                 check(os.path.isfile(os.path.join(profile, 'zcg_python', 'python.exe')), 'the portable Python is kept in the profile')
@@ -137,7 +145,7 @@ def main():
                 # the second start uses it without fetching again
                 addon = os.path.join(tmp, u'portable (2)', L.ADDON_DIRNAME)
                 want = shipped(addon)
-                done = subprocess.run(['cmd', '/c', os.path.join(addon, BAT)], cwd=tmp, env=env2, **quiet)
+                done = start(os.path.join(addon, BAT), cwd=tmp, env=env2, **quiet)
                 judge('sort_content.bat, the portable Python again', addon, want, done)
                 check(b'Fetching a portable copy' not in done.stdout, 'the portable Python is fetched only once')
             else:
