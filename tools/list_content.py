@@ -134,6 +134,17 @@ def collect():
     return result, stock
 
 
+FILES_HEAD = u'''\
+ЭТО НЕ СПИСОК ФАЙЛОВ, КОТОРЫЕ НУЖНО СОБРАТЬ.
+Здесь только имена, которые называет Lua одежды. Игре нужно больше: каждый материал (.vmt) тянет
+свои текстуры (.vtf - их бывает несколько, и называются они не обязательно так же), каждая модель
+(.mdl) - свои материалы и файлы .vvd / .vtx / .phy. Выбирать файлы по этому списку не надо:
+положите в аддон папки materials и models исходных аддонов ЦЕЛИКОМ, как есть, и запустите
+sort_content.bat - он сам найдёт каждому файлу место (README, "Куда класть файлы").
+Список показывает, из каких папок игры Lua что-то берёт.
+'''
+
+
 def main():
     every = '--files' in sys.argv[1:]
     for stream in (sys.stdout, sys.stderr):
@@ -142,6 +153,9 @@ def main():
     result, _stock = collect()
     shipped = os.path.join(ROOT, 'build', L.ADDON_DIRNAME)
     total = have = 0
+    if every:
+        # (this listing is kept as docs/content_names.txt and read by the owner of the addon)
+        print(FILES_HEAD)
     for archive, title, wanted in result:
         print('%s  [%s]' % (title, archive))
         if not wanted:

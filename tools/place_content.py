@@ -33,8 +33,18 @@ A wanted path gets, in this order:
        the folder it lies in did not go somewhere else. The clear ones are placed first: what
        they tell about their folders decides more of the rest.
 
+What a material says about itself - its texture lies with it, named in some folder - tells
+namesakes apart and places files nobody names. It does not outweigh the Lua: a material the Lua
+names at one path only, lying in a folder that says nothing ("materials 5"), goes to that path
+even when its texture is named elsewhere - materials and their textures are often kept apart.
+The same file under one name in several folders (as many copies as names) fills those names:
+which copy goes where does not matter.
+
 A file that lies in a folder somebody names files in is at home there: it is moved for a
-shifted path only, never for a name it merely shares with a file that is missing.
+shifted path only, never for a name it merely shares with a file that is missing. A folder
+nobody knows is no home, wherever it lies: that other files below materials/ lie right says
+nothing about "materials/my stuff 3", and a file that merely stays where it was packed says
+nothing about the folders around it.
 
 A file nobody names follows what is known about its folder: where the files next to it went
 (a folder that kept its name on the way - materials/gate -> materials/models/gate - took
@@ -90,6 +100,8 @@ _PART = re.compile(r'^(?!\.+$)[^\x00-\x1f<>:"|?*\\/]*[^\x00-\x1f<>:"|?*\\/. ]$')
 
 # the game reads materials and textures out of materials/ only, models out of models/
 ROOT_OF = {'vmt': 'materials', 'vtf': 'materials', 'mdl': 'models', 'part': 'models'}
+# the folders every tree of content starts with
+BARE_ROOTS = ('materials', 'models', 'materials/models')
 
 
 def is_place(path, kind=None):
@@ -289,8 +301,10 @@ class Target(object):
 NOTES = {
     'version': '%s: another version is in %s, the one from %s is used',
     'equal': '%s: %s and %s fit equally, the first one is used',
-    'several names': '%s fits %d names by its file name alone and is not used: pack it with its folders',
-    'several files': '%s: %d different files have this name and nothing says which one is meant; none is used',
+    'several names': '%s fits %d names by its file name alone (in %s) and is not used: '
+                     'give its folder the name of the folder it comes from',
+    'several files': '%s: %d different files have this name and nothing says which one is meant; none is used: '
+                     'give their folders the names of the folders they come from',
     'unreadable': '%s cannot be read: %s',
     'no materials': '%s: its materials are not followed (%s)',
 }
@@ -316,6 +330,9 @@ class Report(object):
         self.left_out = []        # (Item, why)
         self.notes = []
         self.moves = collections.Counter()   # (source, folder as packed, folder in the addon) -> files
+        # Items put where they were packed for want of anything better: nobody names them and
+        # nothing is known of their folders, or they are not told from their namesakes
+        self.as_packed = []
         self.missing_named = []       # paths the Lua names
         self.missing_materials = []   # (model in the addon, material name, the paths it is looked for at)
         self.missing_textures = []    # (material in the addon, parameter, texture path)
@@ -404,6 +421,12 @@ def place(items, named, own):
     def at_home(item):
         return item.default is not None and posixpath.dirname(item.default) in known
 
+    def borne_out(item, place):
+        """the folder a file was packed in is called like the folder of a place somebody thinks
+        it has: .../gate/x for materials/models/gate/x (and not materials 5/x)"""
+        how, same = relation(path_of(item), place.split('/'))
+        return how == 'same' or (how != 'sibling' and same >= 2)
+
     def satisfied(target):
         if target.group is not None:
             return any(not free(path) for path in target.group)
@@ -414,6 +437,9 @@ def place(items, named, own):
     loose_votes = collections.defaultdict(collections.Counter)
     hints = collections.defaultdict(collections.Counter)     # filled below, from the materials
     counted = set()
+    # Files that stay where they were packed only because nothing says where they belong. Such
+    # a file tells nothing about its folder, or about the folders above it.
+    silent = set()
 
     def vote(item, dest):
         src, dst = item.parts[:-1], dest.split('/')[:-1]
@@ -439,20 +465,29 @@ def place(items, named, own):
             if item.kind != kind or not item.dests or id(item) in counted:
                 continue
             counted.add(id(item))
-            vote(item, item.dests[0])
+            if id(item) not in silent:
+                vote(item, item.dests[0])
 
-    def with_folder(item, share):
+    def with_folder(item, share, placed_only=False, roots=True):
         """the place of a file in the folder that its own folder (or the nearest one above that
-        says anything) went to, when more than `share` of that folder went there"""
+        says anything) went to, when more than `share` of that folder went there.
+        placed_only: only what files that have a place tell, no hints.
+        roots=False: not what is only known of the materials (models) folder the file lies
+        below. That folder is the materials folder - which says where a file goes along to when
+        nothing else is known, and nothing about a folder in it that nobody knows ("my stuff 3"):
+        a file there is as free to be the one a name asks for as a file in any folder."""
         source, folder = item.folder
         parts = folder.split('/') if folder else []
         root = ROOT_OF[item.kind]
+        tables = ((votes, source), (hints, source), (votes, None), (loose_votes, source))
+        if placed_only:
+            tables = ((votes, source), (votes, None))
         for cut in range(len(parts), -1, -1):
             # a folder may hold models and materials at once: each kind follows its own.
             # Asked in this order: the files of the folder that have a place; a material and its
             # texture lying there; the same folder in the other sources; the folder above
             here = '/'.join(parts[:cut])
-            for table, origin in ((votes, source), (hints, source), (votes, None), (loose_votes, source)):
+            for table, origin in tables:
                 counter = [(count, dest) for dest, count in table.get((origin, here), {}).items()
                            if dest.split('/', 1)[0] == root]
                 if counter:
@@ -461,6 +496,9 @@ def place(items, named, own):
                 continue
             count, best = max(counter)
             if count <= share * sum(n for n, _dest in counter):
+                return None
+            if not roots and cut < len(parts) and best in BARE_ROOTS \
+                    and (here == best or here.endswith('/' + best)):
                 return None
             there = '/'.join([best] + parts[cut:])
             if table is loose_votes and (item.default is not None or there not in known):
@@ -482,6 +520,24 @@ def place(items, named, own):
             item = at.get(target.path)
             if item is not None and item.kind == kind and not satisfied(target):
                 settle(item, target.path, 'place')
+
+        # A path the Lua names, and no other path with that file name is wanted. (A model may
+        # look for the same file there, in one of its folders.) The Lua speaks of the clothes
+        # themselves; what a model looks for may as well be a part of the game that nobody
+        # has to supply, so a wish of a model alone is not taken as firmly.
+        wanted_paths, wishes, single = collections.defaultdict(set), collections.defaultdict(list), {}
+        for target in targets:
+            name = target.path.rsplit('/', 1)[-1]
+            wanted_paths[name].add(target.path)
+            wishes[name].append(frozenset(target.group or (target.path,)))
+
+        def the_only_wish(target):
+            if target.group is not None or target.asked is not None:
+                return False
+            name = target.path.rsplit('/', 1)[-1]
+            if name not in single:
+                single[name] = any(wanted_paths[name] <= wish for wish in wishes[name])
+            return single[name]
 
         # 2. a file whose path is the wanted one, shifted; a texture that lies with the material
         #    that names it; a file that says itself where it belongs
@@ -507,8 +563,15 @@ def place(items, named, own):
                     sure.append(fit)
                 elif at_home(item):
                     continue
-                elif claimed not in (None, target.path):
-                    continue     # it belongs elsewhere and says so
+                elif claimed not in (None, target.path) and \
+                        (proof_is_sure or claimed in wanted_paths[parts[-1]] or not the_only_wish(target)
+                         or borne_out(item, claimed)):
+                    # It belongs elsewhere and says so: a model that lies at the path it was
+                    # compiled for, a namesake, a material in the very folder its texture is
+                    # named in. (A material in a folder that says nothing, which the Lua names
+                    # at this one path only, is not kept from it by where its texture is named:
+                    # a material may well keep its textures in another folder than its own.)
+                    continue
                 elif near or (says and proof_is_sure) or claimed == target.path:
                     sure.append(fit)
                 elif not says and same < 2 and target.group and target.path != target.group[0]:
@@ -543,9 +606,20 @@ def place(items, named, own):
                 target, item = fit[5], fit[6]
                 if item.dests or satisfied(target):
                     continue
-                there = with_folder(item, 0.8)
+                there = with_folder(item, 0.8, roots=False)
                 if there is not None and there != target.path:
-                    continue
+                    # Its folder went elsewhere. For the only wish of the Lua that has to be
+                    # known from files that have a place, or be borne out by the name of the
+                    # folder: the texture of a material in a folder that says nothing is a hint
+                    # for telling namesakes apart, and for files nobody names - no more.
+                    if not the_only_wish(target):
+                        continue
+                    hinted, there = there, with_folder(item, 0.8, placed_only=True, roots=False)
+                    if there is None:
+                        if borne_out(item, hinted):
+                            continue
+                    elif there != target.path:
+                        continue
                 rank[id(fit)] = (fit[0], fit[1], 0 if there == target.path else 1)
                 wanted_by[id(item)].append(fit)
                 fits_for[id(target)].append(fit)
@@ -560,7 +634,24 @@ def place(items, named, own):
                     continue
                 paths = set(other[5].path for other in mine)      # Lua and a model may want the same one
                 if len(paths) > 1:
-                    doubts[id(item)] = Note('several names', item, len(paths))
+                    # One and the same file, as many copies as there are names for it, and
+                    # every copy fits every one of these names: which copy goes where does not
+                    # matter. (With a copy too few, the name that stays empty would be a guess.)
+                    copies_of = {}
+                    for other in mine:
+                        for rival in fits_for.get(id(other[5]), ()):
+                            copies_of[id(rival[6])] = rival[6]
+                    twins = len(copies_of) == len(paths) and all(
+                        (one is item or one.same_as(item)) and
+                        set(f[5].path for f in wanted_by.get(id(one), ())) == paths
+                        for one in copies_of.values())
+                    if not twins:
+                        folders = sorted(posixpath.dirname(path) for path in paths)
+                        doubts[id(item)] = Note('several names', item, len(paths),
+                                                ', '.join(folders[:4]) + (' ...' if len(folders) > 4 else ''))
+                        continue
+                    if settle(item, target.path, 'name'):
+                        settled += 1
                     continue
                 others = [other[6] for other in theirs if other[6] is not item and not other[6].same_as(item)]
                 if others:
@@ -601,16 +692,29 @@ def place(items, named, own):
             if item.kind != kind or item.dests or item.replaced:
                 continue
             dest = None
-            if not at_home(item) and id(item) not in undecided:
+            if at_home(item):
+                pass
+            elif id(item) in undecided:
+                # (not told from its namesakes: it does not go with its folder as if nobody
+                # had asked for it - but where it says itself that it belongs, it may)
+                dest = own_place(item) if own_place else None
+            else:
                 # a folder that went somewhere as a whole takes the file along; a hint is better
                 # than a bare majority of a mixed folder
-                dest = (own_place and own_place(item)) or with_folder(item, 0.8) \
-                    or (hint and hint(item)) or with_folder(item, 0.5)
+                dest = (own_place and own_place(item)) or with_folder(item, 0.8, roots=False) \
+                    or (hint and hint(item)) or with_folder(item, 0.5, roots=False)
+                if dest is None:
+                    # Nothing but the materials (models) folder it lies below is known: it goes
+                    # along with that one - and tells nothing about the folders around it.
+                    dest = with_folder(item, 0.8) or with_folder(item, 0.5)
+                    if dest is not None:
+                        silent.add(id(item))
             todo.append((item, dest))
         # a file that stays where it was packed keeps that place; only then others are moved in
         for item, dest in todo:
             if item.default is not None and dest in (None, item.default):
-                settle(item, item.default, 'place')
+                if settle(item, item.default, 'place') and dest is None and not at_home(item):
+                    silent.add(id(item))
         for item, dest in todo:
             if item.dests:
                 continue
@@ -624,8 +728,8 @@ def place(items, named, own):
                 if rival is not None and not rival.same_as(item):
                     report.notes.append(Note('version', dest, item.source, rival.source))
                 continue
-            if item.default is not None:
-                settle(item, item.default, 'place')
+            if item.default is not None and settle(item, item.default, 'place'):
+                silent.add(id(item))
         count_votes(kind)
 
     # ---- what the files say -----------------------------------------------------------------
@@ -750,6 +854,17 @@ def place(items, named, own):
             return None
         return dest
 
+    def says_where(item):
+        """where a material says that it belongs: with its own texture, when that lies beside
+        it; in the folder its texture is named in, when the folder it lies in is called the same"""
+        dest = beside_its_texture(item)
+        base = item.material.base
+        if dest is None and base and '/' in base:
+            there = 'materials/' + posixpath.dirname(base) + '/' + item.name
+            if borne_out(item, there):
+                dest = there
+        return dest
+
     def where_its_texture_is(item):
         """a material nobody names and whose folder says nothing: the folder of its texture, when
         that is its own folder a level up or down, or when it has no folder that means anything"""
@@ -763,7 +878,7 @@ def place(items, named, own):
         return dest if how == 'shift' and same >= 2 else None
 
     material_targets = list(wanted.values()) + of_models
-    resolve('vmt', material_targets, texture_lies_there, beside_its_texture)
+    resolve('vmt', material_targets, texture_lies_there, says_where)
     copies('vmt', material_targets)
     # where the materials that nobody names will go counts for their folders too
     for item in materials:
@@ -801,11 +916,14 @@ def place(items, named, own):
                 src, dst = src[:len(src) - same + 1], dst[:len(dst) - same + 1]
             report.moves[(item.source, '/'.join(src), '/'.join(dst))] += 1
     for item in items:
+        if id(item) in silent and item.dests == [item.default]:
+            report.as_packed.append(item)
+        doubt = undecided.get(id(item))
+        if doubt is not None and doubt not in report.notes and (not item.dests or id(item) in silent):
+            # (a file of the addon that could not be told from its namesakes stays where it lies)
+            report.notes.append(doubt)
         if item.dests:
             continue
-        doubt = undecided.get(id(item))
-        if doubt is not None and doubt not in report.notes:
-            report.notes.append(doubt)
         if item.replaced:
             why = REPLACED
         elif item.default is not None and own(item.default):

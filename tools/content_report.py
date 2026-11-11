@@ -5,8 +5,10 @@ addon, in Russian.  (used by build_addon.py and sort_content.py)
 The pieces come from tools/place_content.py (a Report), which speaks plain English; here they
 are put into the words of the README.
 """
+import collections
 import io
 import os
+import posixpath
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -24,13 +26,17 @@ WHY = {
 NOTES = {
     'version': u'%s: файл пришёл в двух разных версиях — из «%s» и из «%s»; взята вторая',
     'equal': u'%s: одинаково подходят «%s» и «%s»; взят первый',
-    'several names': u'«%s» подходит по имени сразу к нескольким названным файлам (%d) и не использован: '
-                     u'положите его вместе с его папками',
-    'several files': u'%s: на это имя есть несколько разных файлов (%d), и нечем решить, какой нужен; '
-                     u'не взят ни один',
+    'several names': u'«%s» подходит по имени сразу к нескольким названным файлам (%d — в папках %s) и никуда не '
+                     u'положен: назовите его папку так же, как называется папка, из которой он взят',
+    'several files': u'%s: на это имя есть несколько разных файлов (%d), и нечем решить, какой нужен; не взят ни '
+                     u'один: назовите их папки так же, как называются папки, из которых они взяты',
     'unreadable': u'«%s» не читается: %s',
     'no materials': u'%s: материалы этой модели не прослежены (%s)',
 }
+
+
+# how many folders of files that stay as they were packed are listed
+AS_PACKED_SHOWN = 60
 
 
 def why(reason):
@@ -73,6 +79,15 @@ def lines(sources, result, named, written_by, more=()):
             % sum(result.moves.values())]
     for (source, src, dst), count in moves:
         out.append(u'    %s  ->  %s/    файлов: %d    [%s]' % (moved_from(sources, source, src), dst, count, source))
+
+    # files nothing is known about: they are where they were packed, right or not
+    folders = collections.Counter((item.source, posixpath.dirname(item.inner)) for item in result.as_packed)
+    out += [u'', u'Оставлено в тех же папках — файлов: %d (про них ничего не известно: ни их, ни их папки никто не '
+                 u'называет, или их не отличить от тёзок)' % len(result.as_packed)]
+    for (source, folder), count in sorted(folders.items())[:AS_PACKED_SHOWN]:
+        out.append(u'    %s    файлов: %d    [%s]' % (moved_from(sources, source, folder), count, source))
+    if len(folders) > AS_PACKED_SHOWN:
+        out.append(u'    ... и ещё папок: %d' % (len(folders) - AS_PACKED_SHOWN))
 
     out += [u'', u'Не использовано — файлов: %d' % len(result.left_out)]
     for item, reason in result.left_out:

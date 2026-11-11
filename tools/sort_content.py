@@ -176,6 +176,8 @@ class Job(object):
         self.aside = []     # (path in the addon now, why it has no place)
         self.copies = []    # (file, path in the addon then)
         self.stay = 0       # files of the addon that lie where they belong
+        self.unknown = 0    # ... and those that stay in their folders because nothing is known of them
+        self.lowered = 0    # (how many of these get a lower-case path: a move that is not counted as one)
 
 
 def plan(addon, items, lower_case, extra, report):
@@ -184,6 +186,7 @@ def plan(addon, items, lower_case, extra, report):
     for dest, item in report.placed:
         places[id(item)].append(dest)
     reasons = dict((id(item), reason) for item, reason in report.left_out)
+    unknown = set(id(item) for item in report.as_packed)
 
     for item in items:
         dests = places.get(id(item), [])
@@ -195,9 +198,12 @@ def plan(addon, items, lower_case, extra, report):
             job.aside.append((item.inner, reasons.get(id(item), P.UNNAMED)))
             continue
         first = item.inner if item.inner in dests else dests[0]
-        if first == item.inner:
+        if id(item) in unknown and first.lower() == item.inner.lower():
+            job.unknown += 1
+            job.lowered += first != item.inner
+        elif first == item.inner:
             job.stay += 1
-        else:
+        if first != item.inner:
             job.moves.append((item.inner, first))
         for dest in dests:
             if dest != first:   # one file, wanted at two paths
@@ -330,11 +336,13 @@ def summary(addon, named, lua_files, stock_known, brought, report, job, dry, pro
         out.append(line)
 
     verb = u'Будет' if dry else u'Было'
-    moved = len(job.moves)
+    moved = len(job.moves) - job.lowered
     out.append(u'')
     if dry:
         out.append(u'ПРОБНЫЙ ЗАПУСК: ничего не перемещено. Вот что было бы сделано.')
     out.append(u'Уже лежит на своём месте: %d' % job.stay)
+    if job.unknown:
+        out.append(u'Оставлено в тех же папках (про эти файлы ничего не известно, папки — в отчёте): %d' % job.unknown)
     out.append(u'%s перемещено внутри аддона: %d' % (verb, moved))
     out.append(u'%s скопировано в аддон: %d' % (verb, len(job.copies)))
     out.append(u'%s убрано в папку %s (не пригодилось): %d' % (verb, ASIDE, len(job.aside)))
