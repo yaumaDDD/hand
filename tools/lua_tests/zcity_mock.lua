@@ -53,6 +53,14 @@ return function(M)
 	-- a class model: hands, but neither the wrist helpers nor finger bones
 	M.models[Z.COMBINE] = { bones = Z.skeleton({}), materials = { "models/combine_soldier/combinesoldiersheet" } }
 
+	-- Z-City keeps what the server tells about an entity in "net vars" (ent.netvars here)
+	local ENT = FindMetaTable("Entity")
+	function ENT:GetNetVar(key, default)
+		local value = self.netvars and self.netvars[key]
+		if value == nil then return default end
+		return value
+	end
+
 	function Z.install()
 		hg = hg or {}
 		hg.Appearance = hg.Appearance or {}
@@ -122,7 +130,9 @@ return function(M)
 		-- In the game a glove that was bone-merged and drawn from here on had the pose of the
 		-- animation alone, without the arm placement (version 1.0.0; why exactly is not known).
 		-- The imitation makes that explicit, so that a test fails if the drawing moves back here.
-		M.engineSetup(ent)
+		-- Z.keepBones = true: an engine that leaves the bones as they were drawn - it is not
+		-- known which of the two the game does at this point, so nothing may depend on it.
+		if not Z.keepBones then M.engineSetup(ent) end
 		hook.Run("PostDrawAppearance", ent, owner or ent)
 	end
 

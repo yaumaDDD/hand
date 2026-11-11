@@ -264,18 +264,48 @@ return function(realm)
 	end
 
 	-- ------------------------------------------------------------------ hooks, timers, convars
-	hook = { list = {} }
-	function hook.Add(name, id, fn)
+	-- (order: the fourth argument of hook.Add, as a library with priorities takes it. M.hookOrder
+	-- = false: a library that refuses such a call; "silent": one that drops the hook instead)
+	-- (order: the fourth argument of hook.Add, as a library with priorities takes it: a number,
+	-- lower runs earlier, none = 0; hooks of one order run as they were added. M.hookOrder =
+	-- false: a library that refuses such a call; "silent": one that drops the hook instead)
+	hook = { list = {}, order = {}, added = {}, count = 0 }
+	function hook.Add(name, id, fn, order)
+		if order ~= nil and M.hookOrder == false then error("bad argument #4 to 'Add'") end
+		if order ~= nil and M.hookOrder == "silent" then return end
 		hook.list[name] = hook.list[name] or {}
 		hook.list[name][id] = fn
+		hook.order[name] = hook.order[name] or {}
+		hook.order[name][id] = order
+		hook.added[name] = hook.added[name] or {}
+		if not hook.added[name][id] then
+			hook.count = hook.count + 1
+			hook.added[name][id] = hook.count
+		end
 	end
-	function hook.Remove(name, id) if hook.list[name] then hook.list[name][id] = nil end end
+	function hook.GetTable() return hook.list end
+	function hook.Remove(name, id)
+		if hook.list[name] then hook.list[name][id] = nil end
+		if hook.order[name] then hook.order[name][id] = nil end
+		if hook.added[name] then hook.added[name][id] = nil end
+	end
 	function hook.Run(name, ...)
 		local fns = hook.list[name]
 		if not fns then return nil end
-		for _, fn in pairs(fns) do
-			local a, b, c = fn(...)
-			if a ~= nil then return a, b, c end
+		local ids = {}
+		for id in pairs(fns) do ids[#ids + 1] = id end
+		local order, added = hook.order[name] or {}, hook.added[name] or {}
+		table.sort(ids, function(a, b)
+			local oa, ob = tonumber(order[a]) or 0, tonumber(order[b]) or 0
+			if oa ~= ob then return oa < ob end
+			return (added[a] or 0) < (added[b] or 0)
+		end)
+		for _, id in ipairs(ids) do
+			local fn = fns[id]
+			if fn then
+				local a, b, c = fn(...)
+				if a ~= nil then return a, b, c end
+			end
 		end
 		return nil
 	end
@@ -400,6 +430,14 @@ return function(realm)
 	end
 	M.entityMeta = ENT
 	function FindMetaTable(name) return name == "Entity" and ENT or nil end
+	-- (the index of an entity: its place in M.entities)
+	function Entity(index) return M.entities[index] or NULL end
+	function ENT:EntIndex()
+		for index, ent in ipairs(M.entities) do
+			if ent == self then return index end
+		end
+		return 0
+	end
 
 	-- the bytes of a model file that names these materials and folders (nothing else is in it)
 	function M.mdlFile(names, dirs)
@@ -480,6 +518,26 @@ return function(realm)
 		self.bodygroups[id] = value
 	end
 	function ENT:GetBodygroup(id) return self.bodygroups[id] or 0 end
+	-- M.models[path].bodygroups = { { name, { submodel, ... } }, ... } (ids and values from 0)
+	function ENT:GetBodyGroups()
+		local out = {}
+		local info = M.models[self.model]
+		for i, group in ipairs(info and info.bodygroups or {}) do
+			local submodels = {}
+			for k, name in ipairs(group[2]) do submodels[k - 1] = name end
+			out[i] = { id = i - 1, name = group[1], num = #group[2], submodels = submodels }
+		end
+		return out
+	end
+	-- (what has this entity as its parent; M.entities: every entity the imitation made)
+	function ENT:GetChildren()
+		local out = {}
+		for _, other in ipairs(M.entities) do
+			if other.parent == self and not other.removed then out[#out + 1] = other end
+		end
+		return out
+	end
+	function ENT:IsEffectActive(fx) return bit.band(self.effects or 0, fx) ~= 0 end
 	function ENT:SetPos(v) self.pos = Vector(v.x, v.y, v.z) end
 	function ENT:GetPos() return self.pos and Vector(self.pos.x, self.pos.y, self.pos.z) or Vector(0, 0, 0) end
 	function ENT:SetAngles(a)
@@ -528,10 +586,14 @@ return function(realm)
 		if not ready(self) then return 0 end
 		return #boneDefs(self)
 	end
+	-- (M.models[path].unnamed = { [bone name] = true }: a model that is still loading - the game
+	-- has no name for such a bone yet)
 	function ENT:GetBoneName(index)
 		local def = boneDefs(self)[index + 1]
 		if not def then return nil end
 		if not ready(self) then return "__INVALIDBONE__" end
+		local info = M.models[self.model]
+		if info and info.unnamed and info.unnamed[def[1]] then return "__INVALIDBONE__" end
 		return def[1]
 	end
 	function ENT:GetBoneParent(index)

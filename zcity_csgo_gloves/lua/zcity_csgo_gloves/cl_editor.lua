@@ -71,8 +71,8 @@ local function editorLayout(main, ent)
 	if slot then ent:SetSubMaterial(slot, ZCG.HideMaterial()) end
 end
 
--- runs right before the model is drawn: a model without a material for its hands gets the
--- bones of this frame with the hands shrunk into the wrists
+-- runs right before the model is drawn: it gets the bones of this frame with the hands shrunk
+-- into the wrists (every model, or what zcg_hide_bones says: see cl_render.lua)
 local function editorBefore(main, ent)
 	local variant, state = gloveOn(main, ent)
 	if not variant then return end

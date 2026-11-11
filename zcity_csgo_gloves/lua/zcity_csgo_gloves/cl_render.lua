@@ -18,15 +18,21 @@
 -- matrix of the wearer's bone of the same name, so the glove cannot be anywhere else than on the
 -- hands that get drawn. "zcg_bonemerge 1" leaves that to the engine (EF_BONEMERGE) instead.
 --
--- In the same hook the wearer's own hands are hidden, because they would poke through the glove -
--- but only while a glove really is drawn over them. A fingerless glove is then drawn with fingers
--- of its own: every glove model contains the bare CS:GO arm it was made for, the build of this
--- addon cuts that arm down to the fingers (tools/patch_models.py), and here they get their skin.
+-- In the same hook the wearer's own hands are taken away, because they would poke through the
+-- glove - but only while a glove really is drawn over them. A glove is the only pair of hands its
+-- wearer has. A fingerless glove is then drawn with fingers of its own: every glove model contains
+-- the bare CS:GO arm it was made for, the build of this addon cuts that arm down to the fingers
+-- (tools/patch_models.py), and here they get their skin.
 --
--- Hidden in one of two ways. A player model of Z-City has a material of its own for the hands:
--- that one is replaced by a material that draws nothing. A model without such a material has its
--- hand and finger bones shrunk into the wrist for the moment it is drawn - the way Z-City itself
--- takes the head out of the first-person view.
+-- Taken away in two ways at once, neither of which depends on the other:
+--   * A player model of Z-City has a material of its own for the hands: that one is replaced by a
+--     material that draws nothing.
+--   * The hand and finger bones are shrunk into the wrist for the moment the model is drawn - the
+--     way Z-City itself takes the head out of the first-person view. That takes everything along
+--     that sits on those bones, whatever material it has and whatever body group it belongs to:
+--     the hands of a model without a hands material, the bare arms of a T-shirt body, a glove of
+--     the model itself.
+-- Up to version 2.2 the bones were only used where there was no material to replace.
 
 local ZCG = ZCGloves
 local Config = ZCG.Config
@@ -39,10 +45,12 @@ local cvEnable = CreateClientConVar("zcg_enable", "1", true, false,
 local cvBonemerge = CreateClientConVar("zcg_bonemerge", "0", true, false,
 	"CS:GO gloves: 0 = the addon puts the glove bones on the hand bones itself (default), "
 	.. "1 = the engine does it (EF_BONEMERGE). Try the other value if the gloves are not on the hands.", 0, 1)
+-- (1 was "only on a model without a hands material" up to version 2.2, and 2 was "on every
+-- model": both mean "on every model" now, so that a value saved by an older version does)
 local cvHideBones = CreateClientConVar("zcg_hide_bones", "1", true, false,
-	"CS:GO gloves: the wearer's hands under a glove on a model that has no material of its own for them: "
-	.. "1 = they are shrunk into the wrist while the model is drawn (default), 0 = they stay, "
-	.. "2 = shrunk on every model, also where the material could be hidden.", 0, 2)
+	"CS:GO gloves: the wearer's own hands under a glove are shrunk into the wrist while the model is drawn, "
+	.. "so that nothing of them is left whatever they are made of: 1 = on every model (default; 2 is the same), "
+	.. "3 = only on a model that has no material of its own for the hands (as up to version 2.2), 0 = never.", 0, 3)
 
 -- ---------------------------------------------------------------------------------------------
 -- the "draw nothing" material
@@ -200,17 +208,18 @@ local L_HAND, R_HAND = "ValveBiped.Bip01_L_Hand", "ValveBiped.Bip01_R_Hand"
 local handBones = {} -- lower-case model path -> { count = bones of the model, trees = { { hand, below it... }, ... } }
 
 -- for every hand of the model: its bone and every bone below it, parents first. nil when the
--- model has no hand bones (or is not loaded yet: asked again once a second)
+-- model has no hand bones. A model that is not loaded yet, or a hand with a bone that cannot be
+-- named yet, is asked again once a second; the hands that are known are used meanwhile.
 function ZCG.HandBones(ent)
 	local model = ent:GetModel()
 	if not model then return nil end
 	model = string.lower(model)
 
 	local known = handBones[model]
-	if known and (known.trees or RealTime() < known.again) then return known.trees and known or nil end
+	if known and (not known.again or RealTime() < known.again) then return known.trees and known or nil end
 
 	local count = ent:GetBoneCount() or 0
-	local trees = {}
+	local trees, complete = {}, count > 0
 	for _, name in ipairs({ L_HAND, R_HAND }) do
 		local hand = count > 0 and ent:LookupBone(name) or nil
 		if hand then
@@ -219,7 +228,7 @@ function ZCG.HandBones(ent)
 				if below[ent:GetBoneParent(bone)] then
 					local boneName = ent:GetBoneName(bone)
 					if not boneName or boneName == INVALID_BONE then
-						tree = nil
+						tree, complete = nil, false
 						break
 					end
 					below[bone] = true
@@ -230,7 +239,7 @@ function ZCG.HandBones(ent)
 		end
 	end
 
-	known = #trees > 0 and { count = count, trees = trees } or { again = RealTime() + 1 }
+	known = { count = count, trees = #trees > 0 and trees or nil, again = not complete and RealTime() + 1 or nil }
 	handBones[model] = known
 	return known.trees and known or nil
 end
@@ -240,22 +249,24 @@ local IDENTITY = Matrix()
 
 -- Shrinks the hands of an entity into its wrists. Only lasts until the bones are set up again,
 -- so it has to happen between Entity:SetupBones() and Entity:DrawModel(). Everything that was
--- changed is noted in state.bones for growHands.
+-- changed is noted in state.bones for growHands: bone, matrix, bone, matrix ... and, per hand,
+-- where its bones are in that list (state.bones.hands).
 local function shrinkHands(ent, state)
 	local info = ZCG.HandBones(ent)
 	if not info or ent:GetBoneCount() ~= info.count then return false end
 
 	local saved = state.bones
 	if not saved then
-		saved = {}
+		saved = { hands = {} }
 		state.bones = saved
 	end
-	local n = 0
+	local n, hands = 0, 0
 	for _, tree in ipairs(info.trees) do
 		local hand = tree[1]
 		local was = ent:GetBoneMatrix(hand)
 		local back = was and was:GetInverse() -- (nil for an arm that is scaled to nothing already)
 		if back then
+			local first = n + 1
 			local small = was * IDENTITY -- a copy
 			small:SetScale(was:GetScale() * SHRINK)
 			local change = small * back -- what happens to the hand happens to the fingers
@@ -271,24 +282,45 @@ local function shrinkHands(ent, state)
 			saved[n + 1], saved[n + 2] = hand, was
 			n = n + 2
 			ent:SetBoneMatrix(hand, small)
+
+			hands = hands + 1
+			local entry = saved.hands[hands]
+			if not entry then
+				entry = {}
+				saved.hands[hands] = entry
+			end
+			-- (a hand that is smaller than this afterwards is still the one that was written here)
+			entry.bone, entry.first, entry.last, entry.limit = hand, first, n, was:GetScale().x * 0.5
 		end
 	end
-	saved.n, saved.frame = n, FrameNumber()
+	saved.n, saved.count, saved.frame = n, hands, FrameNumber()
 	return n > 0
 end
 
 -- Gives the bones back as they were, for whatever looks at the hands after the model was drawn
--- (the flashlight in the hand, for one).
+-- (the flashlight in the hand, for one). Only what is still there is undone: once the engine has
+-- set the bones up again in the meantime, they are whole already - and where it put them.
+-- Returns true when there was something to undo, false when the engine had done it, nil when
+-- nothing was shrunk.
 local function growHands(ent, state)
 	local saved = state.bones
 	local n = saved and saved.n or 0
-	if n == 0 then return end
+	if n == 0 then return nil end
 	saved.n = 0
-	if saved.frame ~= FrameNumber() or not IsValid(ent) then return end
+	if saved.frame ~= FrameNumber() or not IsValid(ent) then return nil end
 	local count = ent:GetBoneCount() or 0
-	for i = 1, n, 2 do
-		if saved[i] < count then ent:SetBoneMatrix(saved[i], saved[i + 1]) end
+	local undone = false
+	for k = 1, saved.count or 0 do
+		local hand = saved.hands[k]
+		local now = hand.bone < count and ent:GetBoneMatrix(hand.bone) or nil
+		if now and now:GetScale().x < hand.limit then
+			undone = true
+			for i = hand.first, hand.last, 2 do
+				if saved[i] < count then ent:SetBoneMatrix(saved[i], saved[i + 1]) end
+			end
+		end
 	end
+	return undone
 end
 
 local function forgetHands(state)
@@ -312,6 +344,8 @@ ZCG.ShrinkHands, ZCG.GrowHands = shrinkHands, growHands
 --   hide             { slot, old } while this addon hides the material of the wearer's hands
 --   bones            the hand bones that were shrunk for this draw and what they were before
 --   shrunk           the hands were shrunk at the last draw (for zcg_debug)
+--   kept             ... and were still shrunk when the wearer had been drawn (for zcg_debug;
+--                    false: the engine had set the bones up again by then)
 --   probe            zcg_debug asked for a bone report at the next draw
 -- }
 local states = {}
@@ -769,6 +803,8 @@ end
 --   whether the glove is drawn with its own fingers,
 --   whether the hand bones are shrunk while the wearer is drawn.
 -- Nothing of that (nil, false, false) when the hands stay as they are.
+-- Both ways of taking the hands away are used together (see the top of this file): the material
+-- wherever the model has one, the bones on every model unless zcg_hide_bones says otherwise.
 -- A fingerless glove hides the hands only when it can show fingers instead, and shows them only
 -- when it can hide the hands: two sets of fingers in one glove would be worse than either.
 function ZCG.Wearing(ent, variant)
@@ -777,7 +813,7 @@ function ZCG.Wearing(ent, variant)
 
 	local slot = ZCG.HandsSlot(ent)
 	local mode = cvHideBones:GetInt()
-	local bones = (mode >= 2 or (mode == 1 and not slot)) and ZCG.HandBones(ent) ~= nil
+	local bones = mode ~= 0 and (mode ~= 3 or not slot) and ZCG.HandBones(ent) ~= nil
 	if not slot and not bones then return nil, false, false end
 	return slot, variant.fingerless and true or false, bones
 end
@@ -820,7 +856,9 @@ end
 -- after the wearer was drawn
 local function afterHook(ent)
 	local state = states[ent]
-	if state then growHands(ent, state) end
+	if not state then return end
+	local undone = growHands(ent, state)
+	if undone ~= nil then state.kept = undone end
 end
 
 -- A mistake in here would otherwise be repeated for every player in every frame.
@@ -839,8 +877,34 @@ local function guarded(func)
 	end
 end
 
-hook.Add("CoolPostDrawAppearance", "zcg_gloves", guarded(drawHook))
-hook.Add("PostDrawAppearance", "zcg_gloves", guarded(afterHook))
+-- The hands are shrunk from the end of the first hook to the start of the second one, and nothing
+-- but the wearer itself should be drawn in between: whatever else is drawn on the wearer in these
+-- hooks (a coat of Z-City, something of another addon) is to find the hands whole, as it would
+-- without this addon. The hook library of the game runs the hooks of an event in no order that
+-- could be asked for. ULib and Srlion's hook library - one of the two is on most servers - have
+-- one, under the same names: there this addon runs after the others before the wearer is drawn
+-- (so the glove gets its pose from bones nobody touches any more) and ahead of them after it.
+-- (HOOK_LOW and HOOK_HIGH: not the "monitor" levels beyond them, which are for looking on, and
+-- not POST_HOOK_RETURN / POST_HOOK of Srlion's library, whose hooks get other arguments.)
+local HOOK_ID = "zcg_gloves"
+
+local function addHook(event, func, ahead)
+	local order = rawget(_G, ahead and "HOOK_HIGH" or "HOOK_LOW")
+	if isnumber(order) and pcall(hook.Add, event, HOOK_ID, func, order) then
+		-- (a library that did not take it this way is asked again the plain way)
+		local ok, hooks = pcall(hook.GetTable)
+		hooks = ok and istable(hooks) and hooks[event] or nil
+		if istable(hooks) and hooks[HOOK_ID] ~= nil then return order end
+	end
+	hook.Add(event, HOOK_ID, func)
+	return nil
+end
+
+-- (what was asked for, for zcg_debug: a number where the library has an order, nil where not)
+ZCG.HookOrder = {
+	draw = addHook("CoolPostDrawAppearance", guarded(drawHook), false),
+	after = addHook("PostDrawAppearance", guarded(afterHook), true),
+}
 
 -- housekeeping: entities that left, gloves nobody looked at for a while
 timer.Create("zcg_housekeeping", 1, 0, function()
@@ -958,7 +1022,10 @@ concommand.Add("zcg_debug", function()
 	local handInfo = ZCG.HandBones(ent)
 	local below = 0
 	for _, tree in ipairs(handInfo and handInfo.trees or {}) do below = below + #tree end
-	print("  hand bones           : " .. (handInfo and (#handInfo.trees .. " hands, " .. below .. " bones with the fingers") or "none found"))
+	local mode = cvHideBones:GetInt()
+	print("  hand bones           : " .. (handInfo and (#handInfo.trees .. " hands, " .. below .. " bones with the fingers") or "none found")
+		.. "; under a glove they are " .. (mode == 0 and "never shrunk" or mode == 3 and "shrunk only on a model without a hands material"
+			or "shrunk on every model") .. " (zcg_hide_bones " .. mode .. "; 1 = every model, 3 = only without a hands material, 0 = never)")
 
 	local bones = {}
 	for _, name in ipairs({ "L_Hand", "R_Hand", "L_Forearm", "R_Forearm", "L_Wrist", "R_Wrist" }) do
@@ -966,10 +1033,63 @@ concommand.Add("zcg_debug", function()
 	end
 	print("  bones of the wearer  : " .. tostring(ent:GetBoneCount()) .. " (" .. table.concat(bones, ", ") .. ")")
 
+	-- What else could draw hands on this entity? The bodies of the model that are switched on,
+	-- what hangs on it, what Z-City put on it, and who else draws in the two hooks.
+	local bodies = {}
+	for _, group in ipairs(ent.GetBodyGroups and ent:GetBodyGroups() or {}) do
+		if (tonumber(group.num) or 0) > 1 then
+			local value = ent:GetBodygroup(group.id)
+			local body = istable(group.submodels) and group.submodels[value] or nil
+			bodies[#bodies + 1] = tostring(group.name) .. " = " .. tostring(value) .. " \"" .. tostring(body or "?") .. "\""
+		end
+	end
+	print("  bodies of the model  : " .. (#bodies > 0 and table.concat(bodies, ", ") or "nothing to choose from"))
+
+	local attached = {}
+	for _, child in ipairs(ent.GetChildren and ent:GetChildren() or {}) do
+		if IsValid(child) and not (state and child == state.mdl) then
+			attached[#attached + 1] = tostring(child:GetClass()) .. " " .. tostring(child:GetModel())
+				.. (child:IsEffectActive(EF_BONEMERGE) and " (bone-merged)" or "")
+		end
+	end
+	local viewHands = ent.GetHands and ent:GetHands()
+	if IsValid(viewHands) then attached[#attached + 1] = "hands of the first-person view " .. tostring(viewHands:GetModel()) end
+	print("  attached to it       : " .. (#attached > 0 and table.concat(attached, "; ") or "nothing"))
+
+	-- (Z-City keeps the list with the player, and with the body once the player is dead)
+	local worn, listed = {}, {}
+	local owner = ent:IsRagdoll() and ent:GetNWEntity("ply") or nil
+	for _, holder in ipairs({ ent, IsValid(owner) and owner or nil }) do
+		local equipment = holder.GetNetVar and holder:GetNetVar("zc_equipment") or nil
+		for _, index in ipairs(istable(equipment) and equipment or {}) do
+			local item = not listed[index] and isnumber(index) and Entity(index) or nil
+			listed[index] = true
+			if IsValid(item) then
+				local shown = IsValid(item.renderModel) and item.renderModel:GetModel() or item:GetModel()
+				worn[#worn + 1] = tostring(item:GetClass()) .. " " .. tostring(shown)
+			end
+		end
+	end
+	print("  equipment of Z-City  : " .. (#worn > 0 and table.concat(worn, "; ") or "none"))
+
+	local gotHooks, hooks = pcall(hook.GetTable)
+	for _, event in ipairs({ "CoolPostDrawAppearance", "PostDrawAppearance" }) do
+		local names = {}
+		for id in pairs(gotHooks and istable(hooks) and istable(hooks[event]) and hooks[event] or {}) do
+			names[#names + 1] = tostring(id)
+		end
+		print("  hooks of " .. event .. ": " .. (#names > 0 and table.concat(names, ", ") or "none"))
+	end
+	print("  order of these hooks : " .. (ZCG.HookOrder.draw ~= nil
+		and "this addon asked to be the last before the wearer is drawn and the first after it"
+		or "the hook library has none to ask for (the one of the game runs them as listed)"))
+
 	if state then
 		print("  state                : model " .. tostring(state.mdl) .. ", body " .. tostring(state.body)
 			.. ", bare arm material \"" .. tostring(state.skin) .. "\""
 			.. ", hands material hidden " .. tostring(state.hide ~= nil) .. ", hand bones shrunk " .. tostring(state.shrunk == true)
+			.. (state.shrunk and state.kept ~= nil and (state.kept and " (still shrunk after the draw)"
+				or " (set up again by the engine by the end of the draw)") or "")
 			.. ", last try " .. string.format("%.1f", RealTime() - (state.seen or 0)) .. " s ago")
 		if variant and variant.mats then
 			-- the glove brings materials the model does not name: what is on the model right now?
