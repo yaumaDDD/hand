@@ -11,6 +11,8 @@ to them. Then:
   * everywhere: the script is run by a Python that knows nothing but its own library ("-I", like
     the portable Python sort_content.bat fetches), from another folder; once more with Lua that
     names its materials in a table, and the list of names the build makes for that by running it;
+    and with the folders of an owner thrown at the addon the way he collects them - materials1,
+    models2 ... in materials, in models, beside them, handed over;
   * on Windows: sort_content.bat itself is run, with the Python that is installed and - when
     ZCG_TEST_PORTABLE is set, it needs the internet - with the portable one it fetches, kept in a
     folder with a Russian name as the profile of a Russian user has.
@@ -62,6 +64,15 @@ def shipped_with_names(folder):
         ran['result'] = Told(T.TABLE_NAMES)
     _scripts, _stock, listed = build_addon.step_sort_tool(folder, ran)
     return real, listed
+
+
+def shipped_thrown(folder, how, outside):
+    """an installed addon with numbered folders thrown at it (test_content.thrown); returns
+    ({path: content} as it has to be afterwards, what to hand to the tool)"""
+    want, handed = T.thrown(folder, how, outside)
+    build_addon.step_sort_tool(folder)
+    shutil.copyfile(os.path.join(ROOT, L.ADDON_DIRNAME, BAT), os.path.join(folder, BAT))
+    return want, handed
 
 
 def result(folder):
@@ -146,10 +157,40 @@ def main():
         if done.returncode != 0 or sorted(got) != T.TABLE_SORTED:
             show('the shipped script, names by running', done)
 
+        # ---- folders thrown in the way they were collected: materials1, models2 ...
+        for number, how in enumerate(T.THROWN):
+            home = os.path.join(tmp, u'thrown (%d)' % number)
+            addon = os.path.join(home, u'\u0430\u0434\u0434\u043e\u043d\u044b', L.ADDON_DIRNAME)
+            want, handed = shipped_thrown(addon, how, os.path.join(home, u'\u043d\u0430\u0448\u0451\u043b \u043a\u043e\u043d\u0442\u0435\u043d\u0442'))
+            script = os.path.join(addon, build_addon.SORT_TOOL_DIR, 'sort_content.py')
+            done = subprocess.run([sys.executable, '-I', '-B', script] + handed, cwd=tmp, env=env, **quiet)
+            got, report = result(addon)
+            check(done.returncode == 0 and sorted(got) == sorted(want),
+                  'the shipped script, numbered folders %s: every file is at its place; only in one of the two: %s'
+                  % (how, sorted(set(got) ^ set(want))))
+            check(got == want, 'the shipped script, numbered folders %s: no file was changed' % how)
+            if done.returncode != 0 or got != want:
+                show('the shipped script, numbered folders %s' % how, done)
+
         if os.name != 'nt':
             print('  (not on Windows: sort_content.bat itself is not run)')
         else:
             env = dict(os.environ, ZCG_NO_PAUSE='1', PYTHONIOENCODING='utf-8')
+            # ---- the batch file and numbered folders: thrown into the addon, then handed over
+            for number, how in enumerate(T.THROWN):
+                home = os.path.join(tmp, u'bat (%d)' % number)
+                addon = os.path.join(home, u'Steam (x86)', L.ADDON_DIRNAME)
+                want, handed = shipped_thrown(addon, how, os.path.join(home, u'\u043a\u043e\u043d\u0442\u0435\u043d\u0442 & more'))
+                done = start(os.path.join(addon, BAT), *handed, cwd=tmp, env=env, **quiet)
+                got, report = result(addon)
+                check(done.returncode == 0 and sorted(got) == sorted(want),
+                      'sort_content.bat, numbered folders %s: every file is at its place; only in one of the two: %s'
+                      % (how, sorted(set(got) ^ set(want))))
+                check(got == want, 'sort_content.bat, numbered folders %s: no file was changed' % how)
+                check(not any('__pycache__' in base for base, _dirs, _files in os.walk(addon)),
+                      'sort_content.bat, numbered folders %s: Python leaves no cache folder in the addon' % how)
+                if done.returncode != 0 or got != want:
+                    show('sort_content.bat, numbered folders %s' % how, done)
             # ---- the batch file, with the Python that is installed; a folder dropped onto it
             addon = os.path.join(tmp, u'Steam (x86)', u'\u0434\u0440\u0443\u0433\u043e\u0439 \u0430\u0434\u0434\u043e\u043d', L.ADDON_DIRNAME)
             want = shipped(addon)

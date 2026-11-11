@@ -14,6 +14,14 @@ tools/place_content.py does that, the same code the build of the addon uses - an
 place. Nothing is deleted and no file of the addon is overwritten: what cannot be used is moved to
 the folder _not_used, and everything is written down in sort_content_report.txt.
 
+The content may be thrown in the way it was collected - the materials folder of one addon, of the
+next one ... as materials1, materials2, models1 ... - into the materials folder, into the models
+folder, into both, in a folder of their own, or beside the two: every folder is gone through. A
+file that nothing names, in a folder nothing is known of, goes where such folders put it: a
+numbered folder is a copy of materials/ (models/), the files of a model belong below models/,
+materials and textures below materials/ (zcg_layout.merged_destination). What is neither - a
+note, a picture - moves along with its folder. A numbered folder that is empty then is removed.
+
 The text of the Lua does not show every name: some are put together while the Lua runs, some are
 written from inside the materials folder. There is no Lua to run here, so the build of the addon
 ran it and left the names beside this script (lua_names.txt, see list_content.py); they are looked
@@ -44,6 +52,9 @@ STAGE = '_sorting'        # files on their way (with a journal, so that a run th
 ASIDE = '_not_used'       # files of the addon that have no place in it
 REPORT = 'sort_content_report.txt'
 ROOTS = ('materials', 'models')
+# a file that is no material and no model, and cannot move along with its folder
+NOT_CONTENT = u'не материал и не модель (заметка, картинка …), а на его месте уже лежит файл с таким именем'
+LEFT_BEHIND = u'не материал и не модель (заметка, картинка …): лежал в папке с номером, из которой всё остальное разложено'
 # the folders of an addon that the game reads, and those of this tool: what lies in any other
 # folder of the addon is seen by nobody
 KNOWN_FOLDERS = L.CONTENT_ROOTS + ('maps', 'gamemodes', 'data', 'data_static', 'sort_content', STAGE, ASIDE)
@@ -165,6 +176,22 @@ def names_of(folders, run_list=None):
     return result
 
 
+def beside(addon):
+    """folders of the addon, beside materials/ and models/, that are numbered copies of the two
+    ("materials3", put next to materials/ instead of into it): [(folder, 'materials' or 'models')].
+    They are gone through as if they lay in that folder."""
+    found = []
+    try:
+        entries = sorted(os.listdir(addon), key=P.natural)
+    except OSError:
+        return found
+    for entry in entries:
+        top = L.numbered_root(entry)
+        if top and entry.lower() not in KNOWN_FOLDERS and os.path.isdir(os.path.join(addon, entry)):
+            found.append((entry, top))
+    return found
+
+
 def stray(addon):
     """[(folder, content files in it)]: folders of the addon that hold materials or models and
     that neither the game nor this tool looks into - a pack that was put beside materials/
@@ -176,12 +203,36 @@ def stray(addon):
         return found
     for entry in entries:
         full = os.path.join(addon, entry)
-        if entry.lower() in KNOWN_FOLDERS or entry.startswith('.') or not os.path.isdir(full):
+        if entry.lower() in KNOWN_FOLDERS or entry.startswith('.') or not os.path.isdir(full) \
+                or L.numbered_root(entry):
             continue
         count = sum(1 for rel, _full in walk_files(full) if P.kind_of(rel))
         if count:
             found.append((entry, count))
     return found
+
+
+def real_folders(names):
+    """the folders of the game that these names lie in, with the folders above them"""
+    found = set()
+    for path in names:
+        parts = path.split('/')[:-1]
+        for cut in range(1, len(parts) + 1):
+            found.add('/'.join(parts[:cut]))
+    return found
+
+
+def numbered_folder(rel, real=()):
+    """the outermost folder a file of the addon lies in that is a copy of materials/ or models/
+    by its name - a numbered one ("materials/materials3"), or a second one inside the first
+    ("materials/materials", "models/my pack/models") - or None.
+    real: the folders the game is known to have (real_folders): none of them is such a copy"""
+    parts = rel.lower().split('/')[:-1]
+    for cut, part in enumerate(parts):
+        if (L.numbered_root(part) or (cut and (part == 'materials' or part == parts[0] == 'models'))) \
+                and '/'.join(parts[:cut + 1]) not in real:
+            return '/'.join(parts[:cut + 1])
+    return None
 
 
 def unpack(archive, temp):
@@ -212,11 +263,14 @@ def unpack(archive, temp):
     raise UserError(u'Не папка и не архив .zip: %s' % archive)
 
 
-def collect(addon, sources, temp):
+def collect(addon, sources, temp, real=()):
     """returns (items for place_content, files of the addon that only need lower-case paths,
-    files from outside that keep their path, what the sources brought)"""
+    files from outside that keep their path, what the sources brought, files of the addon that
+    are no content and move along with their folders: [(path, path then - None for a file
+    that lies right in a numbered folder)]).
+    real: the folders the game is known to have (real_folders)"""
     name = os.path.basename(addon)
-    items, lower_case, extra, brought = [], [], [], []
+    items, lower_case, extra, brought, along = [], [], [], [], []
 
     order = 0
     for source in sources:
@@ -231,10 +285,12 @@ def collect(addon, sources, temp):
                      content=0, other=0, lua=0)
         for rel, full in sorted(walk_files(root)):
             if P.kind_of(rel):
-                items.append(P.Item(label, rel, full, L.dropin_destination(rel), order))
+                items.append(P.Item(label, rel, full, L.dropin_destination(rel), order, L.merged_destination(rel),
+                                    L.merged_destination(rel, mirror=True)))
                 entry['content'] += 1
                 continue
-            dest = L.dropin_destination(rel)
+            # (a note or a picture: by its folders, read like those of the content beside it)
+            dest = L.merged_destination(rel) or L.dropin_destination(rel)
             if dest is None:
                 entry['no_place'].append(rel)
             elif dest.split('/', 1)[0] in ROOTS:
@@ -246,22 +302,36 @@ def collect(addon, sources, temp):
 
     # The addon itself comes last: what lies in it is not replaced by what comes from outside.
     # Of two of its own files for one place the one that lies there already stays.
-    mine = dict(name=name, kind='folder', no_place=[], content=0, other=0, lua=0)
-    for top in ROOTS:
+    # A numbered folder beside materials/ ("materials3", put next to it instead of into it) is
+    # gone through as if it lay in it.
+    mine = dict(name=name, kind='folder', no_place=[], content=0, other=0, lua=0, beside=beside(addon), archives=[])
+    for top, inside in [(top, None) for top in ROOTS] + mine['beside']:
         for rel, full in sorted(walk_files(os.path.join(addon, top))):
             rel = top + '/' + rel
             if L.is_own_content(rel):
                 continue
+            seen = rel if inside is None else inside + '/' + rel
             if P.kind_of(rel):
-                default = L.dropin_destination(rel)
-                item = P.Item(name, rel, full, default, order + (2 if default == rel else 1))
+                default = L.dropin_destination(seen)
+                item = P.Item(name, rel, full, default, order + (2 if default == rel else 1),
+                              L.merged_destination(seen, real), L.merged_destination(seen, real, mirror=True))
                 item.in_addon = True
                 items.append(item)
                 mine['content'] += 1
+                continue
+            if L.ARCHIVE.search(rel):
+                mine['archives'].append(rel)    # (nothing here opens it: it stays, and is told)
+                continue
+            # (a note, a picture: it moves along with a numbered folder it lies in, and only then)
+            if numbered_folder(rel, real) is not None:
+                dest = L.merged_destination(seen, real)
+                if dest is None or dest == seen.lower() or dest.split('/', 1)[0] not in ROOTS:
+                    dest = None                 # right in the numbered folder, or no content at all: see plan
+                along.append((rel, dest))
             elif rel != rel.lower():
                 lower_case.append((rel, rel.lower()))
     brought.append(mine)
-    return items, lower_case, extra, brought
+    return items, lower_case, extra, brought, along
 
 
 # ---- what to do ------------------------------------------------------------------------------
@@ -273,10 +343,23 @@ class Job(object):
         self.stay = 0       # files of the addon that lie where they belong
         self.unknown = 0    # ... and those that stay in their folders because nothing is known of them
         self.lowered = 0    # (how many of these get a lower-case path: a move that is not counted as one)
+        # numbered folders ("materials/materials3"): folder -> [files in it, of them moved to a
+        # place, of them put aside]
+        self.numbered = collections.OrderedDict()
+        # files of a model that lay below materials/ and go below models/, and the other way round
+        self.crossed = collections.Counter()
 
 
-def plan(addon, items, lower_case, extra, report):
+def plan(addon, items, lower_case, extra, report, along=(), real=()):
     job = Job()
+
+    def count(now, moved=0, aside=0):
+        folder = numbered_folder(now, real)
+        if folder is not None:
+            entry = job.numbered.setdefault(folder, [0, 0, 0])
+            entry[0] += 1
+            entry[1] += moved
+            entry[2] += aside
     places = collections.defaultdict(list)
     for dest, item in report.placed:
         places[id(item)].append(dest)
@@ -291,6 +374,7 @@ def plan(addon, items, lower_case, extra, report):
             continue
         if not dests:
             job.aside.append((item.inner, reasons.get(id(item), P.UNNAMED)))
+            count(item.inner, aside=1)
             continue
         first = item.inner if item.inner in dests else dests[0]
         if id(item) in unknown and first.lower() == item.inner.lower():
@@ -298,14 +382,44 @@ def plan(addon, items, lower_case, extra, report):
             job.lowered += first != item.inner
         elif first == item.inner:
             job.stay += 1
+        count(item.inner, moved=first.lower() != item.inner.lower())
         if first != item.inner:
             job.moves.append((item.inner, first))
+            tops = item.inner.split('/', 1)[0].lower(), first.split('/', 1)[0]
+            if tops[0] in ROOTS and tops[0] != tops[1]:
+                job.crossed[tops] += 1
         for dest in dests:
             if dest != first:   # one file, wanted at two paths
                 job.copies.append((os.path.join(addon, first), dest))
     job.moves += lower_case
+
+    # What is no material and no model moves along with its folder - to a place that is free.
+    taken = set(dest for dest, _item in report.placed)
+    taken.update(then.lower() for _now, then in job.moves)
+    waiting = collections.defaultdict(list)
+    # (the later folder first, as with the content: of two numbered folders with a file for one
+    # place the later one has it)
+    for now, then in sorted(along, key=lambda pair: P.natural(pair[0].lower()), reverse=True):
+        if then is None:
+            waiting[numbered_folder(now, real)].append(now)     # right in a numbered folder: nowhere to go
+            count(now)
+        elif then in taken or os.path.lexists(os.path.join(addon, then)):
+            job.aside.append((now, NOT_CONTENT))
+            count(now, aside=1)
+        else:
+            taken.add(then)
+            job.moves.append((now, then))
+            count(now, moved=1)
+    # ... and a note that lay right in a numbered folder does not keep that folder there, once
+    # everything else has moved out of it
+    for folder, notes in waiting.items():
+        files, moved, aside = job.numbered[folder]
+        if files - moved - aside == len(notes):
+            job.aside += [(now, LEFT_BEHIND) for now in notes]
+            job.numbered[folder][2] += len(notes)
     for full, dest in extra:
-        job.copies.append((full, dest))
+        if not os.path.lexists(os.path.join(addon, dest)):     # (it is there already: an earlier run)
+            job.copies.append((full, dest))
     return job
 
 
@@ -393,6 +507,12 @@ def apply(addon, job):
                 staged.append((os.path.join(stage, key), then, now))
         for top in ROOTS:
             prune(os.path.join(addon, top))
+        for top, _inside in beside(addon):
+            prune(os.path.join(addon, top))
+            try:
+                os.rmdir(os.path.join(addon, top))
+            except OSError:
+                pass
         finish(addon, staged, problems)
         os.remove(os.path.join(stage, 'journal.txt'))
         try:
@@ -445,14 +565,26 @@ def summary(addon, names, brought, report, job, dry, problems):
         out.append(u'  В этой сборке «%s». «%s» — другая версия того же аддона, её Lua в сборке нет:' % (taken, title))
         out.append(u'  в игре может быть только одна из двух. Файлы, которые называет только та версия (имён: %d),' % count)
         out.append(u'  игре с этой сборкой не нужны; в «не хватает» они не попадают.')
-    beside = stray(addon)
-    if beside:
+    apart = stray(addon)
+    if apart:
         out.append(u'ВНИМАНИЕ: в папке аддона есть папки с материалами и моделями, в которые не смотрит ни игра, ни')
         out.append(u'  этот инструмент: %s%s.'
-                   % (u', '.join(u'«%s» (файлов: %d)' % pair for pair in beside[:5]),
-                      u' и ещё %d' % (len(beside) - 5) if len(beside) > 5 else u''))
+                   % (u', '.join(u'«%s» (файлов: %d)' % pair for pair in apart[:5]),
+                      u' и ещё %d' % (len(apart) - 5) if len(apart) > 5 else u''))
         out.append(u'  Если это одежда — перетащите такую папку на sort_content.bat или переложите её в папку')
-        out.append(u'  materials аддона и запустите ещё раз.')
+        out.append(u'  materials аддона и запустите ещё раз. (Папки с номерами — materials1, models 2 … — он')
+        out.append(u'  разбирает и рядом с materials; у этих папок другие имена.)')
+    archives = brought[-1].get('archives') or []
+    if archives:
+        out.append(u'ВНИМАНИЕ: в папках materials и models аддона лежат архивы — %d (%s%s).'
+                   % (len(archives), u', '.join(archives[:3]), u' …' if len(archives) > 3 else u''))
+        out.append(u'  Этот инструмент их не открывает, и игра тоже: распакуйте их туда же и запустите ещё раз.')
+        out.append(u'  (Архив .zip можно перетащить на sort_content.bat; .gma распаковывает gmad.exe из папки bin игры.)')
+    outside = brought[-1].get('beside') or []
+    if outside:
+        out.append(u'Папки с номерами рядом с materials и models (%s%s) разобраны так же, как если бы лежали внутри них.'
+                   % (u', '.join(u'«%s»' % folder for folder, _top in outside[:5]),
+                      u' и ещё %d' % (len(outside) - 5) if len(outside) > 5 else u''))
     for entry in brought:
         where = u'в папках materials и models аддона' if entry['name'] == name and entry is brought[-1] \
             else u'в «%s»' % entry['name']
@@ -474,6 +606,10 @@ def summary(addon, names, brought, report, job, dry, problems):
     out.append(u'%s перемещено внутри аддона: %d' % (verb, moved))
     out.append(u'%s скопировано в аддон: %d' % (verb, len(job.copies)))
     out.append(u'%s убрано в папку %s (не пригодилось): %d' % (verb, ASIDE, len(job.aside)))
+    copies = sum(1 for _now, reason in job.aside if reason == P.COPY)
+    if copies:
+        out.append(u'  из них точных копий файлов, которые уже лежат на своих местах: %d — их можно удалить' % copies)
+    out += numbered_lines(job, dry)
     if problems:
         out.append(u'НЕ УДАЛОСЬ переместить: %d — закройте игру (она держит файлы открытыми) и запустите ещё раз'
                    % len(problems))
@@ -499,7 +635,8 @@ def summary(addon, names, brought, report, job, dry, problems):
         out.append(u'    текстур, которые ищут материалы: %d из %d'
                    % (len(report.missing_textures), report.textures_wanted))
         out.append(u'  Часть из них — файлы самой игры и Z-City, их и не должно быть в аддоне. Остальные нужно')
-        out.append(u'  добавить: положите их в папку materials или models аддона (в любые папки) и запустите ещё раз.')
+        out.append(u'  добавить: положите их в папку materials или models аддона (в любые папки; можно целыми')
+        out.append(u'  папками materials и models других аддонов, под номерами: materials1, models2 …) и запустите ещё раз.')
         if report.missing_named and len(brought) == 1:
             # (a source is copied from, not moved: what an earlier version did not take is still there)
             out.append(u'  Если папки с контентом вы раньше перетаскивали на sort_content.bat, перетащите их ещё раз:')
@@ -514,8 +651,51 @@ def summary(addon, names, brought, report, job, dry, problems):
         out.append(u'  (например «%s»). На места, которые называет Lua сборки, они не взяты: туда нужны файлы'
                    % (other[0].args[0],))
         out.append(u'  версии, которая в сборке. Подробности — в отчёте, «Замечания».')
+    twice = [text for text in report.notes if getattr(text, 'kind', None) in ('version', 'version here')]
+    if twice:
+        out.append(u'Разных файлов на одно и то же место: пар — %d. Оставлен тот, что уже лежал на месте, иначе —' % len(twice))
+        out.append(u'  из папки, которая позже по имени (materials10 позже materials2); второй убран в %s.' % ASIDE)
+        out.append(u'  Какие это файлы — в отчёте, «Замечания».')
     if report.notes:
         out.append(u'Замечаний: %d (файлы-тёзки, которые нечем различить, и т. п.) — см. отчёт' % len(report.notes))
+    return out
+
+
+def numbered_lines(job, dry=False):
+    """what became of the folders that are copies of materials/ and models/ by their names
+    (Job.numbered), and of the files that lay below the wrong one of the two"""
+    out = []
+    folders = job.numbered
+    if folders:
+        files = sum(entry[0] for entry in folders.values())
+        moved = sum(entry[1] for entry in folders.values())
+        aside = sum(entry[2] for entry in folders.values())
+        names = sorted(folders, key=P.natural)
+        out.append(u'Папки-копии materials и models (с номером в имени или вложенные: %s%s) — %d:'
+                   % (u', '.join(names[:3]), u' …' if len(names) > 3 else u'', len(names)))
+        out.append(u'  файлов в них %d; %s на места: %d; в %s: %d; %s: %d'
+                   % (files, u'будет переложено' if dry else u'переложено', moved, ASIDE, aside,
+                      u'останется' if dry else u'осталось', files - moved - aside))
+        if files - moved - aside:
+            out.append(u'  Остались файлы, которые лежат прямо в такой папке, без подпапок, и о которых ничего не известно:')
+            out.append(u'  куда их класть, по ним не понять. Какие это файлы — в отчёте, «Оставлено в тех же папках».')
+    crossed = job.crossed
+    if crossed.get(('materials', 'models')):
+        out.append(u'Файлов моделей, лежавших в materials, %s в models: %d'
+                   % (u'будет переложено' if dry else u'переложено', crossed[('materials', 'models')]))
+    if crossed.get(('models', 'materials')):
+        out.append(u'Материалов и текстур, лежавших в models, %s в materials: %d'
+                   % (u'будет переложено' if dry else u'переложено', crossed[('models', 'materials')]))
+    return out
+
+
+def numbered_list(job):
+    """... folder by folder, for the report"""
+    out = []
+    for folder in sorted(job.numbered, key=P.natural):
+        files, moved, aside = job.numbered[folder]
+        out.append(u'    %s/    файлов: %d, на места: %d, в %s: %d, осталось: %d'
+                   % (folder, files, moved, ASIDE, aside, files - moved - aside))
     return out
 
 
@@ -549,10 +729,11 @@ def main(argv=None):
         names = names_of([os.path.join(addon, 'lua')] + args.lua, args.names_list)
         named = names.named
         say(u'Читаю файлы контента ...')
-        items, lower_case, extra, brought = collect(addon, args.sources, temp)
+        real = real_folders(set(named) | set(names.spare) | list_content.stock_names())
+        items, lower_case, extra, brought, along = collect(addon, args.sources, temp, real)
         say(u'Ищу каждому файлу место (файлов: %d) ...' % len(items))
         report = P.place(items, named, L.is_own_content, set(names.spare))
-        job = plan(addon, items, lower_case, extra, report)
+        job = plan(addon, items, lower_case, extra, report, along, real)
 
         problems = []
         if not args.dry_run and (job.moves or job.aside or job.copies):
@@ -566,6 +747,8 @@ def main(argv=None):
 
         reasons = collections.Counter(content_report.why(reason) for _now, reason in job.aside)
         more = list(head)
+        if job.numbered:
+            more += [u'', u'Папки-копии materials и models — по папкам:'] + numbered_list(job)
         if job.aside:
             more += [u'', u'Убрано в %s (причины):' % ASIDE] + [u'    %s — файлов: %d' % pair for pair in sorted(reasons.items())]
         listing = os.path.join(addon, REPORT)

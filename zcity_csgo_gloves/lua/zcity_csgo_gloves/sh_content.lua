@@ -901,7 +901,8 @@ function ZCG.ContentReport(out)
 		out("  " .. unseen .. " of them lie in the folder of this addon outside of materials/ and models/ (" .. tostring(hidden)
 			.. " ...): the game does not look there")
 		out("  _not_used is where sort_content.bat puts a file it found no place for - its report, sort_content_report.txt,"
-			.. " says why; any other folder: move it into the materials folder of the addon and start sort_content.bat")
+			.. " says why; a folder called materials1, models 2 ...: start sort_content.bat, it goes through such folders"
+			.. " itself; any other folder: move it into the materials folder of the addon and start sort_content.bat")
 	end
 	if elsewhere > 0 then
 		out("  " .. elsewhere .. " of them have a file of the same name in another folder (" .. tostring(example) .. " ...):"
@@ -922,7 +923,8 @@ function ZCG.ContentReport(out)
 		end
 	end
 	if elsewhere == 0 then
-		out("  put the files into the materials and models folders of this addon - in any folders - and start"
+		out("  put the files into the materials and models folders of this addon - in any folders, or the whole"
+			.. " materials and models folders of other addons as materials1, models2 ... - and start"
 			.. " sort_content.bat there: it moves every file to its place. Then start the game again")
 	end
 	if cut then out("  (the search for the file names was stopped early: there are too many folders)") end

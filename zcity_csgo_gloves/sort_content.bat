@@ -4,6 +4,11 @@ rem
 rem   double click           sorts what lies in the materials and models folders of this addon
 rem   drop folders on it     also takes in the content of those folders (or .zip archives)
 rem
+rem The content can be thrown in the way it was collected: the materials and models folders of
+rem other addons as materials1, materials2, models1 ... - into materials, into models, into both,
+rem or beside them. Every folder and subfolder is gone through: the files of models end up below
+rem models, materials and textures below materials, and the numbered folders go away.
+rem
 rem Close the game first: it keeps the files it uses open. Nothing is deleted - see the README,
 rem "sort_content.bat". The work is done by sort_content\sort_content.py; this file only finds
 rem a Python to run it with, and fetches a portable one from python.org when there is none.

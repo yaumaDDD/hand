@@ -17,7 +17,9 @@ import place_content as P  # noqa: E402
 import zcg_layout as L  # noqa: E402
 
 WHY = {
-    P.REPLACED: u'такой же файл есть в более позднем источнике',
+    P.REPLACED: u'на его место взят другой файл с тем же путём — из более позднего источника или папки, см. «Замечания»',
+    P.COPY: u'точная копия файла, который лежит на этом месте',
+    P.ORPHAN: u'файл модели, место которой занято другой моделью: к чужой модели он не подкладывается',
     P.OWN_FILE: u'на этом месте лежит файл самого аддона',
     P.NAMESAKES: u'не отличить от тёзок, см. «Замечания»',
     P.UNNAMED: u'его никто не называет, и лежит он не в папке materials или models',
@@ -26,6 +28,8 @@ WHY = {
 
 NOTES = {
     'version': u'%s: файл пришёл в двух разных версиях — из «%s» и из «%s»; взята вторая',
+    'version here': u'%s: на это место есть два разных файла — «%s» и «%s»; взят второй (из папки, которая позже по '
+                    u'имени, или тот, что уже лежал на месте), первый убран',
     'equal': u'%s: одинаково подходят «%s» и «%s»; взят первый',
     'several names': u'«%s» подходит по имени сразу к нескольким названным файлам (%d — в папках %s) и никуда не '
                      u'положен: назовите его папку так же, как называется папка, из которой он взят',
@@ -214,7 +218,19 @@ def lines(sources, result, named, written_by, more=(), who=None, spare=None):
 
     out += [u'', u'Не использовано — файлов: %d' % len(result.left_out)]
     for item, reason in result.left_out:
-        out.append(u'    %s    (%s)' % (item, why(reason)))
+        if reason != P.COPY:
+            out.append(u'    %s    (%s)' % (item, why(reason)))
+    # (a copy of a file that lies at its place needs no line of its own: there may be thousands,
+    # when the same folders are handed over once more)
+    copies = collections.Counter((item.source, posixpath.dirname(item.inner)) for item, reason in result.left_out
+                                 if reason == P.COPY)
+    if copies:
+        out.append(u'    точные копии файлов, которые лежат на своих местах, — %d (их можно удалить); по папкам:'
+                   % sum(copies.values()))
+        for (source, folder), count in sorted(copies.items())[:AS_PACKED_SHOWN]:
+            out.append(u'        %s    файлов: %d    [%s]' % (moved_from(sources, source, folder), count, source))
+        if len(copies) > AS_PACKED_SHOWN:
+            out.append(u'        ... и ещё папок: %d' % (len(copies) - AS_PACKED_SHOWN))
 
     out += [u'', u'Замечания — %d' % len(result.notes)]
     out += [u'    ' + note(text) for text in result.notes]

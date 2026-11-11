@@ -81,7 +81,8 @@ def model(folders, names, name=''):
 
 
 def scan(folder, source='content.zip', order=1):
-    return [P.Item(source, rel, full, L.dropin_destination(rel), order)
+    return [P.Item(source, rel, full, L.dropin_destination(rel), order, L.merged_destination(rel),
+                   L.merged_destination(rel, mirror=True))
             for rel, full in sorted(build_addon.walk_files(folder))]
 
 
@@ -432,12 +433,15 @@ def test_places_kept(tmp):
     check('materials/gate/extra.vtf' not in placed, 'the other version is not put anywhere else: %s' % sorted(placed))
     check([(str(item), why) for item, why in report.left_out] == [('content.zip: materials/gate/extra.vtf', P.PLACE_TAKEN)],
           'it is left out, with the reason: %s' % report.left_out)
-    check(len(report.notes) == 1 and report.notes[0].kind == 'version' and 'materials/models/gate/extra.vtf' in report.notes[0],
-          'and the two versions are noted: %s' % report.notes)
+    check(len(report.notes) == 1 and report.notes[0].kind == 'version here'
+          and report.notes[0].args == ('materials/models/gate/extra.vtf', 'materials/gate/extra.vtf', 'materials/models/gate/extra.vtf'),
+          'and the two versions are noted, by their paths: %s' % report.notes)
     # two copies of one file are no two versions
     write(os.path.join(src, 'materials/gate/extra.vtf'), texture('the one in place'))
     report, placed = run(src, ['materials/models/gate/epl.vmt'])
     check('materials/gate/extra.vtf' not in placed and not report.notes, 'a second copy of the same file: no remark')
+    check([(str(item), why) for item, why in report.left_out] == [('content.zip: materials/gate/extra.vtf', P.COPY)],
+          '... and it is called a copy: %s' % report.left_out)
     # a file of the addon itself has the place
     report, placed = run(src, ['materials/models/gate/epl.vmt'], own=['materials/models/gate/epl.vtf'])
     check(('content.zip: materials/gate/epl.vtf', P.OWN_FILE) in [(str(item), why) for item, why in report.left_out]
@@ -824,7 +828,8 @@ def random_run(seed, tmp):
             if os.path.isdir(base):
                 for rel, full in sorted(build_addon.walk_files(base)):
                     inner = 'materials/upload %d/%s' % (upload, rel)
-                    files.append(P.Item('zcity_csgo_gloves', inner, full, L.dropin_destination(inner), 1))
+                    files.append(P.Item('zcity_csgo_gloves', inner, full, L.dropin_destination(inner), 1,
+                                        L.merged_destination(inner), L.merged_destination(inner, mirror=True)))
         if with_a_file_in_place:
             full = os.path.join(tmp, 'in place.vmt')
             write(full, material('models/in_place/zz'))
@@ -923,9 +928,9 @@ def test_sources(tmp):
     check(any('another version' in note for note in report.notes) and len(report.notes) == 1,
           'a different file is noted, the same one is not: %s' % report.notes)
     check('materials/models/a/own.vtf' not in placed, 'a file of the addon is not replaced')
-    check(sorted(why for _item, why in report.left_out) ==
-          ['a later source has this file', 'a later source has this file', 'the file of this addon is kept'],
-          'why files were left out: %s' % report.left_out)
+    check(sorted((item.name, why) for item, why in report.left_out) ==
+          [('own.vtf', P.OWN_FILE), ('same.vtf', P.COPY), ('x.vtf', P.REPLACED)],
+          'why files were left out - another file is used, a copy, a file of the addon: %s' % report.left_out)
 
     # ... also when both lie a level short: the earlier one is not found by its name instead
     one, two = os.path.join(tmp, 'three'), os.path.join(tmp, 'four')
@@ -1057,7 +1062,7 @@ def test_report(tmp):
         made = P.Note(kind, *[2 if spec == 'd' else 'x' for spec in
                               [english[i + 1] for i in range(len(english) - 1) if english[i] == '%']])
         check(content_report.note(made) != made and u'%' not in content_report.note(made), 'a remark in Russian: ' + kind)
-    for reason in (P.REPLACED, P.OWN_FILE, P.NAMESAKES, P.UNNAMED, P.PLACE_TAKEN):
+    for reason in (P.REPLACED, P.COPY, P.ORPHAN, P.OWN_FILE, P.NAMESAKES, P.UNNAMED, P.PLACE_TAKEN):
         check(content_report.why(reason) != reason, 'a reason in Russian: ' + reason)
     check(content_report.note('something else') == 'something else' and content_report.why('other') == 'other',
           'what is not known stays as it is')
@@ -1106,6 +1111,8 @@ def an_addon(folder):
         'materials/Gate/Epl.VMT': material('models/gate/epl'),
         'materials/Gate/epl.vtf': texture('epl'),
         'materials/Gate/Unused.vtf': texture('unused'),
+        # ... and another version of a file that lies right: no place for it
+        'materials/Gate/shirt.vtf': texture('an older shirt'),
         # right where it belongs
         'materials/models/gate/shirt.vmt': material('models/gate/shirt', bumpmap='models/gate/shirt_n'),
         'materials/models/gate/shirt.vtf': texture('shirt'),
@@ -1123,8 +1130,9 @@ def an_addon(folder):
         'models/model 1/male_10.dx90.vtx': b'vtx',
         'materials/slav stuff/hair.vmt': material('models/humans/slav/hair'),
         'materials/slav stuff/hair.vtf': texture('hair'),
-        # no place for these: a model among the materials that nothing names
+        # a model among the materials that nothing names: the files of a model belong below models/
         'materials/odd/thing.mdl': model([], [], 'thing.mdl'),
+        'materials/odd/thing.vvd': b'vvd of the thing',
         # not content, but with capitals
         'materials/Icons/Thing.PNG': b'png2',
     }
@@ -1148,7 +1156,9 @@ SORTED = {
     'models/model 1/male_10.dx90.vtx': 'models/slav/m/male_10.dx90.vtx',
     'materials/slav stuff/hair.vmt': 'materials/models/humans/slav/hair.vmt',
     'materials/slav stuff/hair.vtf': 'materials/models/humans/slav/hair.vtf',
-    'materials/odd/thing.mdl': '_not_used/materials/odd/thing.mdl',
+    'materials/Gate/shirt.vtf': '_not_used/materials/Gate/shirt.vtf',
+    'materials/odd/thing.mdl': 'models/odd/thing.mdl',
+    'materials/odd/thing.vvd': 'models/odd/thing.vvd',
     'materials/Icons/Thing.PNG': 'materials/icons/thing.png',
 }
 
@@ -1435,7 +1445,9 @@ def test_sorting(tmp):
                  u'materials/models/gate/shirt_n.vtf  <-  materials/models/gate/shirt.vmt  $bumpmap'):
         check(line in report, 'the report of the sorting has: %s' % line)
     check(u'models/humans/male/group01/normal' not in report, 'a file that Z-City names itself is not asked for')
-    check(u': 15\n' in text and sort_content.ASIDE + u' (' in text, 'the screen tells how many files were moved: %r' % text[-900:])
+    check(u': 17\n' in text and sort_content.ASIDE + u' (' in text, 'the screen tells how many files were moved: %r' % text[-900:])
+    check(u'\u0432 models: 2' in text and u'\u0432 materials: 2' in text,
+          '... and how many of them lay below the wrong one of the two folders: %r' % text[-900:])
 
     # once more: nothing left to do
     code, text = sort('--addon', addon)
@@ -1638,7 +1650,7 @@ def test_namesakes_of_a_pack(tmp):
     taken = [inner for inner, dests in where.items() if 'materials/zcity_drill/sheet_16.vmt' in dests]
     check(not taken and 'materials/zcity_drill/sheet_16.vmt' in report.missing_named,
           'two different namesakes, each packed with files of the pack: none of the two is taken: %s' % taken)
-    check(kinds(report) == ['several files', 'version']
+    check(kinds(report) == ['several files', 'version here']
           and any(note.kind == 'several files' and 'materials/zcity_drill/sheet_16.vmt' in note for note in report.notes),
           'and that is told: %s' % report.notes)
 
@@ -2578,6 +2590,496 @@ def test_missing_by_pack(tmp):
     check(again not in text, '(no reminder when something was handed over): %r' % text[-500:])
 
 
+# ---- folders thrown in the way they were collected: materials1, models2 ... ---------------------
+THROWN_LUA = '''
+    hg.Appearance.FacemapsSlots["a"] = {["Face 2"] = "models/humans/modern/male/male_02/facemap_02",
+                                        ["Face 3"] = "models/humans/modern/male/male_03/facemap_03",
+                                        ["Face 4"] = "models/humans/modern/male/male_04/facemap_04"}
+    hg.Appearance.Clothes[1].epl = "models/gate/epl"
+    AppAddModel("Male 10", "models/slav/m/male_10.mdl", false, {})
+    -- a folder of the game that is called like a numbered one
+    hg.Appearance.Clothes[1].odd = "models/pack/materials2/odd"
+'''
+# the ways of throwing them at the addon: where a folder ends up, below the addon (None: handed to the tool)
+THROWN = collections.OrderedDict([
+    ('each into its folder', lambda root: ('materials/' if root.startswith('materials') else 'models/') + root),
+    ('all into materials', lambda root: 'materials/' + root),
+    ('all into models', lambda root: 'models/' + root),
+    ('in a folder of their own', lambda root: u'materials/\u043c\u043e\u044f \u043f\u0430\u043f\u043a\u0430/' + root),
+    ('beside materials and models', lambda root: root),
+    ('handed to the tool', None),
+])
+
+
+def thrown_roots():
+    """what an owner collects: the materials and models folders of the addons he needs, each
+    under a name of its own - {folder: {path below it: content}}"""
+    face2, face3 = 'models/humans/modern/male/male_02/facemap_02', 'models/humans/modern/male/male_03/facemap_03'
+    return collections.OrderedDict([
+        ('materials', {      # one of them is simply called materials
+            'models/gate/epl.vmt': material('models/gate/epl'),
+            'models/gate/epl.vtf': texture('epl'),
+            # nothing names these: materials in one folder, their texture in another, a picture
+            'vgui/pack/icon.vmt': material('vgui/pack/tex/icon'),
+            'vgui/pack/tex/icon.vtf': texture('icon'),
+            'vgui/pack/logo.png': b'png of the pack',
+        }),
+        ('materials1', {     # the faces - the pack that came apart from the rest
+            face2 + '.vmt': material(face2),
+            face2 + '.vtf': texture('face 2'),
+            'models/humans/modern/male/male_02/eyes.vmt': material('models/humans/modern/shared/eyes_d'),
+            'models/humans/modern/shared/eyes_d.vtf': texture('eyes'),
+            'Models/Humans/Modern/Male/Male_02/Brow.VTF': texture('brow'),
+            'readme.txt': b'faces by somebody',        # right in the numbered folder
+        }),
+        ('materials2', {
+            face3 + '.vmt': material(face3),
+            face3 + '.vtf': texture('face 3'),
+            'models/humans/slav/hair.vmt': material('models/humans/slav/hair'),
+            'models/humans/slav/hair.vtf': texture('hair'),
+            'models/props/crate_skin.vmt': material('models/props/crate_skin'),
+            'models/props/crate_skin.vtf': texture('crate skin'),
+        }),
+        ('models1', {
+            'slav/m/male_10.mdl': model(['models/humans/slav'], ['hair'], 'slav/m/male_10.mdl'),
+            'slav/m/male_10.vvd': b'vvd of male_10',
+            'slav/m/male_10.dx90.vtx': b'vtx of male_10',
+        }),
+        ('models2', {        # a model nothing names, with nothing but its file name inside
+            'props/crate.mdl': model(['models/props'], ['crate_skin'], 'crate.mdl'),
+            'props/crate.vvd': b'vvd of the crate',
+            'props/crate.phy': b'phy of the crate',
+            'props/readme.txt': b'a crate',
+        }),
+    ])
+
+
+def thrown(addon, how, outside=None):
+    """An addon, and the folders of its owner thrown at it the way `how` says (a key of THROWN).
+    Returns ({path in the addon: content} as it has to be after the sorting, what to hand to the tool)."""
+    base = {
+        'addon.json': b'{}',
+        'lua/autorun/faces.lua': THROWN_LUA.encode('utf-8'),
+        'materials/put_materials_here.txt': b'note',
+        # a folder the Lua names files in, called like a numbered one: it is what its path says
+        'materials/models/pack/materials2/odd.vmt': material('models/pack/materials2/odd').encode('utf-8'),
+        'materials/models/pack/materials2/odd.vtf': texture('odd'),
+        'materials/models/pack/materials2/sub/more.vtf': texture('more'),
+    }
+    for rel, data in base.items():
+        write(os.path.join(addon, rel), data)
+    # (the list of names the build leaves beside the tool: here the text of the Lua shows them all)
+    listed = os.path.join(os.path.dirname(addon), 'names.txt')
+    lua = {'autorun/faces.lua': THROWN_LUA}
+    list_content.write_run_list(listed, sorted(list_content.names_in(THROWN_LUA)), lua)
+    want = dict(base)
+    where = THROWN[how]
+    for root, files in thrown_roots().items():
+        top = 'materials' if root.startswith('materials') else 'models'
+        for rel, data in files.items():
+            data = data if isinstance(data, bytes) else data.encode('utf-8')
+            write(os.path.join(outside, root, rel) if where is None else os.path.join(addon, where(root), rel), data)
+            if '/' in rel:
+                want[top + '/' + rel.lower()] = data
+            elif where is not None:
+                # a note right in a numbered folder: it has no place, and does not keep the folder there
+                want['%s/%s/%s' % (sort_content.ASIDE, where(root), rel)] = data
+    return want, ['--names-list', listed] + ([outside] if where is None else [])
+
+
+def test_thrown_in_folders(tmp):
+    """The owner collects whole folders - the materials folder of one addon, of the next one ... as
+    materials1, materials2, models1 - and throws them into the materials folder of the addon, into
+    the models folder, into both, or beside them. Every file has to end up where the game looks."""
+    # ---- which folders are numbered copies
+    for name, top in (('materials1', 'materials'), ('Materials8', 'materials'), ('models4', 'models'),
+                      ('materials0000', 'materials'), ('materials 2', 'materials'), ('materials_3', 'materials'),
+                      ('materials-4', 'materials'), ('materials (6)', 'materials'), ('models(7)', 'models'),
+                      ('2 models', 'models'), ('10materials', 'materials'), ('material 1', 'materials'),
+                      ('model (3)', 'models'),
+                      ('materials', None), ('models', None), ('material1', None), ('model2', None), ('material_1', None),
+                      ('models_kit', None), ('materials_old', None), (u'materials - \u043a\u043e\u043f\u0438\u044f', None), ('modelsets', None),
+                      ('v_models', None), ('materials3x', None), ('group01', None), ('male_02', None)):
+        check(L.numbered_root(name) == top, 'numbered_root(%r) is %r, not %r' % (name, top, L.numbered_root(name)))
+
+    # ---- how the folders of a file are read: (path, the reading, the reading with a mirrored place)
+    same = object()
+    for path, want, mirrored in (
+            ('materials/models/a/x.vmt', 'materials/models/a/x.vmt', same),
+            ('materials/materials3/models/a/x.vmt', 'materials/models/a/x.vmt', same),
+            ('materials/Materials 3/Models/A/X.VMT', 'materials/models/a/x.vmt', same),
+            ('materials/materials/models/a/x.vmt', 'materials/models/a/x.vmt', same),
+            ('materials/my pack/materials/models/a/x.vmt', 'materials/models/a/x.vmt', same),
+            ('materials/my pack/materials3/a/x.vtf', 'materials/a/x.vtf', same),
+            ('materials/materials0000/materials 2/models/a/x.vmt', 'materials/models/a/x.vmt', same),
+            ('materials/materials3/materials/a/x.vmt', 'materials/a/x.vmt', same),
+            ('materials/materials3/vgui/models/x.vmt', 'materials/vgui/models/x.vmt', same),
+            ('materials/materials3/effects/x.vmt', 'materials/effects/x.vmt', same),
+            ('materials/materials5/vgui/pack/logo.png', 'materials/vgui/pack/logo.png', same),
+            ('materials/materials6/models/humans/readme.txt', 'materials/models/humans/readme.txt', same),
+            ('materials1/models/a/x.vmt', 'materials/models/a/x.vmt', same),
+            ('materials1/a/x.vmt', 'materials/a/x.vmt', same),
+            ('my folder/materials3/a/x.vmt', 'materials/a/x.vmt', same),
+            # a file right in a numbered folder is a file of a heap: its folders say nothing
+            ('materials/materials3/x.vmt', 'materials/materials3/x.vmt', same),
+            ('materials/materials0000/materials 2/x.vmt', 'materials/materials0000/materials 2/x.vmt', same),
+            ('materials1/x.vmt', None, same),
+            ('models/models1/x.mdl', 'models/models1/x.mdl', same),
+            # folders of the game that only look alike
+            ('materials/vgui/models/x.vmt', 'materials/vgui/models/x.vmt', same),
+            ('materials/spawnicons/models/a/b.png', 'materials/spawnicons/models/a/b.png', same),
+            ('models/props/models_kit/xmas/x.mdl', 'models/props/models_kit/xmas/x.mdl', same),
+            # the files of a model belong below models/
+            ('models/zcity/m/x.mdl', 'models/zcity/m/x.mdl', same),
+            ('models/models1/zcity/m/x.mdl', 'models/zcity/m/x.mdl', same),
+            ('models/models/zcity/m/x.mdl', 'models/zcity/m/x.mdl', same),
+            ('models/models 2/zcity/m/x.phy', 'models/zcity/m/x.phy', same),
+            ('models/my pack/models3/zcity/m/x.dx90.vtx', 'models/zcity/m/x.dx90.vtx', same),
+            ('materials/models1/zcity/m/x.mdl', 'models/zcity/m/x.mdl', same),
+            ('materials/models/zcity/m/x.vvd', 'models/zcity/m/x.vvd', same),
+            ('materials/materials3/models/zcity/m/x.mdl', 'models/zcity/m/x.mdl', same),
+            ('my folder/models1/zcity/m/x.mdl', 'models/zcity/m/x.mdl', same),
+            ('materials/zcity/m/x.mdl', None, 'models/zcity/m/x.mdl'),
+            ('materials/materials3/zcity/m/x.mdl', None, 'models/zcity/m/x.mdl'),
+            ('materials/x.mdl', None, 'models/x.mdl'),
+            # ... materials and textures below materials/
+            ('models/humans/x.vmt', 'materials/models/humans/x.vmt', same),
+            ('models/models/humans/x.vmt', 'materials/models/humans/x.vmt', same),
+            ('models/models1/humans/x.vtf', 'materials/models/humans/x.vtf', same),
+            ('models/materials1/vgui/x.vmt', 'materials/vgui/x.vmt', same),
+            ('models/materials/vgui/x.vmt', 'materials/vgui/x.vmt', same),
+            ('models/models1/humans/readme.txt', 'models/humans/readme.txt', same),
+            # what is not content keeps the reading it had
+            ('my addon/lua/autorun/x.lua', 'lua/autorun/x.lua', same),
+            ('my addon/homigrad/new_appearance/x.lua', 'lua/homigrad/new_appearance/x.lua', same),
+            ('my addon/addon.json', None, same),
+            ('gate/x.vmt', None, same)):
+        got = L.merged_destination(path)
+        check(got == want, 'merged_destination(%r) is %r, not %r' % (path, want, got))
+        got = L.merged_destination(path, mirror=True)
+        check(got == (want if mirrored is same else mirrored),
+              'merged_destination(%r, mirror=True) is %r, not %r' % (path, want if mirrored is same else mirrored, got))
+    real = sort_content.real_folders(['materials/models/weapons/materials2/a.vmt', 'models/models/b.mdl'])
+    check(real == {'materials', 'materials/models', 'materials/models/weapons', 'materials/models/weapons/materials2',
+                   'models', 'models/models'}, 'real_folders(): %s' % sorted(real))
+    for path, want in (('materials/models/weapons/materials2/sub/x.vmt', 'materials/models/weapons/materials2/sub/x.vmt'),
+                       ('models/models/zcity/x.mdl', 'models/models/zcity/x.mdl'),
+                       # (what is known of a folder of materials says nothing of a model in it)
+                       ('materials/models/zcity/x.mdl', 'models/zcity/x.mdl'),
+                       ('models/models/zcity/x.vmt', 'materials/models/zcity/x.vmt'),
+                       ('materials/materials3/models/a/x.vmt', 'materials/models/a/x.vmt')):
+        check(L.merged_destination(path, real) == want,
+              'a folder the game is known to have is what its path says: %r -> %r' % (path, L.merged_destination(path, real)))
+    # (every path of the Lua archives of the repository: read as before)
+    odd = [name for name in sorted(named_by_the_lua() | list_content.stock_names())
+           if any(L.numbered_root(part) for part in name.split('/')[:-1])]
+    check(not odd, 'no folder the Lua of the repository or Z-City names is called like a numbered one: %s' % odd[:3])
+
+    # ---- the placing: names first, the reading of the folders when nothing else is known
+    def items_of(root, files, order=1, source='zcity_csgo_gloves'):
+        out = []
+        for inner, data in sorted(files.items()):
+            full = os.path.join(root, inner)
+            write(full, data)
+            out.append(P.Item(source, inner, full, L.dropin_destination(inner), order,
+                              L.merged_destination(inner), L.merged_destination(inner, mirror=True)))
+        return out
+
+    def placing(label, files, named=(), order=None, spare=()):
+        items = items_of(os.path.join(tmp, 'thrown ' + label), files)
+        for item in items:
+            item.order = (order or (lambda inner: 1))(item.inner)
+        report = P.place(items, set(named), lambda path: False, set(spare))
+        went = collections.defaultdict(list)
+        for dest, item in report.placed:
+            went[item.inner].append(dest)
+        left = dict((item.inner, why) for item, why in report.left_out)
+        return report, dict((inner, sorted(dests)) for inner, dests in went.items()), left
+
+    face = 'models/humans/modern/male/male_02/facemap_02'
+    report, went, left = placing('a tree', {
+        'materials/materials1/%s.vmt' % face: material(face),
+        'materials/materials1/%s.vtf' % face: texture('face'),
+        'materials/materials1/vgui/pack/icon.vmt': material('vgui/pack/tex/icon'),
+        'materials/materials1/vgui/pack/tex/icon.vtf': texture('icon'),
+        'materials/materials1/effects/pack/loose.vtf': texture('loose'),
+        'materials/materials1/mystery.vtf': texture('mystery'),
+    }, ['materials/%s.vmt' % face])
+    check(went.get('materials/materials1/%s.vmt' % face) == ['materials/%s.vmt' % face], 'a numbered folder: a named file goes to its name')
+    check(went.get('materials/materials1/vgui/pack/icon.vmt') == ['materials/vgui/pack/icon.vmt']
+          and went.get('materials/materials1/effects/pack/loose.vtf') == ['materials/effects/pack/loose.vtf'],
+          'a numbered folder: a file nothing names goes where it lies below that folder: %s'
+          % ([went.get('materials/materials1/vgui/pack/icon.vmt'), went.get('materials/materials1/effects/pack/loose.vtf')],))
+    check(went.get('materials/materials1/mystery.vtf') == ['materials/materials1/mystery.vtf']
+          and [item.inner for item in report.as_packed] == ['materials/materials1/mystery.vtf'],
+          'a file right in a numbered folder, of which nothing is known, stays and is called unknown: %s'
+          % [item.inner for item in report.as_packed])
+    check(not report.notes and not report.left_out, 'nothing to remark: %s %s' % (report.notes, report.left_out))
+
+    # two numbered folders with a file for one place: the later one has it, numbers read as numbers
+    report, went, left = placing('twice', {
+        'materials/materials2/models/x/cloth.vmt': material('models/x/cloth_a'),
+        'materials/materials10/models/x/cloth.vmt': material('models/x/cloth_b'),
+        'materials/materials2/models/x/same.vtf': texture('same'),
+        'materials/materials10/models/x/same.vtf': texture('same'),
+    })
+    check(went.get('materials/materials10/models/x/cloth.vmt') == ['materials/models/x/cloth.vmt']
+          and left.get('materials/materials2/models/x/cloth.vmt') == P.PLACE_TAKEN,
+          'of two numbered folders the later one has the place (10 after 2): %s %s' % (went, left))
+    check([note.kind for note in report.notes] == ['version here'] and report.notes[0].args ==
+          ('materials/models/x/cloth.vmt', 'materials/materials2/models/x/cloth.vmt', 'materials/materials10/models/x/cloth.vmt'),
+          'and the two files are named: %s' % report.notes)
+    check(sorted(left.items()) == [('materials/materials2/models/x/cloth.vmt', P.PLACE_TAKEN),
+                                   ('materials/materials2/models/x/same.vtf', P.COPY)],
+          'the same file twice is a copy, and no remark is made of it: %s' % sorted(left.items()))
+    check(P.natural('materials10/a') > P.natural('materials2/a') and P.natural('a2') < P.natural('a10') and P.natural('b') > P.natural('a10'),
+          'natural(): numbers are read as numbers')
+
+    # a file that lies at its place keeps it
+    report, went, left = placing('in place', {
+        'materials/models/x/cloth.vmt': material('models/x/in_place'),
+        'materials/materials9/models/x/cloth.vmt': material('models/x/thrown_in'),
+    }, order=lambda inner: 1 if 'materials9' in inner else 2)
+    check(went.get('materials/models/x/cloth.vmt') == ['materials/models/x/cloth.vmt']
+          and left == {'materials/materials9/models/x/cloth.vmt': P.PLACE_TAKEN}
+          and [note.kind for note in report.notes] == ['version here'],
+          'a file that lies at its place is not pushed out by one of a numbered folder: %s %s' % (went, left))
+
+    # models: the whole model moves; one that loses its place does not leave files with the other
+    report, went, left = placing('models', {
+        'models/models1/props/crate.mdl': model([], [], 'crate.mdl'),
+        'models/models1/props/crate.vvd': b'vvd 1',
+        'models/models1/props/crate.dx90.vtx': b'vtx 1',
+        'models/models2/props/crate.mdl': model(['x'], [], 'crate.mdl'),
+        'models/models2/props/crate.vvd': b'vvd 2',
+        'models/models2/props/crate.phy': b'phy 2',
+        'models/models3/props/alone.mdl': model([], [], 'alone.mdl'),
+        'models/models3/props/alone.vvd': b'vvd of alone',
+    })
+    check(all(went.get('models/models2/props/crate' + ext) == ['models/props/crate' + ext] for ext in ('.mdl', '.vvd', '.phy'))
+          and went.get('models/models3/props/alone.mdl') == ['models/props/alone.mdl']
+          and went.get('models/models3/props/alone.vvd') == ['models/props/alone.vvd'],
+          'a model of a numbered folder moves with its files: %s' % went)
+    check(left == {'models/models1/props/crate.mdl': P.PLACE_TAKEN, 'models/models1/props/crate.vvd': P.ORPHAN,
+                   'models/models1/props/crate.dx90.vtx': P.ORPHAN},
+          'the files of a model that lost its place are not put to the other model: %s' % left)
+    # the same model once more - thrown in again, when it is sorted already: copies, all of its files
+    crate = model(['x'], [], 'crate.mdl')
+    report, went, left = placing('a model again', {
+        'models/props/crate.mdl': crate, 'models/props/crate.vvd': b'vvd', 'models/props/crate.phy': b'phy',
+        'models/models7/props/crate.mdl': crate, 'models/models7/props/crate.vvd': b'vvd', 'models/models7/props/crate.phy': b'phy',
+    }, order=lambda inner: 1 if 'models7' in inner else 2)
+    check(left == dict(('models/models7/props/crate' + ext, P.COPY) for ext in ('.mdl', '.vvd', '.phy')) and not report.notes
+          and all(went.get('models/props/crate' + ext) == ['models/props/crate' + ext] for ext in ('.mdl', '.vvd', '.phy')),
+          'a model that is in place already, thrown in once more: a copy with all its files, and no remark: %s %s' % (left, report.notes))
+    # ... the same model with a file the one in place lacks: that file belongs to it as well
+    report, went, left = placing('a model completed', {
+        'models/props/crate.mdl': crate, 'models/props/crate.vvd': b'vvd',
+        'models/models7/props/crate.mdl': crate, 'models/models7/props/crate.vvd': b'vvd', 'models/models7/props/crate.phy': b'phy',
+    }, order=lambda inner: 1 if 'models7' in inner else 2)
+    check(went.get('models/models7/props/crate.phy') == ['models/props/crate.phy']
+          and left == {'models/models7/props/crate.mdl': P.COPY, 'models/models7/props/crate.vvd': P.COPY} and not report.notes,
+          'the same model once more, with a file the one in place lacks: that file is put to it: %s %s' % (went, left))
+
+    # A model of the version that is NOT in the addon (models/slav/... here), sorted to its place by
+    # an earlier run - and its folder thrown in once more, under a number: the one in place stays,
+    # the copy is a copy, another model for that place is put aside whole. And none of them is
+    # taken by its file name for the namesake the Lua of the addon names (models/zcity/...).
+    theirs = model([], [], 'slav/m/male_10.mdl')
+    report, went, left = placing('the other version again', {
+        'models/slav/m/male_10.mdl': theirs, 'models/slav/m/male_10.vvd': b'vvd',
+        'models/models1/slav/m/male_10.mdl': theirs, 'models/models1/slav/m/male_10.vvd': b'vvd',
+        'models/models1/slav/m/male_10.phy': b'phy',
+        'models/models2/slav/m/male_10.mdl': model(['x'], [], 'male_10.mdl'), 'models/models2/slav/m/male_10.vvd': b'vvd 2',
+    }, named=['models/zcity/m/male_10.mdl'], spare=['models/slav/m/male_10.mdl'],
+        order=lambda inner: 2 if inner.startswith('models/slav/') else 1)
+    check(went.get('models/slav/m/male_10.mdl') == ['models/slav/m/male_10.mdl']
+          and went.get('models/slav/m/male_10.vvd') == ['models/slav/m/male_10.vvd'],
+          'a file that lies at a place of the other version is not pushed out by a copy of it in a numbered folder: %s' % went)
+    check(left == {'models/models1/slav/m/male_10.mdl': P.COPY, 'models/models1/slav/m/male_10.vvd': P.COPY,
+                   'models/models2/slav/m/male_10.mdl': P.PLACE_TAKEN, 'models/models2/slav/m/male_10.vvd': P.ORPHAN}
+          and went.get('models/models1/slav/m/male_10.phy') == ['models/slav/m/male_10.phy'],
+          '... the copy is a copy, another model for that place is put aside whole: %s' % left)
+    check([note.kind for note in report.notes] == ['version here'] and report.notes[0].args ==
+          ('models/slav/m/male_10.mdl', 'models/models2/slav/m/male_10.mdl', 'models/slav/m/male_10.mdl'),
+          '... and the two models for one place are named: %s' % report.notes)
+    check(report.missing_named == ['models/zcity/m/male_10.mdl'] and sorted(dest for dest, _item in report.spare) == ['models/slav/m/male_10.mdl'],
+          '... and none of them is taken by its file name for the model the addon names: %s' % sorted(dest for dest, _item in report.placed))
+    # (materials alike: the one that lies there stays, whatever the numbered folder brings)
+    report, went, left = placing('the other version, materials', {
+        'materials/models/humans/slav/mossman/mossman_face.vmt': material('models/humans/slav/mossman/in_place'),
+        'materials/materials1/models/humans/slav/mossman/mossman_face.vmt': material('models/humans/slav/mossman/thrown_in'),
+    }, named=['materials/models/mossman/mossman_face.vmt'], spare=['materials/models/humans/slav/mossman/mossman_face.vmt'],
+        order=lambda inner: 1 if 'materials1' in inner else 2)
+    check(went == {'materials/models/humans/slav/mossman/mossman_face.vmt': ['materials/models/humans/slav/mossman/mossman_face.vmt']}
+          and left == {'materials/materials1/models/humans/slav/mossman/mossman_face.vmt': P.PLACE_TAKEN}
+          and [note.kind for note in report.notes] == ['version here'] and report.missing_named == ['materials/models/mossman/mossman_face.vmt'],
+          'a material that lies at a place of the other version stays, the one of the numbered folder is put aside: %s %s' % (went, left))
+
+    # a model below materials/: by a models folder above it; else it goes where its files went,
+    # else to the same path below models/ - the last thing to go by
+    report, went, left = placing('among materials', {
+        'materials/models3/props/barrel.mdl': model([], [], 'barrel.mdl'),
+        'materials/models3/props/barrel.vvd': b'vvd',
+        'materials/models/props/box.mdl': model([], [], 'box.mdl'),
+        'materials/loose/thing.mdl': model([], [], 'thing.mdl'),
+        'materials/loose/thing.vvd': b'vvd of the thing',
+        'materials/packed/says.mdl': model([], [], 'said/so/says.mdl'),
+    })
+    check(went.get('materials/models3/props/barrel.mdl') == ['models/props/barrel.mdl']
+          and went.get('materials/models3/props/barrel.vvd') == ['models/props/barrel.vvd']
+          and went.get('materials/models/props/box.mdl') == ['models/props/box.mdl'],
+          'a model below materials/ with a models folder above it goes below models/: %s' % went)
+    check(went.get('materials/loose/thing.mdl') == ['models/loose/thing.mdl']
+          and went.get('materials/loose/thing.vvd') == ['models/loose/thing.vvd'],
+          '... without one it gets the same path below models/, with its files: %s' % went)
+    check(went.get('materials/packed/says.mdl') == ['models/said/so/says.mdl'],
+          '... but a model that says where it belongs goes there: %s' % went.get('materials/packed/says.mdl'))
+    check(not left and not report.notes, 'none of them is left out: %s %s' % (left, report.notes))
+
+    # (an Item made the old way - nothing but where its folders put it - is placed as before)
+    report, went, left = placing('as before', {'materials/materials1/vgui/pack/icon.vtf': texture('icon')})
+    old = P.Item('zcity_csgo_gloves', 'materials/materials1/vgui/pack/icon.vtf',
+                 os.path.join(tmp, 'thrown as before', 'materials/materials1/vgui/pack/icon.vtf'),
+                 'materials/materials1/vgui/pack/icon.vtf', 1)
+    check(dict(P.place([old], set(), lambda path: False).placed).get('materials/materials1/vgui/pack/icon.vtf') is old
+          and went == {'materials/materials1/vgui/pack/icon.vtf': ['materials/vgui/pack/icon.vtf']},
+          'an Item without the reading of numbered folders stays where it was packed')
+
+    # ---- the build reads them the same way: a numbered folder in the repository root, or in an archive
+    repo = os.path.join(tmp, 'thrown repository')
+    for rel, data in (('materials3/vgui/pack/icon.vtf', texture('icon')),
+                      ('materials3/vgui/pack/logo.png', b'png'),
+                      ('materials3/models/props/crate_skin.vmt', material('models/props/crate_skin')),
+                      ('models2/props/crate.mdl', model(['models/props'], ['crate_skin'], 'crate.mdl')),
+                      ('models2/props/crate.vvd', b'vvd'),
+                      ('my pack/materials/vgui/mine/icon.vtf', texture('mine'))):
+        write(os.path.join(repo, rel), data)
+    with zipfile.ZipFile(os.path.join(repo, 'found.zip'), 'w') as z:
+        z.writestr('materials1/vgui/zip/icon.vtf', texture('zip'))
+        z.writestr('models1/props/zip/barrel.mdl', model([], [], 'barrel.mdl'))
+    # (and what somebody put into the folders of the addon in the repository)
+    by_hand = [('materials/materials5/vgui/hand/icon.vtf', os.path.join(tmp, 'thrown by hand', 'icon.vtf')),
+               ('materials/models4/props/hand/can.mdl', os.path.join(tmp, 'thrown by hand', 'can.mdl'))]
+    write(by_hand[0][1], texture('hand'))
+    write(by_hand[1][1], model([], [], 'can.mdl'))
+    out = os.path.join(tmp, 'thrown built')
+    real = build_addon.HERE
+    build_addon.HERE = repo
+    try:
+        _sources, result, _named, _ran = build_addon.step_dropins(None, os.path.join(tmp, 'thrown unpacked'), out, by_hand)
+    finally:
+        build_addon.HERE = real
+    got = sorted(tree(out))
+    check(got == ['materials/models/props/crate_skin.vmt', 'materials/vgui/hand/icon.vtf', 'materials/vgui/mine/icon.vtf',
+                  'materials/vgui/pack/icon.vtf', 'materials/vgui/pack/logo.png', 'materials/vgui/zip/icon.vtf',
+                  'models/props/crate.mdl', 'models/props/crate.vvd', 'models/props/hand/can.mdl',
+                  'models/props/zip/barrel.mdl'] and not result.left_out,
+          'the build reads a numbered folder - of the repository root, inside an archive, in the folders of the addon - '
+          'as a copy of materials / models: %s' % got)
+
+    # ---- the tool, every way of throwing the folders at the addon
+    for number, how in enumerate(THROWN):
+        addon = os.path.join(tmp, 'thrown %d' % number, 'addons', 'zcity_csgo_gloves')
+        outside = os.path.join(tmp, 'thrown %d' % number, u'\u043d\u0430\u0448\u0451\u043b \u043a\u043e\u043d\u0442\u0435\u043d\u0442')
+        want, handed = thrown(addon, how, outside)
+        code, text = sort('--addon', addon, *handed)
+        got = tree(addon)
+        got.pop(sort_content.REPORT, None)
+        check(code == 0 and sorted(got) == sorted(want), 'folders thrown in, %s: every file is where the game looks; only in '
+              'one of the two: %s' % (how, sorted(set(got) ^ set(want))))
+        check(got == want, 'folders thrown in, %s: no file was changed, lost or made up' % how)
+        left = sorted(set(base.replace(os.sep, '/')[len(addon) + 1:] for base, dirs, _files in os.walk(addon) for name in dirs
+                          if L.numbered_root(name) and not base[len(addon) + 1:].startswith(sort_content.ASIDE)
+                          and 'pack' not in base.replace(os.sep, '/').split('/')))
+        check(not left, 'folders thrown in, %s: the numbered folders are gone: %s' % (how, left))
+        check(u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415' not in text, 'folders thrown in, %s: nothing to warn of: %r' % (how, text[:900]))
+        check((u'\u041f\u0430\u043f\u043a\u0438-\u043a\u043e\u043f\u0438\u0438 materials \u0438 models' in text) == (THROWN[how] is not None),
+              'folders thrown in, %s: the screen tells of the numbered folders: %r' % (how, text[-1500:]))
+        check((u'\u0440\u044f\u0434\u043e\u043c \u0441 materials \u0438 models' in text) == (how == 'beside materials and models'),
+              'folders thrown in, %s: ... and of those that lie beside the two' % how)
+        check(u'\u043d\u0430\u0437\u0432\u0430\u043d\u043d\u044b\u0445 \u0432 Lua: 1 \u0438\u0437 6' in text, 'folders thrown in, %s: one face is still missing, and that is told: %r' % (how, text[-900:]))
+        code, text = sort('--addon', addon, *handed)
+        again = tree(addon)
+        again.pop(sort_content.REPORT, None)
+        check(code == 0 and again == want and u'\u043f\u0435\u0440\u0435\u043c\u0435\u0449\u0435\u043d\u043e \u0432\u043d\u0443\u0442\u0440\u0438 \u0430\u0434\u0434\u043e\u043d\u0430: 0' in text and u'\u0441\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u043e \u0432 \u0430\u0434\u0434\u043e\u043d: 0' in text,
+              'folders thrown in, %s: a second run changes nothing' % how)
+
+    # ---- a trial run tells it and moves nothing
+    addon = os.path.join(tmp, 'thrown trial', 'zcity_csgo_gloves')
+    _want, handed = thrown(addon, 'each into its folder')
+    before = tree(addon)
+    code, text = sort('--addon', addon, '--dry-run', *handed)
+    after = tree(addon)
+    after.pop(sort_content.REPORT, None)
+    check(code == 0 and after == before and u'\u0431\u0443\u0434\u0435\u0442 \u043f\u0435\u0440\u0435\u043b\u043e\u0436\u0435\u043d\u043e \u043d\u0430 \u043c\u0435\u0441\u0442\u0430: ' in text, 'folders thrown in, a trial run: nothing is moved: %r' % text[-1500:])
+
+    # ---- two folders with files for one place; a heap; a note
+    addon = os.path.join(tmp, 'thrown twice', 'zcity_csgo_gloves')
+    files = {
+        'lua/autorun/faces.lua': THROWN_LUA,
+        'materials/models/x/keep.vmt': material('models/x/keep'),                      # lies right
+        'materials/materials3/models/x/keep.vmt': material('models/x/another'),
+        'materials/materials2/models/x/cloth.vmt': material('models/x/cloth_a'),
+        'materials/materials10/models/x/cloth.vmt': material('models/x/cloth_b'),
+        'materials/materials2/models/x/same.vtf': texture('same'),
+        'materials/materials10/models/x/same.vtf': texture('same'),
+        'materials/materials2/models/x/readme.txt': 'two',
+        'materials/materials10/models/x/readme.txt': 'ten',
+        'materials/materials10/Thumbs.db': 'thumbs',
+        'materials/materials10/more faces.rar': 'an archive nobody here can open',
+        # a heap: files right in the folder - a face the Lua names, and a file nothing is known of
+        'materials/materials4/facemap_03.vmt': material('models/humans/modern/male/male_03/facemap_03'),
+        'materials/materials5/mystery.vtf': texture('mystery'),
+        'materials/materials5/notes.txt': 'a heap of mine',
+        'models/models1/props/crate.mdl': model([], [], 'crate.mdl'),
+        'models/models1/props/crate.dx90.vtx': b'vtx 1',
+        'models/models2/props/crate.mdl': model(['x'], [], 'crate.mdl'),
+        'models/models2/props/crate.phy': b'phy 2',
+    }
+    for rel, data in files.items():
+        write(os.path.join(addon, rel), data)
+    code, text = sort('--addon', addon)
+    got = tree(addon)
+    report = got.pop(sort_content.REPORT, b'').decode('utf-8-sig')
+    aside = sort_content.ASIDE + '/'
+    check(code == 0 and sorted(got) == sorted([
+        'lua/autorun/faces.lua', 'materials/models/x/keep.vmt', aside + 'materials/materials3/models/x/keep.vmt',
+        'materials/models/x/cloth.vmt', aside + 'materials/materials2/models/x/cloth.vmt',
+        'materials/models/x/same.vtf', aside + 'materials/materials2/models/x/same.vtf',
+        'materials/models/x/readme.txt', aside + 'materials/materials2/models/x/readme.txt',
+        aside + 'materials/materials10/Thumbs.db', 'materials/materials10/more faces.rar',
+        'materials/models/humans/modern/male/male_03/facemap_03.vmt',
+        'materials/materials5/mystery.vtf', 'materials/materials5/notes.txt',
+        'models/props/crate.mdl', 'models/props/crate.phy',
+        aside + 'models/models1/props/crate.mdl', aside + 'models/models1/props/crate.dx90.vtx']),
+        'two folders for one place: the later one has it, the other is put aside, a heap stays: %s' % sorted(got))
+    check(got.get('materials/models/x/keep.vmt') == material('models/x/keep').encode()
+          and got.get('materials/models/x/cloth.vmt') == material('models/x/cloth_b').encode()
+          and got.get('materials/models/x/readme.txt') == b'ten'
+          and got.get('models/props/crate.mdl') == model(['x'], [], 'crate.mdl'),
+          'the file in place stays, of two numbered folders the later one is taken - content, notes and models alike')
+    check(sorted(got.values()) == sorted(data if isinstance(data, bytes) else data.encode('utf-8') for data in files.values()),
+          'and no file is lost, changed or made up')
+    for line in (u'\u0432\u0437\u044f\u0442 \u0432\u0442\u043e\u0440\u043e\u0439 (\u0438\u0437 \u043f\u0430\u043f\u043a\u0438, \u043a\u043e\u0442\u043e\u0440\u0430\u044f \u043f\u043e\u0437\u0436\u0435 \u043f\u043e \u0438\u043c\u0435\u043d\u0438, \u0438\u043b\u0438 \u0442\u043e\u0442, \u0447\u0442\u043e \u0443\u0436\u0435 \u043b\u0435\u0436\u0430\u043b \u043d\u0430 \u043c\u0435\u0441\u0442\u0435), \u043f\u0435\u0440\u0432\u044b\u0439 \u0443\u0431\u0440\u0430\u043d',
+                 u'\u00abmaterials/materials2/models/x/cloth.vmt\u00bb \u0438 \u00abmaterials/materials10/models/x/cloth.vmt\u00bb',
+                 u'\u0442\u043e\u0447\u043d\u0430\u044f \u043a\u043e\u043f\u0438\u044f \u0444\u0430\u0439\u043b\u0430, \u043a\u043e\u0442\u043e\u0440\u044b\u0439 \u043b\u0435\u0436\u0438\u0442 \u043d\u0430 \u044d\u0442\u043e\u043c \u043c\u0435\u0441\u0442\u0435',
+                 u'\u0444\u0430\u0439\u043b \u043c\u043e\u0434\u0435\u043b\u0438, \u043c\u0435\u0441\u0442\u043e \u043a\u043e\u0442\u043e\u0440\u043e\u0439 \u0437\u0430\u043d\u044f\u0442\u043e \u0434\u0440\u0443\u0433\u043e\u0439 \u043c\u043e\u0434\u0435\u043b\u044c\u044e',
+                 u'    materials/materials5/    \u0444\u0430\u0439\u043b\u043e\u0432: 2, \u043d\u0430 \u043c\u0435\u0441\u0442\u0430: 0, \u0432 %s: 0, \u043e\u0441\u0442\u0430\u043b\u043e\u0441\u044c: 2' % sort_content.ASIDE,
+                 u'    materials/materials10/    \u0444\u0430\u0439\u043b\u043e\u0432: 4, \u043d\u0430 \u043c\u0435\u0441\u0442\u0430: 3, \u0432 %s: 1, \u043e\u0441\u0442\u0430\u043b\u043e\u0441\u044c: 0' % sort_content.ASIDE):
+        check(line in report, 'the report of it has: %s' % line)
+    check(u'\u041e\u0441\u0442\u0430\u043b\u0438\u0441\u044c \u0444\u0430\u0439\u043b\u044b, \u043a\u043e\u0442\u043e\u0440\u044b\u0435 \u043b\u0435\u0436\u0430\u0442 \u043f\u0440\u044f\u043c\u043e \u0432 \u0442\u0430\u043a\u043e\u0439 \u043f\u0430\u043f\u043a\u0435' in text and u'\u043e\u0441\u0442\u0430\u043b\u043e\u0441\u044c: 2' in text,
+          'the screen tells that files of a heap stayed: %r' % text[-1500:])
+    check(u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415: \u0432 \u043f\u0430\u043f\u043a\u0430\u0445 materials \u0438 models \u0430\u0434\u0434\u043e\u043d\u0430 \u043b\u0435\u0436\u0430\u0442 \u0430\u0440\u0445\u0438\u0432\u044b \u2014 1 (materials/materials10/more faces.rar)' in text,
+          'an archive among the content is not opened, stays where it is, and that is told: %r' % text[:1500])
+    check(u'\u0420\u0430\u0437\u043d\u044b\u0445 \u0444\u0430\u0439\u043b\u043e\u0432 \u043d\u0430 \u043e\u0434\u043d\u043e \u0438 \u0442\u043e \u0436\u0435 \u043c\u0435\u0441\u0442\u043e: \u043f\u0430\u0440 \u2014 3.' in text and u'\u0442\u043e\u0447\u043d\u044b\u0445 \u043a\u043e\u043f\u0438\u0439 \u0444\u0430\u0439\u043b\u043e\u0432, \u043a\u043e\u0442\u043e\u0440\u044b\u0435 \u0443\u0436\u0435 \u043b\u0435\u0436\u0430\u0442 \u043d\u0430 \u0441\u0432\u043e\u0438\u0445 \u043c\u0435\u0441\u0442\u0430\u0445: 1 ' in text,
+          'the screen tells of the files that had one place, and of the copies: %r' % text[-1500:])
+    code, text = sort('--addon', addon)
+    again = tree(addon)
+    again.pop(sort_content.REPORT, None)
+    check(code == 0 and again == got, 'and a second run changes nothing')
+
+
 def main():
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, 'reconfigure'):
@@ -2604,6 +3106,7 @@ def main():
         test_the_build_takes_lua(tmp)
         test_versions_of_a_pack(tmp)
         test_numbered_folders_of_the_owner(tmp)
+        test_thrown_in_folders(tmp)
         test_random_packings(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

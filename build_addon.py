@@ -415,11 +415,20 @@ def step_dropins(extractor, temp, out, by_hand=()):
         left_out, notes, no_place, mine = 0, [], [], []
         for inner, full in files:
             title = titles[inner]
+            # (a folder of the repository root may itself be a numbered copy of materials/ or
+            # models/ - "materials3": its name belongs to the path then)
+            seen = name + '/' + inner if kind == 'folder' else inner
             if place_content.kind_of(inner):
                 # (of a version that is left out: before every other source, so that it replaces nothing)
-                content.append(place_content.Item(name, inner, full, L.dropin_destination(inner), 0 if title in left else number))
+                content.append(place_content.Item(name, inner, full, L.dropin_destination(inner), 0 if title in left else number,
+                                                  L.merged_destination(seen), L.merged_destination(seen, mirror=True)))
                 continue
             dest = L.dropin_destination(inner)
+            if dest is None:
+                # a picture, a note in a numbered copy of materials/: it goes along with the content there
+                merged = L.merged_destination(seen)
+                if merged and merged.split('/', 1)[0] in ('materials', 'models'):
+                    dest = merged
             if dest is None:
                 left_out += 1
                 no_place.append(inner)
@@ -467,7 +476,8 @@ def step_dropins(extractor, temp, out, by_hand=()):
     if by_hand:
         name = L.ADDON_DIRNAME
         for inner, full in by_hand:
-            content.append(place_content.Item(name, inner, full, L.dropin_destination(inner), len(sources) + 1))
+            content.append(place_content.Item(name, inner, full, L.dropin_destination(inner), len(sources) + 1,
+                                              L.merged_destination(inner), L.merged_destination(inner, mirror=True)))
         report.append(dict(name=name, kind='folder', parts=1, counts=collections.Counter(), left_out=0, notes=[],
                            no_place=[], versions=[]))
 

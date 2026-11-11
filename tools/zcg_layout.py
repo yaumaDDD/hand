@@ -98,6 +98,26 @@ OPTIMIZED_PREFIX = "optimized_textures"
 CONTENT_ROOTS = ("lua", "materials", "models", "sound", "particles", "resource", "scripts")
 LUA_ROOTS = ("homigrad", "autorun", "initpost", "entities", "weapons", "effects")
 MATERIAL_TYPES = (".vmt", ".vtf", ".png", ".jpg", ".jpeg")
+MODEL_TYPES = (".mdl", ".vvd", ".vtx", ".phy", ".ani")
+
+# A folder that is a materials (models) folder under a name of its own, one of several:
+# "materials3", "models 2", "materials (4)", "materials_5", "2 models", "material 1". That is
+# how content gets collected - the materials folder of one addon, of the next one ... - and
+# thrown into the addon. What lies below such a folder lies below materials/ (models/).
+# (Only names nobody gives a folder of a game: a number is a must, and "model1" or "materials_old"
+# are not taken for one.)
+_NUMBERED_ROOT = re.compile(r'^(?:(materials|models)\s*[-_.]?\s*\(?\d+\)?'
+                            r'|\(?\d+\)?\s*[-_.]?\s*(materials|models)'
+                            r'|(material|model)(?:\s+\(?|\s*\()\d+\)?)$')
+
+
+def numbered_root(name):
+    """'materials' / 'models' for the name of a folder that is a numbered copy of that folder
+    ("materials3"), else None"""
+    match = _NUMBERED_ROOT.match(name.strip().lower())
+    if not match:
+        return None
+    return match.group(1) or match.group(2) or match.group(3) + 's'
 
 
 def dropin_archives(root):
@@ -171,6 +191,10 @@ def dropin_sources(root):
 _OTHER_ARCHIVE = re.compile(r'\.(rar|r\d\d|z\d\d|tar|gz|tgz|bz2|xz|zst|cab|iso|gma|vpk)$', re.I)
 
 
+# any archive at all, by its name
+ARCHIVE = re.compile(r'\.(zip|7z|(?:zip|7z)\.\d{3}|rar|r\d\d|z\d\d|tar|gz|tgz|bz2|xz|zst|cab|iso|gma|vpk)$', re.I)
+
+
 def unread_archives(root):
     """files in the repository root that look like archives and are read by nobody"""
     return sorted(name for name in os.listdir(root)
@@ -197,6 +221,103 @@ def dropin_destination(path):
     if dest[0] == "models" and os.path.splitext(dest[-1])[1] in MATERIAL_TYPES:
         dest = ["materials"] + dest
     return "/".join(dest)
+
+
+def merged_destination(path, real=None, mirror=False):
+    """Where a file lies when the folders above it are read as an owner of the addon means them:
+    he collects the materials and models folders of the addons he needs, each under a name of
+    its own, and throws them into the materials / models folder of this addon - or anywhere.
+    Its path in the addon, None when the folders give it none.
+
+    A folder called materials is the materials folder wherever it stands - the last one of the
+    path counts, so materials/materials/x and materials/my pack/materials/x are materials/x -
+    and so is a numbered one (numbered_root): materials/materials3/models/x.vmt is
+    materials/models/x.vmt, models/models 2/a/b.mdl is models/a/b.mdl. The innermost numbered
+    folder counts. A file that lies right in a numbered folder, with no folder of its own, is a
+    file of somebody's heap: its folders say nothing, and it is read like dropin_destination.
+
+    Materials and textures belong below materials/, the files of a model below models/,
+    whichever of the two they were put into:
+        models/humans/x.vmt                   -> materials/models/humans/x.vmt   (packed from inside materials/)
+        materials/models/humans/x.mdl         -> models/humans/x.mdl
+        materials/models3/humans/x.mdl        -> models/humans/x.mdl
+    A file of a model with no models folder above it, only a materials folder, has nothing to
+    go by but the folders it lies in: with mirror=True it gets the same path below models/
+    (materials/humans/x.mdl -> models/humans/x.mdl), else None.
+
+    This is a reading, not a fact: tools/place_content.py follows the names first, and puts a
+    file here only when nothing names it and nothing is known of its folder - the mirrored
+    place last of all.
+
+    real: folders the game is known to have, as paths (the folders of the names the Lua gives).
+    A folder that is one of them is what its path says, whatever it is called: no numbered
+    folder and no second materials / models folder is seen in it. Only for a path that starts
+    at the top of the addon."""
+    parts = [p for p in path.replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts or ".." in parts:
+        return None
+    lower = [p.lower() for p in parts]
+    dirs, name = lower[:-1], lower[-1]
+    is_material = os.path.splitext(name)[1] in MATERIAL_TYPES
+    is_model = name.endswith(MODEL_TYPES)
+
+    def known(count):
+        """the first `count` folders of the path are a folder of the game, for a file like this"""
+        if not real or "/".join(dirs[:count]) not in real:
+            return False
+        return dirs[0] == ("models" if is_model else "materials") or not (is_model or is_material)
+
+    # a numbered copy of materials/ or models/, with folders below it
+    if dirs and not numbered_root(dirs[-1]):
+        for i in range(len(dirs) - 2, -1, -1):
+            top = numbered_root(dirs[i])
+            if top and not known(i + 1):
+                tail = dirs[i + 1:]
+                # (it may hold a whole addon, or a materials folder: materials3/materials/...)
+                holds = tail[0] in ("materials", "lua") or (tail[0] == "models" and top == "models") \
+                    or (tail[0] in CONTENT_ROOTS and tail[0] != "models" and not (is_material or is_model))
+                dirs = tail if holds else [top] + tail
+                real = None
+                break
+
+    first = None
+    for i, folder in enumerate(dirs):
+        if folder in CONTENT_ROOTS or folder in LUA_ROOTS:
+            first = i
+            break
+    if first is None:
+        return None
+    if dirs[first] not in ("materials", "models"):
+        dest = dirs[first:] if dirs[first] in CONTENT_ROOTS else ["lua"] + dirs[first:]
+        return "/".join(dest + [name])
+
+    def last(folder):
+        for i in range(len(dirs) - 1, first - 1, -1):
+            if dirs[i] == folder and (i == first or not known(i + 1)):
+                return i
+        return None
+
+    materials, models = last("materials"), last("models")
+    if is_model:
+        # the innermost of the two is where the tree of the file starts
+        if models is not None and (materials is None or models > materials):
+            dest = dirs[models:]
+        elif mirror:
+            dest = ["models"] + dirs[materials + 1:]
+        else:
+            return None
+    elif materials is not None:
+        dest = dirs[materials:]
+    elif is_material:
+        # packed from inside the materials folder: models/humans/.../shirt.vmt is a material
+        # (models/models/... - a materials folder thrown into models/ - is the same)
+        start = first
+        while start + 1 < len(dirs) and dirs[start + 1] == "models" and not known(start + 2):
+            start += 1
+        dest = ["materials"] + dirs[start:]
+    else:
+        dest = dirs[models:]
+    return "/".join(dest + [name])
 
 
 def zip_name(info):

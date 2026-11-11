@@ -54,8 +54,12 @@ nothing about the folders around it.
 A file nobody names follows what is known about its folder: where the files next to it went
 (a folder that kept its name on the way - materials/gate -> materials/models/gate - took
 everything below it along), or what a material and a texture it names, lying together, say
-about the folder they lie in. Without any of that it stays where it was packed; packed outside
-of a materials / models folder it is left out.
+about the folder they lie in. Without any of that, the folders above it are read the way an
+owner of the addon means them (zcg_layout.merged_destination): a numbered copy of the
+materials folder - "materials3", thrown into materials/ with a tree of its own inside - is the
+materials folder, and a model that lies below materials/ belongs below models/. Where that
+gives nothing either, the file stays where it was packed; packed outside of any materials /
+models folder it is left out.
 
 What cannot be decided is reported and never guessed:
     * a file that fits several names by its file name alone,
@@ -65,7 +69,9 @@ What cannot be decided is reported and never guessed:
     * a file that no name and no folder claims.
 
 Materials and textures are put below materials/ only, models below models/; a file of the
-addon itself is never replaced; of two files for one place the later source has it.
+addon itself is never replaced; of two files for one place the later source has it - of two
+folders of one source the one that comes later by its name, a number read as a number
+("materials10" after "materials2").
 
 tools/test_content.py tries all of this on made-up files, also on random ones packed in the
 ways people pack them.
@@ -264,11 +270,17 @@ def read_model_name(path):
 class Item(object):
     """a supplied file"""
 
-    def __init__(self, source, inner, path, default, order):
+    def __init__(self, source, inner, path, default, order, merged=None, mirror=None):
         self.source = source      # the archive or folder it came in
         self.inner = inner        # its path there, as packed
         self.path = path          # the file on the disk
         self.default = default    # where its folders alone put it (zcg_layout.dropin_destination) or None
+        # where it lies when the numbered and repeated materials / models folders above it are
+        # read as that folder (zcg_layout.merged_destination): used when nothing else is known
+        self.merged = merged if merged != default else None
+        # a file of a model that lies below materials/ with no models folder above it: the same
+        # path below models/ (merged_destination, mirror=True). The last thing to go by.
+        self.mirror = mirror if mirror not in (default, self.merged) else None
         self.order = order        # of two that fit equally the later source wins
         self.parts = [p for p in clean(inner).split('/') if p]
         self.name = self.parts[-1]
@@ -279,6 +291,7 @@ class Item(object):
         self.material = None
         self.model_name = None    # a model: the path it was compiled for, without models/
         self.replaced = False     # a later source brought a file for the same place: that one is used
+        self.copy = False         # ... and it is the same file, byte for byte
         self.crowded = None       # the place it belongs to, when another file has it
 
     def same_as(self, other):
@@ -309,6 +322,7 @@ class Target(object):
 # another language (tools/content_report.py) is made from the same pieces.
 NOTES = {
     'version': '%s: another version is in %s, the one from %s is used',
+    'version here': '%s: two different files of one source go there, %s and %s; the second one is used',
     'equal': '%s: %s and %s fit equally, the first one is used',
     'several names': '%s fits %d names by its file name alone (in %s) and is not used: '
                      'give its folder the name of the folder it comes from',
@@ -336,6 +350,8 @@ SPARE_SAYS = 'it says itself that it belongs there'                 # a model: t
 SPARE_TEXTURE = 'its own texture is named in that folder'           # a material
 SPARE_FOLDERS = 'its folders are those of that place'
 REPLACED = 'a later source has this file'
+COPY = 'a copy of a file that is used'
+ORPHAN = 'the model it belongs to is not used'
 OWN_FILE = 'the file of this addon is kept'
 NAMESAKES = 'not told from its namesakes, see the notes'
 UNNAMED = 'nothing names it'
@@ -372,6 +388,11 @@ class Report(object):
         self.models = 0               # models whose materials were followed
         self.materials_wanted = 0     # ... and how many materials they name
         self.textures_wanted = 0      # textures named by the placed materials
+
+
+def natural(text):
+    """a key that sorts "materials10" after "materials2": numbers are read as numbers"""
+    return [int(part) if part.isdigit() else part for part in re.split(r'(\d+)', text)]
 
 
 def relation(path, wanted):
@@ -435,6 +456,20 @@ def place(items, named, own, spare=()):
         item.how.append(how)
         return True
 
+    def crowd(item, dest):
+        """The place of a file is known and another file has it: a second version of that file, or
+        a copy. It is not put anywhere else instead - nothing looks there - and is not looked at
+        for any other name."""
+        item.crowded = dest
+        rival = taken.get(dest)
+        if rival is not None:
+            item.copy = rival.same_as(item)
+            if not item.copy:
+                report.notes.append(Note('version here', dest, item.inner, rival.inner) if rival.source == item.source
+                                    else Note('version', dest, item.source, rival.source))
+        if item in by_name.get(item.name, ()):
+            by_name[item.name].remove(item)
+
     # where the folders alone put a file; of two files with one place the later source has it,
     # and the earlier one is out of the game: it is not looked at for any other name either
     at = {}
@@ -443,8 +478,16 @@ def place(items, named, own, spare=()):
             continue
         earlier = at.get(item.default)
         if earlier is not None:
+            if earlier.source == item.source and earlier.order == item.order \
+                    and natural(earlier.inner) > natural(item.inner):
+                earlier, item = item, earlier      # (the folder that comes later by its name)
             earlier.replaced = True
-            if not earlier.same_as(item):
+            earlier.copy = earlier.same_as(item)
+            if earlier.copy:
+                pass
+            elif earlier.source == item.source:
+                report.notes.append(Note('version here', item.default, earlier.inner, item.inner))
+            else:
                 report.notes.append(Note('version', item.default, earlier.source, item.source))
         at[item.default] = item
     for name in list(by_name):
@@ -548,6 +591,12 @@ def place(items, named, own, spare=()):
         return None
 
     undecided = {}
+    merging = set()     # files that go where the names of their folders put them (Item.merged)
+    # files of such a model that has no place because another model has it: id -> where it would lie
+    orphans = {}
+
+    def merged_place(item):
+        return item.merged is not None and is_place(item.merged, item.kind)
 
     def resolve(kind, targets, proof=None, home=None, proof_is_sure=False):
         """gives the wanted paths their files.
@@ -714,7 +763,9 @@ def place(items, named, own, spare=()):
             parts = target.path.split('/')
             best = None
             for item in by_name.get(parts[-1], ()):
-                if item.kind != kind or not item.dests:
+                # (a file of the version that is not in the addon is a file of that version: it is
+                # not used for a name of the addon either)
+                if item.kind != kind or not item.dests or only_spare(item):
                     continue
                 how, same = relation(path_of(item), parts)
                 if (how == 'shift' and same >= 2) or (kind == 'vtf' and item.folder in target.near):
@@ -728,7 +779,7 @@ def place(items, named, own, spare=()):
         where a hint points, else where they were packed"""
         todo = []
         for item in items:
-            if item.kind != kind or item.dests or item.replaced:
+            if item.kind != kind or item.dests or item.replaced or item.crowded is not None or id(item) in orphans:
                 continue
             dest = None
             if at_home(item):
@@ -742,6 +793,12 @@ def place(items, named, own, spare=()):
                 # than a bare majority of a mixed folder
                 dest = (own_place and own_place(item)) or with_folder(item, 0.8, roots=False) \
                     or (hint and hint(item)) or with_folder(item, 0.5, roots=False)
+                if dest is None and merged_place(item):
+                    # Nothing is known but how its folders are called: "materials3" is a copy of
+                    # the materials folder, a model below materials/ belongs below models/.
+                    dest = item.merged
+                    merging.add(id(item))
+                    silent.add(id(item))
                 if dest is None:
                     # Nothing but the materials (models) folder it lies below is known: it goes
                     # along with that one - and tells nothing about the folders around it.
@@ -754,6 +811,11 @@ def place(items, named, own, spare=()):
             if item.default is not None and dest in (None, item.default):
                 if settle(item, item.default, 'place') and dest is None and not at_home(item):
                     silent.add(id(item))
+        # (of the files that go by the names of their folders alone, the later one first: of
+        # two numbered folders with a file for one place the later one has it)
+        todo = [pair for pair in todo if id(pair[0]) not in merging] + \
+            sorted((pair for pair in todo if id(pair[0]) in merging),
+                   key=lambda pair: (pair[0].order, natural(pair[0].inner)), reverse=True)
         for item, dest in todo:
             if item.dests:
                 continue
@@ -762,10 +824,7 @@ def place(items, named, own, spare=()):
             if dest is not None and dest != item.default and is_place(dest, kind):
                 # Its place is known and another file has it: a second version of the same file.
                 # It is not put at the path it was packed under instead - nothing looks there.
-                item.crowded = dest
-                rival = taken.get(dest)
-                if rival is not None and not rival.same_as(item):
-                    report.notes.append(Note('version', dest, item.source, rival.source))
+                crowd(item, dest)
                 continue
             if item.default is not None and settle(item, item.default, 'place'):
                 silent.add(id(item))
@@ -844,6 +903,7 @@ def place(items, named, own, spare=()):
         wanted_named[posixpath.basename(path)].append(path.split('/'))
     asked_by_lua = set(named)
     spared = {}     # id(item) -> why it is known to be a file of the other version
+    shut_out = set()    # ... and those of them whose place another file has
 
     came_back = []
 
@@ -861,32 +921,43 @@ def place(items, named, own, spare=()):
         comes_back: the other way round. A file that lies at a place of the other version and
         says itself that it belongs at a place the Lua of the addon names, where nothing lies,
         is put there. (Before it knew of versions this tool took such models by their file
-        names; with the other version in the addon they lie at the places of the first.)"""
-        for item in items:
-            if item.kind != kind or item.dests or item.replaced or item.name not in spare_named:
-                continue
-            dest = why = None
-            if item.default in spare:
-                dest = item.default
-                claim = says(item) if comes_back else None
-                if claim in asked_by_lua and at.get(claim) is None and settle(item, claim, 'name'):
-                    came_back.append(claim)
+        names; with the other version in the addon they lie at the places of the first.)
+        The files that lie at such a place come first: one that lies there is not pushed out by
+        one that merely belongs there (the same folders once more, under a number). That one
+        has no place then - and, being a file of the other version, is not taken for any name
+        of the addon either."""
+        mine = [item for item in items if item.kind == kind and item.name in spare_named]
+        for lying in (True, False):
+            for item in mine:
+                if item.dests or item.replaced or item.crowded is not None or (item.default in spare) != lying:
                     continue
-            elif not at_home(item) and item.default not in asked_by_lua:
-                parts = path_of(item)
-                rivals = max([common_suffix(parts, wanted) for wanted in wanted_named.get(item.name, ())] or [0])
-                best = None
-                for path in spare_named[item.name]:
-                    how, same = relation(parts, path.split('/'))
-                    if how != 'sibling' and same >= 2 and same > rivals and (best is None or same > best[0]):
-                        best = (same, path)
-                claim = says(item)
-                if best is not None:
-                    dest, why = best[1], SPARE_FOLDERS
-                elif claim in spare:
-                    dest, why = claim, said
-            if dest is not None and settle(item, dest, 'place' if why is None else 'name'):
-                spared[id(item)] = why
+                dest = why = None
+                if lying:
+                    dest = item.default
+                    claim = says(item) if comes_back else None
+                    if claim in asked_by_lua and at.get(claim) is None and settle(item, claim, 'name'):
+                        came_back.append(claim)
+                        continue
+                elif not at_home(item) and item.default not in asked_by_lua:
+                    parts = path_of(item)
+                    rivals = max([common_suffix(parts, wanted) for wanted in wanted_named.get(item.name, ())] or [0])
+                    best = None
+                    for path in spare_named[item.name]:
+                        how, same = relation(parts, path.split('/'))
+                        if how != 'sibling' and same >= 2 and same > rivals and (best is None or same > best[0]):
+                            best = (same, path)
+                    claim = says(item)
+                    if best is not None:
+                        dest, why = best[1], SPARE_FOLDERS
+                    elif claim in spare:
+                        dest, why = claim, said
+                if dest is None:
+                    continue
+                if settle(item, dest, 'place' if why is None else 'name'):
+                    spared[id(item)] = why
+                elif why is not None and is_place(dest, kind):
+                    crowd(item, dest)
+                    shut_out.add(id(item))
 
     def only_spare(item):
         """it is in use at places of the other version only: what it asks for is not needed"""
@@ -897,17 +968,74 @@ def place(items, named, own, spare=()):
         report.notes.append(Note('came back', len(came_back), ', '.join(sorted(came_back)[:3]) + (' ...' if len(came_back) > 3 else '')))
     resolve('mdl', [Target(path) for path in sorted(named) if path.endswith('.mdl')], compiled_for,
             where_compiled, proof_is_sure=True)
+    def follow(part, model):
+        """A file of a model whose place another model has. The same model, byte for byte: its
+        files belong to the one that lies there as well. Another model: they are not mixed into
+        that one, and have no place."""
+        dest = posixpath.dirname(model.crowded) + '/' + part.name
+        if not model.copy:
+            orphans[id(part)] = dest
+            return
+        orphans.pop(id(part), None)
+        if not settle(part, dest, 'folder'):
+            crowd(part, dest)
+
     rest('mdl', its_own_path)
+    followers = []
     for item in items:
         if item.kind != 'mdl':
             continue
         stem = item.name[:-len('.mdl')] + '.'
+        # (a model out of a numbered folder, or one of the version that is not in the addon)
+        lost = not item.dests and item.crowded is not None and (id(item) in merging or id(item) in shut_out)
         for part in items:
             if part.kind == 'part' and not part.replaced and part.folder == item.folder and part.name.startswith(stem):
                 for dest, how in zip(list(item.dests), list(item.how)):
                     settle(part, posixpath.dirname(dest) + '/' + part.name, how)
+                if lost and not part.dests and part.crowded is None:
+                    followers.append((part, item))
+                    orphans[id(part)] = None        # (it waits: rest() leaves it alone)
     count_votes('part')
     rest('part')
+    # (last: every file that lies at its place has it by now)
+    for part, item in followers:
+        follow(part, item)
+
+    # A file of a model that lies below materials/, and nothing is known of it: it belongs below
+    # models/, and all there is to go by are the folders it lies in. A model goes where its own
+    # files went, when they went somewhere together; else to the same path below models/, and
+    # its files with it.
+    def mirrored(item, dest):
+        if settle(item, dest, 'folder'):
+            merging.add(id(item))
+            silent.add(id(item))
+            return True
+        crowd(item, dest)
+        return False
+
+    def waits(item, kind):
+        return item.kind == kind and not item.dests and not item.replaced and item.crowded is None \
+            and id(item) not in undecided and id(item) not in orphans \
+            and item.mirror is not None and is_place(item.mirror, kind)
+
+    for item in items:
+        if not waits(item, 'mdl'):
+            continue
+        stem = item.name[:-len('.mdl')] + '.'
+        parts = [part for part in items if part.kind == 'part' and not part.replaced and part.folder == item.folder
+                 and part.name.startswith(stem)]
+        went = set(posixpath.dirname(dest) for part in parts for dest in part.dests)
+        dest = went.pop() + '/' + item.name if len(went) == 1 else item.mirror
+        placed = mirrored(item, dest)
+        for part in parts:
+            if not part.dests and part.crowded is None:
+                if placed:
+                    mirrored(part, posixpath.dirname(dest) + '/' + part.name)
+                else:
+                    follow(part, item)
+    for item in items:
+        if waits(item, 'part'):
+            mirrored(item, item.mirror)
 
     # ---- materials --------------------------------------------------------------------------
     wanted = collections.OrderedDict()
@@ -981,7 +1109,7 @@ def place(items, named, own, spare=()):
             return None
         dest = 'materials/' + posixpath.dirname(base) + '/' + item.name
         how, same = relation(path_of(item), dest.split('/'))
-        if item.default is None and how != 'sibling':
+        if item.default is None and how != 'sibling' and not merged_place(item):
             return dest
         return dest if how == 'shift' and same >= 2 else None
 
@@ -1013,7 +1141,7 @@ def place(items, named, own, spare=()):
                     pack_of[key].add(posixpath.dirname(item.dests[0]))
     of_the_pack = collections.OrderedDict()
     for item in materials:
-        if item.dests or item.replaced or at_home(item):
+        if item.dests or item.replaced or item.crowded is not None or at_home(item):
             continue
         claim = beside_its_texture(item)
         if claim is None:
@@ -1065,7 +1193,7 @@ def place(items, named, own, spare=()):
                 report.notes.append(Note('also here', target.path, there, there))
     # where the materials that nobody names will go counts for their folders too
     for item in materials:
-        if not item.dests and not item.replaced and not at_home(item):
+        if not item.dests and not item.replaced and item.crowded is None and not at_home(item):
             dest = beside_its_texture(item)
             if dest is not None and is_place(dest, 'vmt'):
                 vote(item, dest)
@@ -1114,11 +1242,15 @@ def place(items, named, own, spare=()):
         if item.dests:
             continue
         if item.replaced:
-            why = REPLACED
+            why = COPY if item.copy else REPLACED
         elif item.default is not None and own(item.default):
             why = OWN_FILE
         elif item.crowded is not None:
-            why = OWN_FILE if own(item.crowded) else PLACE_TAKEN
+            why = OWN_FILE if own(item.crowded) else COPY if item.copy else PLACE_TAKEN
+        elif id(item) in orphans:
+            # (a copy of the file the other model has there is a copy, like the model itself)
+            twin = taken.get(orphans[id(item)])
+            why = COPY if twin is not None and twin.same_as(item) else ORPHAN
         elif doubt is not None:
             why = NAMESAKES
         elif item.default is None:
