@@ -1768,6 +1768,19 @@ def test_names_found_by_running(tmp):
           % list_content.read_run_failed(failing))
     check(list_content.read_run_failed(path) == {} and list_content.read_run_failed(os.path.join(lists, 'none.txt')) == {},
           'no such file, no such line')
+    # who names what: the Lua file that puts a name into the tables, and the pack that file came with
+    whose = os.path.join(lists, 'whose.txt')
+    list_content.write_run_list(whose, ['materials/zcity_drill/sheet_16.vmt', 'materials/models/gate/epl.vmt'], lua,
+                                by={'materials/zcity_drill/sheet_16.vmt': 'autorun/drill.lua'},
+                                titles={'autorun/drill.lua': u'[ZCITY]  Drill\tClothes \u043e\u0434\u0435\u0436\u0434\u0430', 'autorun/gone.lua': 'Gone'})
+    check(list_content.read_run_list(whose) == list_content.read_run_list(path),
+          'a list that tells who names what holds the same names: %s' % sorted(list_content.read_run_list(whose)[0]))
+    check(list_content.read_run_who(whose) == ({'materials/zcity_drill/sheet_16.vmt': 'autorun/drill.lua'},
+                                               {'autorun/drill.lua': u'[ZCITY] Drill Clothes \u043e\u0434\u0435\u0436\u0434\u0430'}),
+          'the Lua file of a name and the title of its pack are read back, a title on one line: %s' % (list_content.read_run_who(whose),))
+    check(list_content.read_run_who(path) == ({}, {}) and list_content.read_run_who(os.path.join(lists, 'none.txt')) == ({}, {})
+          and list_content.read_run_who(failing) == ({}, {}),
+          'a list that does not tell it, or no list: nothing is known - a Lua file that failed is not taken for a name')
 
     # ---- what sort_content.py makes of it
     folder = os.path.join(tmp, 'named', 'lua')
@@ -1780,6 +1793,15 @@ def test_names_found_by_running(tmp):
           'sort_content.py takes the names of the text and of the list: %s' % sorted(got.named))
     check(got.listed == 2 and got.by_running == 1 and not got.changed and not got.not_run,
           'and knows how many only running shows: %s of %s, changed %s' % (got.by_running, got.listed, got.changed))
+    check(got.pack('materials/models/gate/epl.vmt') == u'lua/homigrad/new_appearance/sh_more.lua'
+          and got.pack('materials/zcity_drill/sheet_16.vmt') == u'' and got.who('materials/zcity_drill/sheet_16.vmt') == u'',
+          'who names a file: the Lua file whose text has the name; a name only running shows has nobody in a list that does not tell')
+    got = sort_content.names_of([folder], whose)
+    check(got.pack('materials/zcity_drill/sheet_16.vmt') == u'[ZCITY] Drill Clothes \u043e\u0434\u0435\u0436\u0434\u0430'
+          and got.who('materials/zcity_drill/sheet_16.vmt') == u'[ZCITY] Drill Clothes \u043e\u0434\u0435\u0436\u0434\u0430 (lua/autorun/drill.lua)'
+          and got.who('materials/models/gate/epl.vmt') == u'lua/homigrad/new_appearance/sh_more.lua' and got.who('materials/x.vmt') == u'',
+          'with a list that tells it: the pack of the Lua file that puts the name into the tables: %s' % got.who('materials/zcity_drill/sheet_16.vmt'))
+    got = sort_content.names_of([folder], path)
     got = sort_content.names_of([folder], os.path.join(lists, 'none.txt'))
     check(got.named == {'materials/models/gate/epl.vmt'} and got.listed is None, 'without the list: the text alone, and that is known')
     got = sort_content.names_of([folder], not_run)
@@ -1880,6 +1902,11 @@ def test_the_build_takes_lua(tmp):
               % build_addon.lua_string(TABLE_LUA) in text and ran['bound'] == 2,
               'the build writes the entries that Lua makes into the addon, for the game: %s' % text[-300:])
         check(any('lua/%s' % build_addon.BOUND_LUA in line for line in build_addon.lua_run_lines(ran)), 'and tells where')
+        check('\nZCGloves.BoundPacks = {\n\t[%s] = "Drill",\n}\n' % build_addon.lua_string(TABLE_LUA) in text,
+              'with the title of the pack each Lua file came with: %s' % text[-200:])
+        check(list_content.read_run_who(os.path.join(out, build_addon.SORT_TOOL_DIR, list_content.RUN_LIST))
+              == ({'materials/zcity_drill/sheet_16.vmt': TABLE_LUA, 'materials/models/gate/epl.vmt': TABLE_LUA}, {TABLE_LUA: 'Drill'}),
+              'the list for sort_content.py tells which Lua file puts a name into the tables, and its pack')
         entries = build_addon.bound_entries(ran['result'])
         lua_files = build_addon.lua_names.folder_files(os.path.join(out, 'lua'))
         try:
@@ -1911,6 +1938,8 @@ def test_the_build_takes_lua(tmp):
                               b'hg.Appearance.Clothes[1]["' + sweater + b'"] = "pack/sweater"\n'})
     out, _sources, _content, named, ran = build('not utf-8')
     build_addon.step_sort_tool(out, ran)
+    check(ran.get('titles') == {TABLE_LUA: 'Drill', cyrillic: 'pack four.zip'},
+          'a pack without a title goes by the name of its archive: %s' % ran.get('titles'))
     names, made_from, _was_run = list_content.read_run_list(os.path.join(out, build_addon.SORT_TOOL_DIR, list_content.RUN_LIST))
     with open(os.path.join(out, 'lua', cyrillic), 'rb') as f:
         on_disk = f.read().decode('utf-8-sig', 'replace')
@@ -1959,6 +1988,76 @@ def test_the_build_takes_lua(tmp):
               'two versions of one Lua file stop the build, and it names both archives: %s' % err)
 
 
+def test_missing_by_pack(tmp):
+    """What is not there is told pack by pack: such a file comes with the content of that pack, or
+    of something the pack depends on - it was not lost on the way. And a pack that was put beside
+    the materials folder of the addon instead of into it is pointed at: nobody looks there."""
+    root = os.path.join(tmp, 'by pack', 'zcity_csgo_gloves')
+    faces, shirts = 'homigrad/new_appearance/sh_faces.lua', 'autorun/shirts.lua'
+    lua = {
+        # (names put together while running: the text does not show them, the list of the build does)
+        faces: u'for n = 2, 4 do add("Face", table.concat({"models", "humans", "modern", "male", "male_0" .. n, "facemap_01"}, "/")) end\n'
+               u'hg.Appearance.Clothes[1].coat = "models/faces/coat"\n',
+        shirts: u'hg.Appearance.Clothes[1].shirt = "models/shirts/shirt"\nhg.Appearance.Clothes[1].tie = "models/shirts/tie"\n',
+    }
+    for name, text in lua.items():
+        write(os.path.join(root, 'lua', name), text)
+    modern = ['materials/models/humans/modern/male/male_0%d/facemap_01.vmt' % n for n in (2, 3, 4)]
+    names = modern + ['materials/models/faces/coat.vmt', 'materials/models/shirts/shirt.vmt', 'materials/models/shirts/tie.vmt']
+    listed = os.path.join(tmp, 'by pack', 'names.txt')
+    list_content.write_run_list(listed, names, lua, by=dict((name, faces) for name in modern), titles={faces: u'The Faces Pack'})
+    write(os.path.join(root, 'materials/models/shirts/shirt.vmt'), material('models/shirts/shirt'))
+    write(os.path.join(root, 'materials/models/shirts/shirt.vtf'), texture('shirt'))
+
+    code, text = sort('--addon', root, '--names-list', listed)
+    check(code == 0 and u'\u043d\u0430\u0437\u0432\u0430\u043d\u043d\u044b\u0445 \u0432 Lua: 5 \u0438\u0437 6' in text,
+          'five of the six named files are missing: %r' % text[-900:])
+    check(u'        The Faces Pack \u2014 4: materials/models/faces/ \u2014 1, materials/models/humans/modern/male/male_02/ \u2014 1, '
+          u'materials/models/humans/modern/male/male_03/ \u2014 1 \u0438 \u0435\u0449\u0451 \u043f\u0430\u043f\u043e\u043a: 1' in text,
+          'the screen tells which pack names them, with its folders: %r' % text[-900:])
+    check(u'        lua/autorun/shirts.lua \u2014 1: materials/models/shirts/ \u2014 1' in text,
+          'a Lua file without a pack goes by its own name: %r' % text[-900:])
+    report = io.open(os.path.join(root, sort_content.REPORT), encoding='utf-8-sig').read().replace(u'\r\n', u'\n')
+    check(u'\n  The Faces Pack (lua/%s) \u2014 4\n    materials/models/faces/coat.vmt\n    %s\n  lua/autorun/shirts.lua \u2014 1\n'
+          u'    materials/models/shirts/tie.vmt\n' % (faces, u'\n    '.join(modern)) in report,
+          'the report lists the missing names pack by pack, the pack with the most first: %r' % report[-700:])
+    check(u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415' not in text, 'nothing to warn of: %r' % text[:600])
+    again = u'\u043f\u0435\u0440\u0435\u0442\u0430\u0449\u0438\u0442\u0435 \u0438\u0445 \u0435\u0449\u0451 \u0440\u0430\u0437'
+    check(again in text, 'with names missing and nothing handed over, it reminds of the folders that were handed over before: %r' % text[-500:])
+
+    # the faces arrive - in a folder of the pack that was put into the addon, beside materials/
+    beside = os.path.join(root, 'the faces pack', 'materials', 'models', 'humans', 'modern', 'male')
+    for n in (2, 3, 4):
+        write(os.path.join(beside, 'male_0%d' % n, 'facemap_01.vmt'), material('models/humans/modern/male/male_0%d/facemap_01' % n))
+        write(os.path.join(beside, 'male_0%d' % n, 'facemap_01.vtf'), texture('face %d' % n))
+    write(os.path.join(root, 'the faces pack', 'read me.txt'), 'hello')
+    write(os.path.join(root, 'notes', 'todo.txt'), 'no content here')
+    write(os.path.join(root, '.git', 'objects', 'x.vmt'), 'not a pack')
+    write(os.path.join(root, sort_content.ASIDE, 'materials', 'old.vmt'), material('models/old'))
+    before = tree(os.path.join(root, 'the faces pack'))
+    code, text = sort('--addon', root, '--names-list', listed)
+    warning = u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415: \u0432 \u043f\u0430\u043f\u043a\u0435 \u0430\u0434\u0434\u043e\u043d\u0430 \u0435\u0441\u0442\u044c \u043f\u0430\u043f\u043a\u0438'
+    check(code == 0 and warning in text and u'\u00abthe faces pack\u00bb (\u0444\u0430\u0439\u043b\u043e\u0432: 6)' in text,
+          'a folder with content beside materials/ is pointed at, with the number of its files: %r' % text[:900])
+    check(u'notes' not in text and u'.git' not in text and u'\u00ab%s\u00bb' % sort_content.ASIDE not in text,
+          'a folder without content, a hidden one and the folder of this tool are not: %r' % text[:900])
+    check(tree(os.path.join(root, 'the faces pack')) == before and u'\u043d\u0430\u0437\u0432\u0430\u043d\u043d\u044b\u0445 \u0432 Lua: 5 \u0438\u0437 6' in text,
+          'it is not touched - whether that is clothing is for the owner to say - and its files count as missing')
+    report = io.open(os.path.join(root, sort_content.REPORT), encoding='utf-8-sig').read()
+    check(warning in report, 'the report says it as well')
+    check(sort_content.stray(root) == [('the faces pack', 6)] and sort_content.stray(os.path.join(root, 'no such folder')) == [],
+          'stray(): %s' % sort_content.stray(root))
+
+    # ... dropped onto the tool, as it says: the faces go to their places
+    code, text = sort('--addon', root, '--names-list', listed, os.path.join(root, 'the faces pack'))
+    got = tree(root)
+    check(code == 0 and all(name in got and name.replace('.vmt', '.vtf') in got for name in modern)
+          and u'\u043d\u0430\u0437\u0432\u0430\u043d\u043d\u044b\u0445 \u0432 Lua: 2 \u0438\u0437 6' in text,
+          'handed to the tool, the faces of the folder go to their places: %r' % text[-700:])
+    check(u'        The Faces Pack \u2014 1: materials/models/faces/ \u2014 1' in text, 'and what is still missing is told: %r' % text[-700:])
+    check(again not in text, '(no reminder when something was handed over): %r' % text[-500:])
+
+
 def main():
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, 'reconfigure'):
@@ -1980,6 +2079,7 @@ def main():
         test_report(tmp)
         test_sorting(tmp)
         test_names_found_by_running(tmp)
+        test_missing_by_pack(tmp)
         test_namesakes_of_a_pack(tmp)
         test_the_build_takes_lua(tmp)
         test_numbered_folders_of_the_owner(tmp)

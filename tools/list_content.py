@@ -118,10 +118,11 @@ def lua_fingerprint(text):
     return hashlib.sha1(readable(text).replace('\r\n', '\n').encode('utf-8')).hexdigest()
 
 
-def write_run_list(path, names, lua_files, ran=True, failed=None):
+def write_run_list(path, names, lua_files, ran=True, failed=None, by=None, titles=None):
     """names: game paths; lua_files: {path below lua/: text} the names were found in.
     ran=False: the Lua could not be run where the addon was built - the list says so.
-    failed: {Lua file: the error} - the files that stopped with an error when they were run."""
+    failed: {Lua file: the error} - the files that stopped with an error when they were run.
+    by: {name: the Lua file that puts it into the tables}; titles: {Lua file: title of its pack}."""
     lines = [
         '# Materials and models that the Lua of this addon puts into the appearance tables of Z-City -',
         '# found by RUNNING that Lua while the addon was built (build_addon.py, tools/lua_names.py).',
@@ -129,6 +130,8 @@ def write_run_list(path, names, lua_files, ran=True, failed=None):
         '# it has no Lua to run on the computer of the addon\'s owner.',
         '# "lua <sha1> <file>" - the Lua files the list was made from.',
         '# "failed <file><tab><error>" - a Lua file that stopped with an error: what it adds after that is not here.',
+        '# "title <file><tab><title>" - the pack a Lua file came with.',
+        '# "<name><tab><file>" - a name and the Lua file that puts it into the tables.',
     ]
     if not ran:
         lines.append('not-run')
@@ -136,7 +139,11 @@ def write_run_list(path, names, lua_files, ran=True, failed=None):
         lines.append('lua %s %s' % (lua_fingerprint(lua_files[name]), name))
     for name in sorted(failed or ()):
         lines.append('failed %s\t%s' % (name, ' '.join(readable(u'%s' % failed[name]).split())))
-    lines += sorted(names)
+    for name in sorted(titles or ()):
+        if name in lua_files:
+            lines.append('title %s\t%s' % (name, ' '.join((u'%s' % titles[name]).split())))
+    by = by or {}
+    lines += sorted('%s\t%s' % (name, by[name]) if by.get(name) else name for name in names)
     # (a file name that cannot be written is written with question marks: it then counts as changed)
     with open(path, 'w', encoding='utf-8', errors='replace', newline='\n') as f:
         f.write('\n'.join(lines) + '\n')
@@ -160,11 +167,35 @@ def read_run_list(path=None):
                 parts = line.split(' ', 2)
                 if len(parts) == 3:
                     made_from[parts[2]] = parts[1]
-            elif line.startswith('failed '):
-                continue        # (read_run_failed)
+            elif line.startswith('failed ') or line.startswith('title '):
+                continue        # (read_run_failed, read_run_who)
             else:
-                names.add(line)
+                names.add(line.split('\t', 1)[0])
     return names, made_from, ran
+
+
+def read_run_who(path=None):
+    """({name: the Lua file that puts it into the tables}, {Lua file: title of its pack}) out of
+    the list - as far as it says"""
+    path = path or os.path.join(HERE, RUN_LIST)
+    by, titles = {}, {}
+    if not os.path.isfile(path):
+        return by, titles
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.rstrip('\r\n')
+            if not line.strip() or line.startswith('#'):
+                continue
+            if line.startswith('title '):
+                name, _tab, title = line[len('title '):].partition('\t')
+                if title.strip():
+                    titles[name.strip()] = title.strip()
+            elif line.startswith('lua ') or line.startswith('failed ') or line.strip() == 'not-run':
+                continue
+            elif '\t' in line:
+                name, _tab, lua = line.partition('\t')
+                by[name.strip()] = lua.strip()
+    return by, titles
 
 
 def read_run_failed(path=None):
@@ -193,6 +224,25 @@ def addon_title(z, names, inner):
                 except ValueError:
                     return candidate
     return None
+
+
+def pack_titles(root=None):
+    """{Lua file below lua/, where the build puts it: the title of the pack it came with} - the
+    title in the addon.json beside it, else the name of the archive"""
+    titles = {}
+    for archive in L.dropin_archives(root or ROOT):
+        if not archive.lower().endswith('.zip'):
+            continue
+        with zipfile.ZipFile(archive) as z:
+            names = {L.zip_name(info): info for info in z.infolist()}
+            for inner, info in sorted(names.items()):
+                dest = None if info.is_dir() else L.dropin_destination(inner)
+                if dest and dest.startswith('lua/') and dest.endswith('.lua'):
+                    title = addon_title(z, names, inner)
+                    if not title or title.endswith('.json'):     # (no title in it: the name of the archive)
+                        title = os.path.basename(archive)
+                    titles[dest[len('lua/'):].lower()] = title
+    return titles
 
 
 def collect():

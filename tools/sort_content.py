@@ -44,6 +44,9 @@ STAGE = '_sorting'        # files on their way (with a journal, so that a run th
 ASIDE = '_not_used'       # files of the addon that have no place in it
 REPORT = 'sort_content_report.txt'
 ROOTS = ('materials', 'models')
+# the folders of an addon that the game reads, and those of this tool: what lies in any other
+# folder of the addon is seen by nobody
+KNOWN_FOLDERS = L.CONTENT_ROOTS + ('maps', 'gamemodes', 'data', 'data_static', 'sort_content', STAGE, ASIDE)
 
 
 class UserError(Exception):
@@ -89,6 +92,23 @@ class Names(object):
         self.not_run = False        # the list says that the Lua could not be run where the addon was built
         self.changed = []           # Lua files that are not the ones the list was made from
         self.failed = []            # (Lua file, error): stopped with an error where the addon was built
+        self.by = {}                # name -> the Lua file that names it (below lua/)
+        self.titles = {}            # Lua file -> the title of the pack it came with
+
+    def pack(self, name):
+        """the pack that names a file: its title, else its Lua file; '' when that is not known"""
+        lua = self.by.get(name)
+        if not lua:
+            return u''
+        return self.titles.get(lua) or u'lua/%s' % lua
+
+    def who(self, name):
+        """... with the Lua file"""
+        lua = self.by.get(name)
+        if not lua:
+            return u''
+        title = self.titles.get(lua)
+        return u'%s (lua/%s)' % (title, lua) if title else u'lua/%s' % lua
 
 
 def names_of(folders, run_list=None):
@@ -106,9 +126,13 @@ def names_of(folders, run_list=None):
             result.files += 1
             with open(full, 'rb') as f:
                 text = f.read().decode('utf-8-sig', 'replace')
-            result.named |= list_content.names_in(text)
+            found = list_content.names_in(text)
+            result.named |= found
             # (the list knows the Lua of the addon itself: the first folder)
-            seen[rel.lower() if number == 0 else u'%s/%s' % (folder, rel)] = list_content.lua_fingerprint(text)
+            key = rel.lower() if number == 0 else u'%s/%s' % (folder, rel)
+            seen[key] = list_content.lua_fingerprint(text)
+            for name in found:
+                result.by.setdefault(name, key)
     stock = list_content.stock_names()
     result.stock_known = bool(stock)
 
@@ -122,8 +146,31 @@ def names_of(folders, run_list=None):
         # (a file that was changed since is not the one that failed)
         result.failed = sorted((name, message) for name, message in list_content.read_run_failed(run_list).items()
                                if name in seen and made_from.get(name) == seen[name])
+        # (the build knows which file puts a name into the tables: that says more than the text)
+        by, titles = list_content.read_run_who(run_list)
+        result.by.update(by)
+        result.titles = titles
     result.named -= stock
     return result
+
+
+def stray(addon):
+    """[(folder, content files in it)]: folders of the addon that hold materials or models and
+    that neither the game nor this tool looks into - a pack that was put beside materials/
+    instead of into it"""
+    found = []
+    try:
+        entries = sorted(os.listdir(addon))
+    except OSError:
+        return found
+    for entry in entries:
+        full = os.path.join(addon, entry)
+        if entry.lower() in KNOWN_FOLDERS or entry.startswith('.') or not os.path.isdir(full):
+            continue
+        count = sum(1 for rel, _full in walk_files(full) if P.kind_of(rel))
+        if count:
+            found.append((entry, count))
+    return found
 
 
 def unpack(archive, temp):
@@ -382,6 +429,14 @@ def summary(addon, names, brought, report, job, dry, problems):
         out.append(u'  тоже не будет. Ошибка: %s' % names.failed[0][1])
     if not names.stock_known:
         out.append(u'  (списка имён самого Z-City рядом нет: в «не хватает» попадут и его файлы)')
+    beside = stray(addon)
+    if beside:
+        out.append(u'ВНИМАНИЕ: в папке аддона есть папки с материалами и моделями, в которые не смотрит ни игра, ни')
+        out.append(u'  этот инструмент: %s%s.'
+                   % (u', '.join(u'«%s» (файлов: %d)' % pair for pair in beside[:5]),
+                      u' и ещё %d' % (len(beside) - 5) if len(beside) > 5 else u''))
+        out.append(u'  Если это одежда — перетащите такую папку на sort_content.bat или переложите её в папку')
+        out.append(u'  materials аддона и запустите ещё раз.')
     for entry in brought:
         where = u'в папках materials и models аддона' if entry['name'] == name and entry is brought[-1] \
             else u'в «%s»' % entry['name']
@@ -416,12 +471,23 @@ def summary(addon, names, brought, report, job, dry, problems):
     if missing:
         out.append(u'Не хватает файлов (их нет ни в аддоне, ни в том, что вы дали):')
         out.append(u'    названных в Lua: %d из %d' % (len(report.missing_named), len(named)))
+        # (pack by pack: such files come with the content of that pack or of what it depends on)
+        packs = content_report.by_pack(report.missing_named, names.pack) if names.by else []
+        for label, wanted in packs[:10]:
+            out.append(u'        %s — %d: %s' % (label or u'какой Lua называет — не известно', len(wanted),
+                                                 content_report.folders_of(wanted)))
+        if len(packs) > 10:
+            out.append(u'        ... и ещё наборов: %d' % (len(packs) - 10))
         out.append(u'    материалов, которые ищут модели: %d из %d'
                    % (len(report.missing_materials), report.materials_wanted))
         out.append(u'    текстур, которые ищут материалы: %d из %d'
                    % (len(report.missing_textures), report.textures_wanted))
         out.append(u'  Часть из них — файлы самой игры и Z-City, их и не должно быть в аддоне. Остальные нужно')
         out.append(u'  добавить: положите их в папку materials или models аддона (в любые папки) и запустите ещё раз.')
+        if report.missing_named and len(brought) == 1:
+            # (a source is copied from, not moved: what an earlier version did not take is still there)
+            out.append(u'  Если папки с контентом вы раньше перетаскивали на sort_content.bat, перетащите их ещё раз:')
+            out.append(u'  файл, имени которого прежняя версия не знала, она не взяла, и он остался в той папке.')
     else:
         out.append(u'Все названные файлы на месте.')
     if report.notes:
@@ -479,7 +545,7 @@ def main(argv=None):
         if job.aside:
             more += [u'', u'Убрано в %s (причины):' % ASIDE] + [u'    %s — файлов: %d' % pair for pair in sorted(reasons.items())]
         listing = os.path.join(addon, REPORT)
-        content_report.write(listing, brought, report, named, 'sort_content.py', more)
+        content_report.write(listing, brought, report, named, 'sort_content.py', more, names.who if names.by else None)
         say()
         say(u'Подробный отчёт: %s' % listing)
         if not args.dry_run and not problems:

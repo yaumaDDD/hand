@@ -327,6 +327,293 @@ return function(testdir, luaroot)
 		eq(#M.errors, 0, "bound: no errors: " .. table.concat(M.errors, " | "))
 	end
 
+	-- ================================================================ faces without their files
+	-- What a real server showed: the clothing Lua names faces whose files come with yet another
+	-- addon, faces under names that do not exist, and whole lists of faces for a material that
+	-- no player model has any more. Z-City hands faces out by chance - purple and black squares
+	-- for everybody. Such a face shows the own face of the model until its file is there.
+	do
+		local AP = hg.Appearance
+		local function logged(text)
+			local n = 0
+			for _, line in ipairs(M.log) do
+				if line:find(text, 1, true) then n = n + 1 end
+			end
+			return n
+		end
+		M.advance(300)
+		local clothes, models = { AP.Clothes[1], AP.Clothes[2] }, { AP.PlayerModels[1], AP.PlayerModels[2] }
+		local TED, LAKE = "models/humans/male/group01/ted_facemap", "models/humans/female/group01/lake_facemap"
+		local MALE, OTHER = "models/slav/m/male_02.mdl", "models/zcityadodser/f/female_06.mdl"
+
+		-- a menu of forty clothes whose files are all there, and one player model
+		AP.Clothes = { {}, {} }
+		for i = 1, 40 do
+			AP.Clothes[1]["shirt " .. i] = "models/pack/shirt_" .. i
+			M.files["materials/models/pack/shirt_" .. i .. ".vmt"] = true
+		end
+		AP.PlayerModels = { { ["Male 02"] = { mdl = "models/Slav/M/Male_02.mdl", sex = false, submatSlots = {} } }, {} }
+		M.installModel(MALE, { "players_sheet", "ted_facemap" }, { "models/humans/male/group01/" }, nil)
+		M.files["materials/models/humans/male/group01/players_sheet.vmt"] = true
+		M.files["materials/" .. TED .. ".vmt"] = true
+		M.files["materials/models/faces/ted_1.vmt"] = true
+		AP.FacemapsModels = { [OTHER] = LAKE }
+		AP.FacemapsSlots = {
+			[TED] = { Default = "", ["Face 1"] = "models/faces/ted_1", ["Face 10 (New)"] = "models/humans/modern/male/male_02/facemap_01",
+				["Face 9"] = "Models\\Faces\\Ted_9", Made = "!made_by_lua" },
+			[LAKE] = { Default = "", ["Face 1"] = "models/faces/lake_facemap", ["Face 2"] = "models/faces/lake_facemap2" },
+		}
+		AP.MultiFacemaps = { [MALE] = { ["Face 10 (New)"] = { [TED] = "models/humans/modern/male/male_02/facemap_01" } },
+			[OTHER] = { ["Face 1"] = { [LAKE] = "models/faces/lake_facemap" } } }
+		M.advance(11)
+
+		-- ---- the faces nobody can wear
+		local used, players = ZCG.FaceSlotsInUse()
+		check(istable(used) and used[TED] == true and used[LAKE] == nil, "faces: the model file tells which face material a player model has")
+		check(istable(players) and players[MALE] == true and players[OTHER] == nil, "faces: and which models are player models")
+		local missing, _, materials, _, apart = ZCG.ContentMissing(false)
+		local NEW = "materials/models/humans/modern/male/male_02/facemap_01.vmt  <-  face Face 10 (New)"
+		local NINE = "materials/models/faces/ted_9.vmt  <-  face Face 9"
+		check(has(missing, NEW) and has(missing, NINE) and #missing == 2, "faces: the faces of a player model that have no file are missing: " .. table.concat(missing, " | "))
+		check(istable(apart) and #apart == 2 and apart[1] == "materials/models/faces/lake_facemap.vmt  <-  face Face 1"
+			and apart[2] == "materials/models/faces/lake_facemap2.vmt  <-  face Face 2",
+			"faces: the faces of a material no player model has are listed apart: " .. table.concat(apart or {}, " | "))
+		eq(materials, 40 + 3, "faces: and are not counted with the materials of the menu")
+		-- (what the Lua says about a model counts as well: a model that is not installed)
+		AP.FacemapsModels["models/slav/m/male_02.mdl"] = LAKE
+		check(#select(5, ZCG.ContentMissing(false)) == 0 and #ZCG.ContentMissing(false) == 4, "faces: a list the Lua gives to a player model is in use")
+		AP.FacemapsModels["models/slav/m/male_02.mdl"] = nil
+		-- (no player model known at all: nothing is called unwearable)
+		AP.PlayerModels = { {}, {} }
+		check(ZCG.FaceSlotsInUse() == nil and #ZCG.ContentMissing(false) == 4, "faces: without player models nothing is set apart")
+		AP.PlayerModels = { { ["Male 02"] = { mdl = "models/Slav/M/Male_02.mdl", sex = false, submatSlots = {} } }, {} }
+
+		-- (a player model that is not installed: its materials are not known, nothing is set apart)
+		AP.PlayerModels[1]["Male 03"] = { mdl = "models/slav/m/male_03.mdl", sex = false, submatSlots = {} }
+		check(ZCG.FaceSlotsInUse() == nil and #select(5, ZCG.ContentMissing(false)) == 0,
+			"faces: with a player model that cannot be read nothing is set apart")
+		AP.PlayerModels[1]["Male 03"] = nil
+
+		-- ---- the addon does not know whether the players have the files the server lacks: the
+		-- faces stay as the clothing Lua made them until the owner says otherwise
+		local ted, lake = AP.FacemapsSlots[TED], AP.FacemapsSlots[LAKE]
+		local nothing, off = ZCG.FixFaces()
+		eq(tostring(nothing) .. "|" .. tostring(off), "nil|off", "faces: left alone by default")
+		eq(ted["Face 10 (New)"] .. "|" .. ted["Face 9"] .. "|" .. lake["Face 1"],
+			"models/humans/modern/male/male_02/facemap_01|Models\\Faces\\Ted_9|models/faces/lake_facemap", "faces: the tables are as the clothing Lua made them")
+		eq(next(ZCG.Faceless), nil, "faces: nothing is remembered")
+		eq(ZCG.FacesLeft.faces .. "|" .. ZCG.FacesLeft.why, "4|off", "faces: how many have no file is counted all the same, by file")
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("2 of them are faces: whoever gets one of them has purple and black squares for a face - and Z-City hands faces out by chance"), 1,
+			"zcg_content says what faces without files do")
+		eq(logged("zcg_fix_faces 1 (console of the server, or server.cfg) gives such a face the own face of the model"), 1,
+			"and how to give them the own face of the model")
+		eq(ted["Face 10 (New)"], "models/humans/modern/male/male_02/facemap_01", "zcg_content changes nothing by itself")
+		hook.Run("InitPostEntity")
+		M.advance(200)
+		eq(ted["Face 10 (New)"] .. "|" .. logged("faces of the appearance menu have no material file"),
+			"models/humans/modern/male/male_02/facemap_01|0", "faces: nor does the running game, and it says nothing")
+
+		-- ---- zcg_fix_faces 1: a face without its file shows the own face of the model
+		M.setConVar("zcg_fix_faces", 1)
+		local found, all = ZCG.ContentShare()
+		eq(found .. " of " .. all, "41 of 43", "faces: how much of the menu this computer has")
+		local count, why = ZCG.FixFaces()
+		eq(count, 4, "faces: the faces without files are counted by file, those nobody can wear too (" .. tostring(why) .. ")")
+		eq(ted["Face 10 (New)"] .. "|" .. ted["Face 9"] .. "|" .. lake["Face 1"] .. "|" .. lake["Face 2"], "|||", "faces: they hold the empty material Z-City uses for Default")
+		eq(AP.MultiFacemaps[MALE]["Face 10 (New)"][TED], "", "faces: also where the Appearance Mod lists them by model")
+		eq(ted["Face 1"] .. "|" .. ted.Default .. "|" .. ted.Made, "models/faces/ted_1||!made_by_lua", "faces: a face with its file, the default and a material made by Lua stay")
+		eq(ZCG.Faceless["FacemapsSlots/" .. TED .. "/Face 9"], "Models\\Faces\\Ted_9", "faces: what stood there is remembered")
+		missing, _, materials, _, apart = ZCG.ContentMissing(false)
+		check(has(missing, NEW) and has(missing, NINE) and #missing == 2 and #apart == 2 and materials == 43,
+			"faces: the files are still named as missing: " .. table.concat(missing, " | "))
+		eq(ZCG.FixFaces(), 4, "faces: looked at again, nothing changes")
+		ZCG.Bound = { ["pack/faces.lua"] = { { "FacemapsSlots/" .. TED .. "/Face 9", "models/faces/ted_9" },
+			{ "FacemapsSlots/" .. TED .. "/Face 10 (New)", "models/humans/modern/male/male_02/facemap_01" },
+			{ "Clothes/1/shirt 1", "models/pack/shirt_1" } },
+			["pack/lake.lua"] = { { "FacemapsSlots/" .. LAKE .. "/Face 1", "models/faces/lake_facemap" } } }
+		ZCG.BoundPacks = { ["pack/faces.lua"] = "The \"Faces\" Pack" }
+		local total, gone = ZCG.BoundMissing()
+		eq(total .. " " .. #gone, "4 0", "faces: the tables still hold what the clothing Lua put there, as far as the check goes")
+
+		-- the clothing Lua runs again and writes its faces anew
+		ted["Face 9"] = "Models\\Faces\\Ted_9"
+		eq(ZCG.FixFaces() .. "|" .. ted["Face 9"], "4|", "faces: a face that was written anew is looked after again")
+
+		-- ---- zcg_content
+		-- (the folder of the addon is found by its own Lua file, whatever the folder is called)
+		M.files["addons/other addon/lua/autorun/other.lua"] = true
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(ZCG.AddonFolder, false, "zcg_content: an addon that is not a folder in addons/ has no folder to look into")
+		eq(logged("1 of them are in no folder the game reads") + logged("2 of them are in no folder the game reads"), 1,
+			"zcg_content: and the files that are nowhere are said to be in no folder the game reads")
+		ZCG.AddonFolder = nil
+		M.files["addons/gloves 2.4.1/lua/autorun/zcity_csgo_gloves.lua"] = true
+		M.files["addons/gloves 2.4.1/_not_used/materials/Ted_9.vmt"] = true
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(ZCG.AddonFolder, "addons/gloves 2.4.1", "zcg_content finds the folder of the addon by its Lua file")
+		eq(logged("[in the folder of this addon, where the game does not look: addons/gloves 2.4.1/_not_used/materials/Ted_9.vmt]"), 1,
+			"zcg_content: and looks into it")
+		M.files["addons/gloves 2.4.1/lua/autorun/zcity_csgo_gloves.lua"] = nil
+		M.files["addons/gloves 2.4.1/_not_used/materials/Ted_9.vmt"] = nil
+		M.files["addons/other addon/lua/autorun/other.lua"] = nil
+		ZCG.AddonFolder = "addons/zcity_csgo_gloves"
+		M.files["addons/zcity_csgo_gloves/_not_used/materials/materials 9/Ted_9.vmt"] = true
+		M.files["addons/zcity_csgo_gloves/materials/zcity_csgo_gloves/ted_9.txt"] = true
+		M.files["addons/zcity_csgo_gloves/lua/ted_9.vmt"] = true
+		M.log = {}
+		M.command("zcg_content", me)
+		check(M.log[1]:find("the appearance tables name 1 models and 43 materials", 1, true) ~= nil and M.log[1]:find("; 2 files are missing", 1, true) ~= nil,
+			"zcg_content counts what can be worn: " .. tostring(M.log[1]))
+		eq(logged(NINE .. "   [in the folder of this addon, where the game does not look: addons/zcity_csgo_gloves/_not_used/materials/materials 9/Ted_9.vmt]"), 1,
+			"zcg_content finds a file that sort_content.bat put aside")
+		eq(logged("1 of them lie in the folder of this addon outside of materials/ and models/ (addons/zcity_csgo_gloves/_not_used/materials/materials 9/Ted_9.vmt ...)"), 1,
+			"and says that the game does not look there")
+		eq(logged("_not_used is where sort_content.bat puts a file it found no place for"), 1, "and what that folder is")
+		eq(logged("1 of them are nowhere: in no folder the game reads and nowhere in the folder of this addon (_not_used included), under no path."
+			.. " sort_content.bat deletes nothing: either these files were never brought here, or it left them in a folder that was dropped onto it"), 1,
+			"zcg_content says which files are on this computer under no name")
+		eq(logged("sort_content.bat was cut off"), 0, "(no word about a run that was cut off)")
+		eq(logged("2 more files are named only for faces that no player model of the menu can wear"), 1, "zcg_content tells the faces nobody can wear apart")
+		eq(logged("    materials/models/faces/lake_facemap2.vmt  <-  face Face 2"), 1, "and names them")
+		eq(logged("4 faces have no material file here: until the file is there they show the own face of the model"), 1,
+			"zcg_content says what became of the faces without files")
+		eq(logged("  the Lua that names them:"), 1, "zcg_content tells which Lua names the missing files")
+		eq(logged("    2 - The \"Faces\" Pack (lua/pack/faces.lua)"), 1, "by the title of its pack")
+		eq(logged("pack/lake.lua"), 0, "(not for what is not counted)")
+		local text = M.written["zcg_content.txt"] or ""
+		check(text:find("only for faces that no player model of the menu can wear - not counted:\nmaterials/models/faces/lake_facemap.vmt", 1, true) ~= nil,
+			"the file of zcg_content has the faces nobody can wear, apart")
+		-- a namesake that is at home: Z-City has a face of that very name, in its own folder
+		ted["Face 3"] = "models/stock/faces/ted_9"
+		M.files["materials/models/stock/faces/ted_9.vmt"] = true
+		M.files["addons/zcity_csgo_gloves/_not_used/materials/materials 9/Ted_9.vmt"] = nil
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged(NINE .. "   [materials/models/stock/faces/ted_9.vmt has that name, but is another file: the tables name it there]"), 1,
+			"zcg_content: a file of that name which the tables name where it lies is not taken for the missing one")
+		eq(logged("have a file of the same name in another folder"), 0, "zcg_content: and nobody is sent to move it")
+		eq(logged("2 of them are nowhere: in no folder the game reads"), 1, "zcg_content: the missing file counts as not there")
+		-- (one that nobody names where it lies may be the missing file, a folder off)
+		M.files["materials/models/elsewhere/ted_9.vmt"] = true
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged(NINE .. "   [a file of that name: materials/models/elsewhere/ted_9.vmt]"), 1,
+			"zcg_content: a file of that name which nobody names where it lies is pointed at")
+		eq(logged("1 of them have a file of the same name in another folder (materials/models/elsewhere/ted_9.vmt ...)"), 1, "zcg_content: and counted")
+		M.files["materials/models/elsewhere/ted_9.vmt"] = nil
+		ted["Face 3"] = nil
+		M.files["materials/models/stock/faces/ted_9.vmt"] = nil
+		M.files["addons/zcity_csgo_gloves/_not_used/materials/materials 9/Ted_9.vmt"] = true
+		-- a run of sort_content.bat that was cut off left its files in _sorting, without their names
+		M.files["addons/zcity_csgo_gloves/_sorting/000001"] = true
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("sort_content.bat was cut off while it moved files (the folder _sorting is still there): start it again"), 1,
+			"zcg_content says that the sorting was cut off")
+		M.files["addons/zcity_csgo_gloves/_sorting/000001"] = nil
+		-- a file somebody else names, a material of a model
+		AP.Clothes[1]["of another addon"] = "models/y/other"
+		hg.Accessories = { hat = { model = MALE } }
+		M.files["materials/models/humans/male/group01/players_sheet.vmt"] = nil
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("    1 - Z-City itself or another addon (not the clothing Lua of this addon)"), 1, "zcg_content: a file the clothing Lua of this addon does not name")
+		eq(logged("    1 - no Lua: materials that models of the menu are made of"), 1, "zcg_content: a material of a model")
+		AP.Clothes[1]["of another addon"], hg.Accessories = nil, nil
+		M.files["materials/models/humans/male/group01/players_sheet.vmt"] = true
+		ZCG.AddonFolder = false
+
+		-- the file arrives: zcg_content asks the disk anew, and the face is back
+		M.files["materials/models/faces/ted_9.vmt"] = true
+		eq(ZCG.FixFaces(), 4, "faces: (the disk is not asked twice for one file)")
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(ted["Face 9"], "Models\\Faces\\Ted_9", "faces: with its file a face is itself again")
+		eq(logged("3 faces have no material file here"), 1, "faces: and is not counted any more")
+		eq(ZCG.Faceless["FacemapsSlots/" .. TED .. "/Face 9"], nil, "faces: nor remembered")
+
+		-- ---- a computer without the content is left alone
+		for i = 1, 8 do M.files["materials/models/pack/shirt_" .. i .. ".vmt"] = nil end
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(ted["Face 10 (New)"] .. "|" .. lake["Face 1"], "models/humans/modern/male/male_02/facemap_01|models/faces/lake_facemap",
+			"faces: where much of the content is missing the faces are put back as the clothing Lua made them")
+		eq(next(ZCG.Faceless), nil, "faces: nothing is remembered then")
+		eq(logged("1 of them are faces, and they stay purple and black squares: only 34 of the 43 materials the menu names are on this computer"), 1,
+			"zcg_content says why the faces were left alone")
+		eq(select(2, ZCG.FixFaces()), "share", "faces: and the function says so")
+		M.setConVar("zcg_fix_faces", 2)
+		eq(ZCG.FixFaces() .. "|" .. ted["Face 10 (New)"], "3|", "faces: zcg_fix_faces 2 does it on any computer")
+		M.setConVar("zcg_fix_faces", 0)
+		local nothing, off = ZCG.FixFaces()
+		eq(tostring(nothing) .. "|" .. tostring(off) .. "|" .. ted["Face 10 (New)"], "nil|off|models/humans/modern/male/male_02/facemap_01",
+			"faces: zcg_fix_faces 0 puts everything back")
+		eq(ZCG.FacesLeft.faces .. "|" .. ZCG.FacesLeft.why, "3|off", "faces: and says how many there are")
+		-- (two entries that come out under one name are never touched)
+		AP.FacemapsSlots["models/x"] = { ["y/Face 2"] = "models/faces/nowhere_a" }
+		AP.FacemapsSlots["models/x/y"] = { ["Face 2"] = "models/faces/nowhere_b" }
+		M.setConVar("zcg_fix_faces", 2)
+		ZCG.FixFaces()
+		eq(AP.FacemapsSlots["models/x"]["y/Face 2"] .. "|" .. AP.FacemapsSlots["models/x/y"]["Face 2"], "models/faces/nowhere_a|models/faces/nowhere_b",
+			"faces: entries that cannot be told apart by name are left alone")
+		AP.FacemapsSlots["models/x"], AP.FacemapsSlots["models/x/y"] = nil, nil
+		M.setConVar("zcg_fix_faces", 0)
+		ZCG.FixFaces()
+		M.setConVar("zcg_fix_faces", 1)
+		for i = 1, 8 do M.files["materials/models/pack/shirt_" .. i .. ".vmt"] = true end
+		M.command("zcg_content", me) -- (asks the disk anew)
+
+		-- ---- by itself, while the game runs
+		M.setConVar("zcg_fix_faces", 0)
+		M.advance(300) -- (the passes of the starts above see that: nothing to tell)
+		eq(ted["Face 10 (New)"], "models/humans/modern/male/male_02/facemap_01", "faces: (switched off, the faces are as the clothing Lua made them)")
+		M.setConVar("zcg_fix_faces", 1)
+		M.log = {}
+		hook.Run("InitPostEntity")
+		M.advance(2)
+		eq(ted["Face 10 (New)"], "", "faces: a second after the start the faces without files are seen to")
+		eq(logged("3 faces of the appearance menu have no material file on the client: they show the own face of the model"), 1, "faces: one line says so")
+		ted["Face 10 (New)"] = "models/humans/modern/male/male_02/facemap_01"
+		M.advance(125)
+		eq(ted["Face 10 (New)"], "", "faces: a clothing Lua that writes its faces anew later is seen to as well")
+		eq(logged("faces of the appearance menu have no material file"), 1, "faces: without a second line")
+		-- the switch works at once
+		M.setConVar("zcg_fix_faces", 0)
+		M.advance(0.1)
+		eq(ted["Face 10 (New)"] .. "|" .. logged("the faces of the appearance menu are as the clothing Lua made them again"),
+			"models/humans/modern/male/male_02/facemap_01|1", "faces: switching it off puts the faces back at once, and says so")
+		ZCG.FacesLeft = nil
+		M.advance(300)
+		eq(ZCG.FacesLeft, nil, "faces: switched off, the running game does not even look")
+		M.setConVar("zcg_fix_faces", 1)
+		M.advance(0.1)
+		eq(ted["Face 10 (New)"] .. "|" .. logged("faces of the appearance menu have no material file"), "|2",
+			"faces: switching it on works at once, and says so")
+		-- a file that gets mounted while the game runs: the next look finds it
+		M.files["materials/models/humans/modern/male/male_02/facemap_01.vmt"] = true
+		M.advance(125)
+		eq(ted["Face 10 (New)"], "models/humans/modern/male/male_02/facemap_01", "faces: a file that arrives while the game runs brings its face back")
+		M.files["materials/models/humans/modern/male/male_02/facemap_01.vmt"] = nil
+		M.command("zcg_content", me)
+		eq(ted["Face 10 (New)"], "", "faces: (and gone again, the face is seen to again)")
+		eq(#M.errors, 0, "faces: no errors: " .. table.concat(M.errors, " | "))
+
+		M.setConVar("zcg_fix_faces", 0)
+		ZCG.FixFaces()
+		eq(ted["Face 10 (New)"] .. "|" .. tostring(next(ZCG.Faceless)), "models/humans/modern/male/male_02/facemap_01|nil",
+			"faces: switched off again, everything is back")
+		timer.Remove("zcg_faces")
+		ZCG.Bound, ZCG.BoundPacks = nil, nil
+		AP.Clothes, AP.PlayerModels = clothes, models
+		AP.FacemapsSlots, AP.MultiFacemaps, AP.FacemapsModels = nil, nil, nil
+		M.models[MALE], M.filedata[MALE] = nil, nil
+		M.advance(300)
+	end
+
 	-- ================================================================ the Appearance Mod
 	-- tools/test_lua.py unpacks the menu file of the mod and leaves its path here
 	local sourcePath = rawget(_G, "ZCG_APPMOD_BUTTONS")

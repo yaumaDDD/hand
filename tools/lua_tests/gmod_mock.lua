@@ -185,6 +185,15 @@ return function(realm)
 	end
 	-- what was written into garrysmod/data: M.written[path] = text
 	M.written = {}
+	function file.IsDir(path, where)
+		assert(type(path) == "string", "file.IsDir: path")
+		local listed = M.files
+		if where ~= nil and where ~= "GAME" then listed = M.pathFiles[where] or {} end
+		for name in pairs(listed) do
+			if name:sub(1, #path + 1) == path .. "/" then return true end
+		end
+		return false
+	end
 	function file.Write(path, text)
 		assert(type(path) == "string" and type(text) == "string", "file.Write(path, text)")
 		M.written[path] = text

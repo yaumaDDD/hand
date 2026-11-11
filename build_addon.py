@@ -459,13 +459,14 @@ def run_lua(out):
     files = dict((path, text) for path, text in everything.items() if not lua_names.is_own(path))
     result = lua_names.run_addon(everything)[0] if lua_names.available() else None
     listed = 0
+    titles = dict((path, title) for path, title in list_content.pack_titles(HERE).items() if path in files)
     if result is not None:
         by_file = bound_entries(result)
         listed = sum(len(entries) for entries in by_file.values())
         if listed:
-            write_bound(bound, by_file)
+            write_bound(bound, by_file, titles)
             check_bound(bound, by_file, everything)
-    return dict(result=result, files=files, tried=True, bound=listed)
+    return dict(result=result, files=files, tried=True, bound=listed, titles=titles)
 
 
 # the entries of the appearance tables that the Lua of the clothing packs makes, for the game
@@ -524,7 +525,8 @@ def check_bound(path, by_file, lua_files):
                                 ', such as %r' % (missing[0][0],) if missing else ''))
 
 
-def write_bound(path, by_file):
+def write_bound(path, by_file, titles=None):
+    """by_file: bound_entries(); titles: {Lua file: the title of the pack it came with}"""
     lines = [
         '-- Written by build_addon.py; made anew with every build of the addon.',
         '--',
@@ -542,6 +544,14 @@ def write_bound(path, by_file):
             lines.append('\t\t{ %s, %s%s },' % (lua_string(entry), lua_string(value), '' if side is None else ', %d' % side))
         lines.append('\t},')
     lines.append('}')
+    named = sorted(by for by in by_file if (titles or {}).get(by))
+    if named:
+        lines += ['', '-- the packs these Lua files came with: zcg_content names them next to a missing file', 'ZCGloves.BoundPacks = {']
+        for by in named:
+            # (a title is text: written as UTF-8, which is what the console of the game shows)
+            title = lua_names.lua_text((u'%s' % titles[by]).encode('utf-8'))
+            lines.append('\t[%s] = %s,' % (lua_string(by), lua_string(title)))
+        lines.append('}')
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='ascii', newline='\n') as f:
         f.write('\n'.join(lines) + '\n')
@@ -575,8 +585,9 @@ def step_sort_tool(out, ran=None):
     listed = None
     if ran and ran['tried']:
         names = set(result.names) - stock if result is not None else set()
+        by = dict((name, result.names[name]['by']) for name in names)
         list_content.write_run_list(os.path.join(dest, list_content.RUN_LIST), names, ran['files'], ran=result is not None,
-                                    failed=lua_failed(ran))
+                                    failed=lua_failed(ran), by=by, titles=ran.get('titles'))
         listed = len(names)
     return len(SORT_TOOL), len(stock), listed
 

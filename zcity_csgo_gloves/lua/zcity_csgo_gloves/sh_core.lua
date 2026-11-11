@@ -45,6 +45,11 @@ ZCG.cvFingers = CreateConVar("zcg_fingers", "1", FLAGS,
 	"CS:GO gloves: 1 = fingerless gloves are drawn with the fingers that are part of the glove models, "
 	.. "0 = with the player model's own hands, as up to version 1.0.1.", 0, 1)
 
+ZCG.cvFixFaces = CreateConVar("zcg_fix_faces", "0", FLAGS,
+	"Appearance menu: 1 = a face whose material file is not installed here shows the own face of the model instead of "
+	.. "purple and black squares - on a computer that has the content of the menu as a whole; 2 = on any computer; "
+	.. "0 = the faces stay as the clothing Lua made them. Set it on the server. zcg_content tells how many there are.", 0, 2)
+
 -- ---------------------------------------------------------------------------------------------
 -- helpers
 -- ---------------------------------------------------------------------------------------------

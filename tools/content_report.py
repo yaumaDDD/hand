@@ -72,9 +72,29 @@ def moved_from(sources, source, folder):
     return (folder or '.') + '/'
 
 
-def lines(sources, result, named, written_by, more=()):
+def by_pack(names, who):
+    """names sorted into the packs that name them: [(label of the pack, [names])], the pack with
+    the most names first; who(name) -> label ('' when nobody is known to name it)"""
+    packs = collections.defaultdict(list)
+    for name in names:
+        packs[who(name) or u''].append(name)
+    return sorted(packs.items(), key=lambda kv: (kv[0] == u'', -len(kv[1]), kv[0]))
+
+
+def folders_of(names, shown=3):
+    """'materials/a/ — 4, materials/b/ — 2 и ещё папок: 5' for a list of names"""
+    count = collections.Counter(posixpath.dirname(name) + u'/' for name in names)
+    top = sorted(count.items(), key=lambda kv: (-kv[1], kv[0]))
+    text = u', '.join(u'%s — %d' % pair for pair in top[:shown])
+    if len(top) > shown:
+        text += u' и ещё папок: %d' % (len(top) - shown)
+    return text
+
+
+def lines(sources, result, named, written_by, more=(), who=None):
     """the report as a list of lines. sources: [{'name', 'kind', 'no_place': [paths]}];
-    more: lines that go right below the heading (what a tool did with the result)"""
+    more: lines that go right below the heading (what a tool did with the result);
+    who: name -> the pack that names it, to list the missing names pack by pack"""
     out = [u'Раскладка контента: материалы, текстуры и модели других аддонов.  (записано %s)' % written_by,
            u'Игра находит файл только по точному пути. Здесь — что куда положено, что не пригодилось и чего не хватает.',
            u'Разделы описаны в README.md, «Куда класть файлы».']
@@ -106,7 +126,13 @@ def lines(sources, result, named, written_by, more=()):
 
     out += [u'', u'Lua называет, а файла нет — %d из %d (такой файл может быть частью игры или Z-City)'
             % (len(result.missing_named), len(named))]
-    out += [u'    ' + name for name in result.missing_named]
+    if who is None:
+        out += [u'    ' + name for name in result.missing_named]
+    else:
+        # (pack by pack: these files come with the content of that pack - or with what it depends on)
+        for label, names in by_pack(result.missing_named, who):
+            out.append(u'  %s — %d' % (label or u'(какой Lua называет — не известно)', len(names)))
+            out += [u'    ' + name for name in names]
 
     out += [u'', u'Модель ищет материал, а его нет — %d из %d'
             % (len(result.missing_materials), result.materials_wanted)]
@@ -129,8 +155,8 @@ def lines(sources, result, named, written_by, more=()):
     return out
 
 
-def write(path, sources, result, named, written_by, more=()):
+def write(path, sources, result, named, written_by, more=(), who=None):
     """writes the report (UTF-8 with a mark, so that Notepad shows the Russian text)"""
-    text = u'\n'.join(lines(sources, result, named, written_by, more)) + u'\n'
+    text = u'\n'.join(lines(sources, result, named, written_by, more, who)) + u'\n'
     with io.open(path, 'w', encoding='utf-8-sig', newline='\r\n') as f:
         f.write(text)
