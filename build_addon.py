@@ -26,6 +26,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import hashlib
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -37,6 +38,7 @@ import mdl_lite  # noqa: E402
 import patch_models  # noqa: E402
 import vmt  # noqa: E402
 import zcg_layout as L  # noqa: E402
+import list_content  # noqa: E402
 
 # reduced versions of the oversized textures (tools/optimize_textures.py), in the addon layout;
 # the second archive came with the Driver and Specialist gloves, the third with Sport
@@ -202,6 +204,31 @@ def check_out(out):
                          'remove it yourself or choose another --out' % out)
 
 
+def lower_case_content(out):
+    """Materials and models that were dropped into the addon folder keep the case their author
+    used; the game on Linux and the Workshop packer only take lower-case paths."""
+    renamed = 0
+    for root in L.CONTENT_ROOTS:
+        base = os.path.join(out, root)
+        if root == 'lua' or not os.path.isdir(base):
+            continue
+        wrong = [rel for rel, _full in walk_files(base) if rel != rel.lower()]
+        if not wrong:
+            continue
+        # through a second folder: a rename that only changes the case is no rename on Windows
+        stage = base + '.zcg_case'
+        os.rename(base, stage)
+        for rel, full in sorted(walk_files(stage)):
+            target = os.path.join(base, rel.lower())
+            if os.path.exists(target):
+                raise BuildError('two files differ only in the case of their names: %s/%s' % (root, rel))
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            os.replace(full, target)
+        shutil.rmtree(stage)
+        renamed += len(wrong)
+    return renamed
+
+
 def step_skeleton(out):
     skeleton = os.path.join(HERE, L.ADDON_DIRNAME)
     if not os.path.isfile(os.path.join(skeleton, 'addon.json')):
@@ -210,6 +237,59 @@ def step_skeleton(out):
     if os.path.exists(out):
         shutil.rmtree(out)
     shutil.copytree(skeleton, out)
+    return lower_case_content(out)
+
+
+def dropin_entries(extractor, temp, archive, number):
+    """(path inside the archive, function that returns the bytes) for every file of the archive"""
+    if archive.lower().endswith('.zip'):
+        with zipfile.ZipFile(archive) as z:
+            for info in z.infolist():
+                if not info.is_dir():
+                    yield L.zip_name(info), (lambda info=info: z.read(info))
+    else:
+        dest = os.path.join(temp, '_dropin%d' % number)
+        extract(extractor, archive, dest)
+        for rel, full in sorted(walk_files(dest)):
+            if rel != MARKER:
+                yield rel, (lambda full=full: read_bytes(full))
+
+
+def step_dropins(extractor, temp, out):
+    """The other archives of the repository root are parts of other addons - Lua that adds
+    clothes to the appearance menu, materials, models (see "Drop-in archives" in
+    tools/zcg_layout.py). Their files go into the build under the path they have in the game.
+    A file of this addon is never replaced; of two different files with one path the one from
+    the archive that comes later by name is used."""
+    report, placed = [], {}
+    for number, archive in enumerate(L.dropin_archives(HERE), 1):
+        name = os.path.basename(archive)
+        counts = {'lua': 0, 'materials': 0, 'models': 0, 'other': 0}
+        left_out, notes = 0, []
+        for inner, read in dropin_entries(extractor, temp, archive, number):
+            dest = L.dropin_destination(inner)
+            if dest is None:
+                left_out += 1
+                continue
+            data = read()
+            digest = hashlib.sha1(data).digest()
+            target = os.path.join(out, dest)
+            if dest in placed:
+                if placed[dest][1] == digest:
+                    continue
+                notes.append('%s: another version is in %s, the one from here is used' % (dest, placed[dest][0]))
+            elif os.path.exists(target):
+                notes.append('%s: the file of this addon is kept' % dest)
+                continue
+            else:
+                root = dest.split('/', 1)[0]
+                counts[root if root in counts else 'other'] += 1
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, 'wb') as f:
+                f.write(data)
+            placed[dest] = (name, digest)
+        report.append((name, counts, left_out, notes))
+    return report
 
 
 def read_bytes(path):
@@ -496,8 +576,16 @@ def main():
                     help='keep the unpacked archives (the scripts in tools/ work on that folder, and the next build is faster)')
     ap.add_argument('--original-textures', action='store_true',
                     help='keep the original 4096 px (and uncompressed 2048 px) textures: about 1020 MB instead of 364 MB')
+    ap.add_argument('--gloves-only', action='store_true',
+                    help='leave out the drop-in archives (the Lua, materials and models of other addons that lie '
+                         'in the repository root): the gloves alone, as up to version 1.3.0')
     ap.add_argument('--zip', action='store_true', help='also pack the result into <out>.zip')
     args = ap.parse_args()
+
+    # archive names are not always ASCII; a console that cannot show them must not stop the build
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(errors='replace')
 
     out = os.path.abspath(args.out)
     temp = os.path.abspath(args.temp)
@@ -513,7 +601,9 @@ def main():
     idx = make_vmts.build_index(temp)
 
     print('Assembling %s' % out)
-    step_skeleton(out)
+    renamed = step_skeleton(out)
+    if renamed:
+        print('  %d files in the materials / models folders of the addon got lower-case paths' % renamed)
     models, fingers, arm = step_models(idx, out)
     wanted = step_textures(idx, out)
     print('  %d model files, %d textures' % (models, len(wanted)))
@@ -524,6 +614,28 @@ def main():
     else:
         replaced, saved = step_optimized(extractor, temp, out, wanted)
         print('  %d oversized textures replaced by their 1024 px DXT5 versions (saves %s)' % (replaced, mb(saved)))
+
+    if args.gloves_only:
+        print('  drop-in archives left out (--gloves-only)')
+    else:
+        for name, counts, left_out, notes in step_dropins(extractor, temp, out):
+            parts = ['%d %s' % (counts[key], label) for key, label in (
+                ('lua', 'Lua files'), ('materials', 'material files'), ('models', 'model files'), ('other', 'other files'))
+                if counts[key]]
+            print('  drop-in %s: %s%s' % (name, ', '.join(parts) or 'nothing for the addon',
+                                          ' (%d files without a place in an addon left out)' % left_out if left_out else ''))
+            for note in notes[:10]:
+                print('      note: ' + note)
+            if len(notes) > 10:
+                print('      ... and %d more notes' % (len(notes) - 10))
+        # what that Lua wants to find in the materials and models folders
+        named = set()
+        for _archive, _title, wanted in list_content.collect()[0]:
+            named.update(wanted)
+        if named:
+            present = sum(1 for name in named if os.path.isfile(os.path.join(out, name)))
+            print('  the drop-in Lua names %d materials and models of its own: %d are in the addon, %d are not '
+                  '(python tools/list_content.py)' % (len(named), present, len(named) - present))
 
     print('Checking')
     problems, vmts = step_verify(out)

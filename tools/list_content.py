@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Which materials and models does the Lua of the drop-in archives name?
+
+    python tools/list_content.py            a summary by addon and folder
+    python tools/list_content.py --files    every name
+
+The drop-in archives (see "Drop-in archives" in zcg_layout.py) bring Lua that adds clothes,
+player models and accessories to the appearance menu of Z-City by name; the files behind those
+names have to be put into the materials and models folders of the addon. This script reads the
+names out of the Lua text, leaves out the ones Z-City itself uses (z_city.zip) and prints where
+the rest is expected.
+
+It reads text, it does not run it: a name that the Lua puts together from pieces ("face" .. i)
+shows up as its first piece only. The exact answer for a running game is the console command
+zcg_content of the addon.
+"""
+import json
+import os
+import re
+import sys
+import zipfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+import glua  # noqa: E402
+import zcg_layout as L  # noqa: E402
+
+LITERAL = re.compile(r'''(["'])((?:models|materials|sound)/[A-Za-z0-9_\-./ !+()]*?)\1''')
+SOUND_TYPES = ('.wav', '.mp3', '.ogg')
+
+
+def strip_comments(text):
+    """the Lua without its comments (names in commented-out lines are not used by anything)"""
+    lua = glua.to_lua(text)
+    lua = re.sub(r'--\[(=*)\[.*?\]\1\]', '', lua, flags=re.S)
+    out = []
+    for line in lua.split('\n'):
+        # a "--" outside of a string ends the line
+        quote, i = None, 0
+        while i < len(line):
+            c = line[i]
+            if quote:
+                if c == '\\':
+                    i += 1
+                elif c == quote:
+                    quote = None
+            elif c in '"\'':
+                quote = c
+            elif line.startswith('--', i):
+                line = line[:i]
+                break
+            i += 1
+        out.append(line)
+    return '\n'.join(out)
+
+
+def names_in(text):
+    """game files named by a piece of Lua: set of paths like materials/x.vmt, models/y.mdl"""
+    found = set()
+    for _quote, name in LITERAL.findall(strip_comments(text)):
+        name = name.strip().lower().rstrip('/')
+        ext = os.path.splitext(name)[1]
+        if name.startswith('models/') and ext == '.mdl':
+            found.add(name)
+        elif name.startswith('materials/'):
+            found.add(name if ext else name + '.vmt')
+        elif name.startswith('models/') and not ext:
+            found.add('materials/' + name + '.vmt')  # a material of a model
+        elif name.startswith('sound/') and ext in SOUND_TYPES:
+            found.add(name)
+    return found
+
+
+def stock_names():
+    path = os.path.join(ROOT, 'z_city.zip')
+    found = set()
+    if os.path.isfile(path):
+        with zipfile.ZipFile(path) as z:
+            for info in z.infolist():
+                if info.filename.lower().endswith('.lua'):
+                    found |= names_in(z.read(info).decode('utf-8-sig', 'replace'))
+    return found
+
+
+def addon_title(z, names, inner):
+    """title of the addon a file of a drop-in archive belongs to (from the addon.json next to it)"""
+    parts = inner.split('/')
+    for k in range(len(parts) - 1, 0, -1):
+        for candidate in ('/'.join(parts[:k]) + '.json', '/'.join(parts[:k]) + '/addon.json'):
+            if candidate in names:
+                try:
+                    return json.loads(z.read(names[candidate]).decode('utf-8-sig', 'replace')).get('title') or candidate
+                except ValueError:
+                    return candidate
+    return None
+
+
+def collect():
+    """[(archive, addon title, {game path: [Lua files that name it]})] and the names of Z-City"""
+    stock = stock_names()
+    result = []
+    for archive in L.dropin_archives(ROOT):
+        if not archive.lower().endswith('.zip'):
+            continue
+        by_title = {}
+        with zipfile.ZipFile(archive) as z:
+            names = {L.zip_name(info): info for info in z.infolist()}
+            for inner, info in sorted(names.items()):
+                dest = None if info.is_dir() else L.dropin_destination(inner)
+                if not dest or not dest.endswith('.lua'):
+                    continue
+                title = addon_title(z, names, inner) or os.path.basename(archive)
+                wanted = by_title.setdefault(title, {})
+                for name in names_in(z.read(info).decode('utf-8-sig', 'replace')) - stock:
+                    wanted.setdefault(name, []).append(dest)
+        for title, wanted in sorted(by_title.items()):
+            result.append((os.path.basename(archive), title, wanted))
+    return result, stock
+
+
+def main():
+    every = '--files' in sys.argv[1:]
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(errors='replace')
+    result, _stock = collect()
+    shipped = os.path.join(ROOT, 'build', L.ADDON_DIRNAME)
+    total = have = 0
+    for archive, title, wanted in result:
+        print('%s  [%s]' % (title, archive))
+        if not wanted:
+            print('    names no files of its own')
+        folders = {}
+        for name in wanted:
+            folders.setdefault(os.path.dirname(name), []).append(name)
+        for folder, names in sorted(folders.items()):
+            present = sum(1 for name in names if os.path.isfile(os.path.join(shipped, name)))
+            total += len(names)
+            have += present
+            print('    %-62s %3d names%s' % (folder + '/', len(names), ', %d in the build' % present if present else ''))
+            if every:
+                for name in sorted(names):
+                    print('        ' + os.path.basename(name))
+        print('')
+    if every or not os.path.isdir(shipped):
+        print('%d names in all' % total)
+    else:
+        print('%d names in all, %d of them are files of the last build (build/%s)' % (total, have, L.ADDON_DIRNAME))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

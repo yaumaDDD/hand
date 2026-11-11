@@ -546,11 +546,19 @@ return function(realm)
 	function surface.SetFont(name) assert(M.fonts and M.fonts[name], "unknown font " .. tostring(name)) M.font = name end
 	function surface.GetTextSize(text) return #text * (M.fonts[M.font].size * 0.5), M.fonts[M.font].size end
 	function surface.SetDrawColor() end
-	function surface.SetMaterial(mat) assert(mat and mat.IsError, "SetMaterial: IMaterial expected") end
+	function surface.SetMaterial(mat)
+		assert(mat and mat.IsError, "SetMaterial: IMaterial expected")
+		M.material = mat
+	end
 	function surface.DrawRect() end
 	function surface.DrawOutlinedRect() end
 	function surface.DrawLine() end
-	function surface.DrawTexturedRect() end
+	M.rects = {}
+	function surface.DrawTexturedRect(x, y, w, h)
+		assert(type(x) == "number" and type(y) == "number" and type(w) == "number" and type(h) == "number",
+			"DrawTexturedRect: numbers expected")
+		M.rects[#M.rects + 1] = { mat = M.material, x = x, y = y, w = w, h = h }
+	end
 	function surface.PlaySound(path) M.sounds[#M.sounds + 1] = path end
 
 	draw = {}
@@ -610,6 +618,17 @@ return function(realm)
 	function PANEL:SetTooltip(text) self.tooltip = text end
 	function PANEL:IsHovered() return M.hovered == self end
 	function PANEL:Dock() end
+	function PANEL:DockMargin() end
+	function PANEL:GetSize() return self.w or 0, self.h or 0 end
+	function PANEL:GetName() return self.class end
+	function PANEL:GetClassName() return self.class end
+	function PANEL:LocalToScreen(x, y) return (self.x or 0) + (x or 0), (self.y or 0) + (y or 0) end
+	function PANEL:SetVisible(visible) self.hidden = not visible end
+	function PANEL:IsVisible() return not self.hidden end
+	function PANEL:InvalidateLayout() self.layouts = (self.layouts or 0) + 1 end
+	function PANEL:SetContentAlignment() end
+	function PANEL:SetMouseInputEnabled() end
+	function PANEL:MakePopup() end
 	function PANEL:Remove()
 		-- like the game: invalid at once, OnRemove a frame later (M.flushPanels)
 		if self.removed then return end
@@ -628,7 +647,28 @@ return function(realm)
 
 	local controls = {} -- user registered classes
 	local builtin = {
-		Panel = {}, DPanel = {}, DLabel = {}, DFrame = {},
+		Panel = {}, DPanel = {}, DLabel = {},
+		DFrame = {
+			SetTitle = function(self, title) self.title = title end,
+			SetDraggable = function() end,
+			ShowCloseButton = function() end,
+			-- like the game: gone at once, then OnClose
+			Close = function(self)
+				self:Remove()
+				if self.OnClose then self:OnClose() end
+			end,
+		},
+		DGrid = {
+			AddItem = function(self, item)
+				assert(ispanel(item), "DGrid:AddItem: panel expected")
+				item:SetParent(self)
+				self.Items[#self.Items + 1] = item
+			end,
+			GetItems = function(self) return self.Items end,
+			SetCols = function(self, n) self.cols = n end,
+			SetColWide = function(self, n) self.colWide = n end,
+			SetRowHeight = function(self, n) self.rowHeight = n end,
+		},
 		DButton = { DoClick = function() end },
 		DScrollPanel = {
 			GetVBar = function(self) return self.vbar end,
@@ -642,9 +682,18 @@ return function(realm)
 				if IsValid(self.Entity) then self.Entity:Remove() end
 				self.Entity = ClientsideModel(path)
 			end,
+			SetAnimated = function() end,
+			SetCamPos = function() end,
+			SetLookAt = function() end,
+			SetFOV = function() end,
 		},
-		DVScrollBar = { SetHideButtons = function() end },
+		DVScrollBar = {
+			SetHideButtons = function() end,
+			SetScroll = function(self, value) self.scroll = value end,
+			GetScroll = function(self) return self.scroll or 0 end,
+		},
 	}
+	M.builtin = builtin
 
 	local function newPanel(class, parent)
 		local panel = setmetatable({ class = class, children = {} }, panelMeta)
@@ -675,6 +724,7 @@ return function(realm)
 		assert(builtin[class], "vgui.Create: unknown class " .. tostring(class))
 		panel = newPanel(class, parent)
 		for k, v in pairs(builtin[class]) do panel[k] = v end
+		if class == "DGrid" then panel.Items = {} end
 		if class == "DScrollPanel" then
 			panel.canvas = newPanel("Panel", nil)
 			panel.canvas:SetParent(panel)
@@ -687,9 +737,17 @@ return function(realm)
 		return panel
 	end
 	function vgui.GetHoveredPanel() return M.hovered end
+	function vgui.GetKeyboardFocus() return nil end
+
+	FILL, LEFT, RIGHT, TOP, BOTTOM = 1, 2, 3, 4, 5
+	NOTIFY_ERROR = 1
+	M.notes = {}
+	notification = { AddLegacy = function(text) M.notes[#M.notes + 1] = text end }
+	function string.NiceName(name) return name end
 
 	input = {}
 	function input.IsMouseDown(code) return M.mouse[code] == true end
+	function input.GetCursorPos() return M.cursor[1], M.cursor[2] end
 
 	M.menus = {}
 	function DermaMenu()

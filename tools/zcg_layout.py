@@ -3,6 +3,7 @@
 
 Used by build_addon.py (repo root) and by the helper scripts in tools/.
 """
+import os
 
 ADDON_DIRNAME = "zcity_csgo_gloves"
 
@@ -79,6 +80,72 @@ for _n, _bump in SPECIALIST_BUMP.items():
 #                 instead}} for a glove whose model does not name its material. Lua swaps it
 #                 with Entity:SetSubMaterial (the "mats" of sh_data.lua).
 # ---------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------
+# Drop-in archives
+# ---------------------------------------------------------------------------------------------
+# Every archive in the repository root that is not listed above is taken as a part of some other
+# addon - Lua that adds clothes to the appearance menu, materials, models - and its files go into
+# the build under the path they have in the game:
+#     <anything>/lua/...                       -> lua/...
+#     <anything>/materials/...                 -> materials/...        (models, sound ... alike)
+#     <anything>/homigrad/...  (no lua folder) -> lua/homigrad/...     (autorun ... alike)
+# Whatever has no such folder above it (the addon.json of that addon, notes) is left out.
+
+# read by the tools only, never shipped
+REFERENCE_ARCHIVES = ("z_city.zip", "hands.zip", "hands2.zip")
+OPTIMIZED_PREFIX = "optimized_textures"
+
+CONTENT_ROOTS = ("lua", "materials", "models", "sound", "particles", "resource", "scripts")
+LUA_ROOTS = ("homigrad", "autorun", "initpost", "entities", "weapons", "effects")
+MATERIAL_TYPES = (".vmt", ".vtf", ".png", ".jpg", ".jpeg")
+
+
+def dropin_archives(root):
+    """full paths of the drop-in archives in the repository root, in name order"""
+    found = []
+    for name in sorted(os.listdir(root)):
+        stem, ext = os.path.splitext(name)
+        if ext.lower() not in (".zip", ".7z"):
+            continue
+        if stem in ARCHIVES or name in REFERENCE_ARCHIVES or name.startswith(OPTIMIZED_PREFIX):
+            continue
+        found.append(os.path.join(root, name))
+    return found
+
+
+def dropin_destination(path):
+    """path in the addon for a file of a drop-in archive, None when it has no place there"""
+    parts = [p for p in path.replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts or ".." in parts:
+        return None
+    lower = [p.lower() for p in parts]
+    dest = None
+    for i, name in enumerate(lower[:-1]):
+        if name in CONTENT_ROOTS:
+            dest = lower[i:]
+            break
+        if name in LUA_ROOTS:
+            dest = ["lua"] + lower[i:]
+            break
+    if dest is None:
+        return None
+    # packed from inside the materials folder: models/humans/.../shirt.vmt is a material
+    if dest[0] == "models" and os.path.splitext(dest[-1])[1] in MATERIAL_TYPES:
+        dest = ["materials"] + dest
+    return "/".join(dest)
+
+
+def zip_name(info):
+    """name of a zip entry; Windows tools store non-ASCII names in the OEM code page"""
+    name = info.filename
+    if not info.flag_bits & 0x800:
+        try:
+            name = name.encode("cp437").decode("cp866")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+    return name
+
+
 def _same_model(model, labels):
     return [(model, i, label) for i, label in enumerate(labels)]
 

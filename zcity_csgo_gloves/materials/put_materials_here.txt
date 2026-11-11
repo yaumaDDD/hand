@@ -1,0 +1,13 @@
+Сюда кладутся материалы и текстуры (.vmt, .vtf, .png) - с теми же вложенными папками, что в
+аддоне, из которого они взяты. Например:
+
+    materials/models/humans/male/group01/bib.vmt  ->  эта папка/models/humans/male/group01/bib.vmt
+    materials/models/gate/shirt.vmt               ->  эта папка/models/gate/shirt.vmt
+
+Внимание: внутри materials тоже бывает папка models - это материалы моделей, она остаётся здесь,
+в materials, а не в соседней папке models.
+
+Материалы перчаток CS:GO уже лежат здесь (папки zcity_csgo_gloves и models/weapons/v_models/arms).
+
+Проверить, всё ли на месте: команда zcg_content в консоли игры.
+Этот файл в игре не используется.
