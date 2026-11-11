@@ -41,6 +41,7 @@ import vmt  # noqa: E402
 import zcg_layout as L  # noqa: E402
 import list_content  # noqa: E402
 import place_content  # noqa: E402
+import content_report  # noqa: E402
 
 # reduced versions of the oversized textures (tools/optimize_textures.py), in the addon layout;
 # the second archive came with the Driver and Specialist gloves, the third with Sport
@@ -273,6 +274,10 @@ def step_skeleton(out, by_name=False):
         for name in names:
             full = os.path.join(folder, name)
             rel = os.path.relpath(full, skeleton).replace('\\', '/')
+            # (what sort_content.bat leaves behind when it is tried on the skeleton itself)
+            if rel in (SORT_TOOL_DIR, '_not_used', '_sorting', 'sort_content_report.txt') or name == '__pycache__':
+                skipped.append(name)
+                continue
             if by_name and os.path.isfile(full) and rel.lower().startswith(('materials/', 'models/')) \
                     and place_content.kind_of(name) and not L.is_own_content(rel):
                 by_hand.append((rel, full))
@@ -424,52 +429,26 @@ def step_dropins(extractor, temp, out, by_hand=()):
     return report, result, named
 
 
-def moved_from(sources, source, folder):
-    """the folder a file was moved out of, as somebody finds it: a folder of the repository with
-    its name in front, a folder of an archive as it is called there"""
-    kinds = dict((entry['name'], entry['kind']) for entry in sources)
-    if kinds.get(source) == 'folder':
-        return '/'.join(part for part in (source, folder) if part) + '/'
-    return (folder or '.') + '/'
+# sort_content.bat of the skeleton does on the computer of the addon's owner what step_dropins
+# does here: it runs these scripts, which the build puts next to it
+SORT_TOOL_DIR = 'sort_content'
+SORT_TOOL = ('sort_content.py', 'place_content.py', 'content_report.py', 'list_content.py', 'glua.py',
+             'zcg_layout.py', 'vmt.py')
 
 
-def write_content_report(path, sources, result, named):
-    """everything place_content decided, for reading after the build"""
-    # the second line, for the owner of the repository: "Build report about the materials and
-    # models of other addons; the sections are described in README.md."
-    lines = ['Content of the drop-in archives and folders: what went where.  (written by build_addon.py)',
-             u'\u041e\u0442\u0447\u0451\u0442 \u0441\u0431\u043e\u0440\u043a\u0438 \u043e '
-             u'\u043c\u0430\u0442\u0435\u0440\u0438\u0430\u043b\u0430\u0445 \u0438 '
-             u'\u043c\u043e\u0434\u0435\u043b\u044f\u0445 \u0434\u0440\u0443\u0433\u0438\u0445 '
-             u'\u0430\u0434\u0434\u043e\u043d\u043e\u0432; \u0440\u0430\u0437\u0434\u0435\u043b\u044b '
-             u'\u043e\u043f\u0438\u0441\u0430\u043d\u044b \u0432 README.md.', '']
-    for entry in sources:
-        if entry['no_place']:
-            lines.append('%s - %d files that are no part of an addon (no lua, materials, models ... folder above '
-                         'them) and were left out:' % (entry['name'], len(entry['no_place'])))
-            lines += ['    ' + name for name in entry['no_place'][:200]]
-            if len(entry['no_place']) > 200:
-                lines.append('    ... and %d more' % (len(entry['no_place']) - 200))
-            lines.append('')
-    moves = sorted(result.moves.items(), key=lambda kv: (kv[0][0], kv[0][1]))
-    lines.append('Found by name or moved with their folder - %d files:' % sum(result.moves.values()))
-    for (source, src, dst), count in moves:
-        lines.append('    %s  ->  %s/    %d files    [%s]' % (moved_from(sources, source, src), dst, count, source))
-    lines += ['', 'Left out - %d files:' % len(result.left_out)]
-    for item, why in result.left_out:
-        lines.append('    %s    (%s)' % (item, why))
-    lines += ['', 'Notes - %d:' % len(result.notes)] + ['    ' + note for note in result.notes]
-    lines += ['', 'Named by the Lua, no file - %d of %d (they may be a part of the game or of Z-City):'
-              % (len(result.missing_named), len(named))]
-    lines += ['    ' + name for name in result.missing_named]
-    lines += ['', 'Materials of the models, no file - %d of %d:' % (len(result.missing_materials), result.materials_wanted)]
-    for model, name, group in result.missing_materials:
-        lines.append('    %s  <-  %s' % (' | '.join(group), model))
-    lines += ['', 'Textures of the materials, no file - %d of %d:' % (len(result.missing_textures), result.textures_wanted)]
-    for material, key, texture in result.missing_textures:
-        lines.append('    %s  <-  %s  %s' % (texture, material, key))
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(lines) + '\n')
+def step_sort_tool(out):
+    """The scripts of sort_content.bat, and the list of the files Z-City names itself: the tool
+    has no z_city.zip to read them from and must not go looking for them among the content.
+    Returns (scripts, names in the list)."""
+    dest = os.path.join(out, SORT_TOOL_DIR)
+    for name in SORT_TOOL:
+        copy(os.path.join(HERE, 'tools', name), os.path.join(dest, name))
+    stock = sorted(list_content.stock_names())
+    with open(os.path.join(dest, list_content.STOCK_LIST), 'w', encoding='utf-8', newline='\n') as f:
+        f.write('# Materials, models and sounds that the Lua of Z-City names itself (read out of z_city.zip by\n'
+                '# build_addon.py). They come with the gamemode: sort_content.py does not ask for them.\n')
+        f.write('\n'.join(stock) + '\n')
+    return len(SORT_TOOL), len(stock)
 
 
 def read_bytes(path):
@@ -807,7 +786,12 @@ def main():
         print('  NOT USED: %s - only .zip and .7z archives are read (whole, or split by 7-Zip into .001 .002 ...)' % name)
     if args.gloves_only:
         print('  drop-in archives left out (--gloves-only)')
+        bat = os.path.join(out, 'sort_content.bat')     # nothing to sort without the clothes
+        if os.path.isfile(bat):
+            os.remove(bat)
     else:
+        scripts, stock = step_sort_tool(out)
+        print('  sort_content.bat: %d scripts, %d names of Z-City itself that it leaves alone' % (scripts, stock))
         sources, content, named = step_dropins(extractor, temp, out, by_hand)
         foreign = [dest for dest, _item in content.placed]
         for entry in sources:
@@ -835,7 +819,7 @@ def main():
                 print('  %d content files were not where the game looks for them and were put there:'
                       % sum(content.moves.values()))
             for (source, src, dst), count in moves[:12]:
-                print('      %s  ->  %s/  (%d files)' % (moved_from(sources, source, src), dst, count))
+                print('      %s  ->  %s/  (%d files)' % (content_report.moved_from(sources, source, src), dst, count))
             if len(moves) > 12:
                 print('      ... and %d more folders' % (len(moves) - 12))
             for note in content.notes[:10]:
@@ -847,7 +831,7 @@ def main():
                   '%d materials name %d textures, %d of them have no file'
                   % (content.models, content.materials_wanted, len(content.missing_materials),
                      materials, content.textures_wanted, len(content.missing_textures)))
-            write_content_report(listing, sources, content, named)
+            content_report.write(listing, sources, content, named, 'build_addon.py')
             print('      (a name without a file may be a part of the game or of Z-City; the lists are in %s)' % listing)
 
     print('Checking')

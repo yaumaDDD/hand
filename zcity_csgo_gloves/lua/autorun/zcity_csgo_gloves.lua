@@ -5,7 +5,7 @@
 if SERVER then AddCSLuaFile() end
 
 ZCGloves = ZCGloves or {}
-ZCGloves.Version = "2.1.0"
+ZCGloves.Version = "2.2.0"
 
 local DIR = "zcity_csgo_gloves/"
 
@@ -29,6 +29,7 @@ end
 shared("sh_config.lua")
 shared("sh_data.lua")
 shared("sh_core.lua")
+shared("sh_materials.lua")
 shared("sh_content.lua")
 server("sv_core.lua")
 client("cl_render.lua")

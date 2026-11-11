@@ -40,6 +40,9 @@ jobs:
       - name: Test the placing of drop-in content
         run: python tools/test_content.py
 
+      - name: Test sort_content as it is shipped
+        run: python tools/test_sort_tool.py
+
       - name: Build the addon
         run: python build_addon.py --zip
 

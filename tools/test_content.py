@@ -12,6 +12,7 @@ The last test makes up whole games at random, packs each in the ways people pack
 compares where every file ends up with where it came from (see test_random_packings).
 """
 import collections
+import contextlib
 import io
 import os
 import random
@@ -26,8 +27,10 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, ROOT)
 import build_addon  # noqa: E402
+import content_report  # noqa: E402
 import list_content  # noqa: E402
 import place_content as P  # noqa: E402
+import sort_content  # noqa: E402
 import zcg_layout as L  # noqa: E402
 
 CHECKS = [0, 0]
@@ -424,9 +427,20 @@ def test_places_kept(tmp):
     report, placed = run(src, ['materials/models/gate/epl.vmt'])
     check(text_of(placed['materials/models/gate/extra.vtf']) == texture('the one in place').decode('latin-1'),
           'a file in its place is not pushed out by one that is moved there')
-    check(text_of(placed['materials/gate/extra.vtf']) == texture('the one a level short').decode('latin-1'),
-          'the other one stays where it was packed')
-    check(not report.left_out, 'and nothing is lost: %s' % report.left_out)
+    # ... and the other one is not left at the path it was packed under: nothing looks there
+    check('materials/gate/extra.vtf' not in placed, 'the other version is not put anywhere else: %s' % sorted(placed))
+    check([(str(item), why) for item, why in report.left_out] == [('content.zip: materials/gate/extra.vtf', P.PLACE_TAKEN)],
+          'it is left out, with the reason: %s' % report.left_out)
+    check(len(report.notes) == 1 and report.notes[0].kind == 'version' and 'materials/models/gate/extra.vtf' in report.notes[0],
+          'and the two versions are noted: %s' % report.notes)
+    # two copies of one file are no two versions
+    write(os.path.join(src, 'materials/gate/extra.vtf'), texture('the one in place'))
+    report, placed = run(src, ['materials/models/gate/epl.vmt'])
+    check('materials/gate/extra.vtf' not in placed and not report.notes, 'a second copy of the same file: no remark')
+    # a file of the addon itself has the place
+    report, placed = run(src, ['materials/models/gate/epl.vmt'], own=['materials/models/gate/epl.vtf'])
+    check(('content.zip: materials/gate/epl.vtf', P.OWN_FILE) in [(str(item), why) for item, why in report.left_out]
+          and 'materials/gate/epl.vtf' not in placed, 'a file whose place the addon has itself is left out: %s' % report.left_out)
 
 
 def test_namesakes(tmp):
@@ -732,7 +746,7 @@ def random_run(seed, tmp):
             heap_of[folder] = len(heaps)
     # a material and its textures stand next to each other in a folder sorted by name: somebody
     # who cuts the content into several uploads mostly keeps them together
-    written, truth, together = set(), {}, {}
+    written, truth, together, spelled = set(), {}, {}, {}
     for path, data in sorted(game.items()):
         folder, name = path.rsplit('/', 1)
         stem = name.rsplit('.', 1)[0]
@@ -748,6 +762,11 @@ def random_run(seed, tmp):
             parts[0] = 'upload %d %s' % (upload, parts[0])
         if rng.random() < 0.1:
             parts = [part.upper() if rng.random() < 0.5 else part for part in parts]
+        # A folder is spelled the way it was made first, as on Windows, where "GATE" and "gate"
+        # are one folder: the test puts the same files down on every file system.
+        for depth in range(1, len(parts)):
+            key = (upload, '/'.join(parts[:depth]).lower())
+            parts[depth - 1] = spelled.setdefault(key, parts[depth - 1])
         full = os.path.join(tmp, 's%d' % upload, *parts)
         if full.lower() in written:
             continue        # nobody can put two files there either
@@ -932,44 +951,280 @@ def test_sources(tmp):
 
 
 def test_report(tmp):
-    # what the build writes down for reading afterwards
+    # what the build writes down for reading afterwards (in Russian: tools/content_report.py)
     one, two = os.path.join(tmp, 'report1'), os.path.join(tmp, 'report2')
     write(os.path.join(one, 'content/materials/gate/epl.vmt'), material('models/gate/epl', bumpmap='models/gate/epl_n'))
     write(os.path.join(one, 'content/materials/gate/epl.vtf'), texture('epl'))
     write(os.path.join(one, 'content/models/p/band.mdl'), model(['models/gate/'], ['epl', 'strap'], 'p/band.mdl'))
     write(os.path.join(one, 'content/stuff/lost.vtf'), texture('lost'))
+    write(os.path.join(one, 'a/cap.vmt'), material('elsewhere/t'))
+    write(os.path.join(one, 'b/cap.vmt'), material('elsewhere/u'))
     write(os.path.join(two, 'hat.vmt'), material('models/gate/hat'))
     items = scan(one, source='content.zip', order=1) + scan(two, source='material 1', order=2)
     named = ['materials/models/gate/epl.vmt', 'materials/models/gate/hat.vmt', 'materials/models/gate/gone.vmt',
-             'models/p/band.mdl']
+             'materials/models/gate/cap.vmt', 'models/p/band.mdl']
     report, _placed = run(items, named)
     sources = [{'name': 'content.zip', 'kind': 'archive', 'no_place': ['content/readme.txt']},
                {'name': 'material 1', 'kind': 'folder', 'no_place': []}]
-    check(build_addon.moved_from(sources, 'content.zip', 'content/materials/gate') == 'content/materials/gate/' and
-          build_addon.moved_from(sources, 'content.zip', '') == './' and
-          build_addon.moved_from(sources, 'material 1', '') == 'material 1/' and
-          build_addon.moved_from(sources, 'material 1', 'sub') == 'material 1/sub/',
+    moved_from = content_report.moved_from
+    check(moved_from(sources, 'content.zip', 'content/materials/gate') == 'content/materials/gate/' and
+          moved_from(sources, 'content.zip', '') == './' and
+          moved_from(sources, 'material 1', '') == 'material 1/' and
+          moved_from(sources, 'material 1', 'sub') == 'material 1/sub/',
           'a folder of the repository is shown with its name, a folder of an archive as it is called there')
     path = os.path.join(tmp, 'content_report.txt')
-    build_addon.write_content_report(path, sources, report, named)
-    with io.open(path, encoding='utf-8') as f:
-        text = f.read()
-    for line in ('content.zip - 1 files that are no part of an addon',
-                 '    content/readme.txt',
-                 'Found by name or moved with their folder - 3 files:',
-                 '    content/materials/gate/  ->  materials/models/gate/    2 files    [content.zip]',
-                 '    material 1/  ->  materials/models/gate/    1 files    [material 1]',
-                 'Left out - 1 files:',
-                 '    content.zip: content/stuff/lost.vtf    (nothing names it)',
-                 'Notes - 0:',
-                 'Named by the Lua, no file - 1 of 4 ',
-                 '    materials/models/gate/gone.vmt',
-                 'Materials of the models, no file - 1 of 2:',
-                 '    materials/models/gate/strap.vmt  <-  models/p/band.mdl',
-                 'Textures of the materials, no file - 2 of 3:',
-                 '    materials/models/gate/epl_n.vtf  <-  materials/models/gate/epl.vmt  $bumpmap',
-                 '    materials/models/gate/hat.vtf  <-  materials/models/gate/hat.vmt  $basetexture'):
-        check(line in text, 'the report says: %s' % line.strip())
+    content_report.write(path, sources, report, named, 'build_addon.py', [u'(a line of the tool)'])
+    with open(path, 'rb') as f:
+        data = f.read()
+    check(data.startswith(b'\xef\xbb\xbf') and b'\r\n' in data and b'\n\n' not in data,
+          'the report is UTF-8 with a mark and Windows line ends: Notepad shows it as it is')
+    text = data.decode('utf-8-sig').replace('\r\n', '\n')
+    for line in (u'(записано build_addon.py)',
+                 u'(a line of the tool)',
+                 u'Переложено (нашлись по имени или переехали вместе со своей папкой) — файлов: 3',
+                 u'    content/materials/gate/  ->  materials/models/gate/    файлов: 2    [content.zip]',
+                 u'    material 1/  ->  materials/models/gate/    файлов: 1    [material 1]',
+                 u'Не использовано — файлов: 3',
+                 u'    content.zip: content/stuff/lost.vtf    (его никто не называет, и лежит он не в папке materials или models)',
+                 u'    content.zip: a/cap.vmt    (не отличить от тёзок, см. «Замечания»)',
+                 u'Замечания — 1',
+                 u'    materials/models/gate/cap.vmt: на это имя есть несколько разных файлов (2), и нечем решить, '
+                 u'какой нужен; не взят ни один',
+                 u'Lua называет, а файла нет — 2 из 5 ',
+                 u'    materials/models/gate/gone.vmt',
+                 u'Модель ищет материал, а его нет — 1 из 2',
+                 u'    materials/models/gate/strap.vmt  <-  models/p/band.mdl',
+                 u'Материал ищет текстуру, а её нет — 2 из 3',
+                 u'    materials/models/gate/epl_n.vtf  <-  materials/models/gate/epl.vmt  $bumpmap',
+                 u'    materials/models/gate/hat.vtf  <-  materials/models/gate/hat.vmt  $basetexture',
+                 u'Не часть аддона (над файлом нет папки lua, materials, models ...) — пропущено',
+                 u'    content.zip — файлов: 1',
+                 u'        content/readme.txt'):
+        check(line in text, 'the report says: %s' % line.strip().encode('ascii', 'backslashreplace').decode('ascii'))
+    # every remark and every reason has its Russian words
+    for kind, english in P.NOTES.items():
+        made = P.Note(kind, *[2 if spec == 'd' else 'x' for spec in
+                              [english[i + 1] for i in range(len(english) - 1) if english[i] == '%']])
+        check(content_report.note(made) != made and u'%' not in content_report.note(made), 'a remark in Russian: ' + kind)
+    for reason in (P.REPLACED, P.OWN_FILE, P.NAMESAKES, P.UNNAMED, P.PLACE_TAKEN):
+        check(content_report.why(reason) != reason, 'a reason in Russian: ' + reason)
+    check(content_report.note('something else') == 'something else' and content_report.why('other') == 'other',
+          'what is not known stays as it is')
+
+
+# ---- sort_content.py: the same, done to an addon that is installed --------------------------
+def tree(folder):
+    """{path below the folder: content}"""
+    found = {}
+    for base, _dirs, files in os.walk(folder):
+        for name in files:
+            full = os.path.join(base, name)
+            found[os.path.relpath(full, folder).replace(os.sep, '/')] = build_addon.read_bytes(full)
+    return found
+
+
+def sort(*args):
+    """runs sort_content.py; returns (exit code, what it printed)"""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = sort_content.main(list(args))
+    return code, out.getvalue()
+
+
+def an_addon(folder):
+    """an addon as it is installed: its Lua, its own content, and clothing content put in by hand"""
+    lua = '''
+        hg.Appearance.Clothes[1].epl = "models/gate/epl"
+        hg.Appearance.Clothes[1].shirt = "models/gate/shirt"
+        hg.Appearance.Clothes[1].sheet = "models/humans/modern/male/sheet_01"
+        hg.Appearance.Clothes[2].sheet = "models/humans/modern/female/sheet_01"
+        hg.Appearance.Clothes[1].bib = "models/humans/male/group01/bib"
+        hg.Appearance.Clothes[1].gone = "models/gate/gone"
+        AppAddModel("Male 10", "models/slav/m/male_10.mdl", false, {})
+        local stock = "models/humans/male/group01/normal" -- Z-City has this one itself
+    '''
+    files = {
+        'addon.json': '{}',
+        'lua/autorun/clothes.lua': lua,
+        # its own
+        'materials/zcity_csgo_gloves/icons/moto_1.png': b'png',
+        'materials/models/weapons/v_models/arms/glove_x/Left.vmt': material('models/weapons/v_models/arms/glove_x/left'),
+        'models/zcity_csgo_gloves/v_glove.mdl': model([], [], 'v_glove.mdl'),
+        'materials/put_materials_here.txt': 'note',
+        # a level short, with capitals
+        'materials/Gate/Epl.VMT': material('models/gate/epl'),
+        'materials/Gate/epl.vtf': texture('epl'),
+        'materials/Gate/Unused.vtf': texture('unused'),
+        # right where it belongs
+        'materials/models/gate/shirt.vmt': material('models/gate/shirt', bumpmap='models/gate/shirt_n'),
+        'materials/models/gate/shirt.vtf': texture('shirt'),
+        # folders of the owner's own, namesakes in them
+        'materials/material 1/sheet_01.vmt': material('models/humans/modern/male/sheet_01'),
+        'materials/material 1/sheet_01.vtf': texture('sheet of the men'),
+        'materials/material 2/sheet_01.vmt': material('models/humans/modern/female/sheet_01'),
+        'materials/material 2/sheet_01.vtf': texture('sheet of the women'),
+        # materials in the models folder
+        'models/humans/male/group01/bib.vmt': material('models/humans/male/group01/bib'),
+        'models/humans/male/group01/bib.vtf': texture('bib'),
+        # a model in a folder of its own, with its files; it names its materials
+        'models/model 1/Male_10.mdl': model(['models\\humans\\slav\\'], ['hair', 'eyes'], 'slav/m/male_10.mdl'),
+        'models/model 1/male_10.vvd': b'vvd',
+        'models/model 1/male_10.dx90.vtx': b'vtx',
+        'materials/slav stuff/hair.vmt': material('models/humans/slav/hair'),
+        'materials/slav stuff/hair.vtf': texture('hair'),
+        # no place for these: a model among the materials that nothing names
+        'materials/odd/thing.mdl': model([], [], 'thing.mdl'),
+        # not content, but with capitals
+        'materials/Icons/Thing.PNG': b'png2',
+    }
+    for rel, data in files.items():
+        write(os.path.join(folder, rel), data)
+    return files
+
+
+SORTED = {
+    'materials/Gate/Epl.VMT': 'materials/models/gate/epl.vmt',
+    'materials/Gate/epl.vtf': 'materials/models/gate/epl.vtf',
+    'materials/Gate/Unused.vtf': 'materials/models/gate/unused.vtf',
+    'materials/material 1/sheet_01.vmt': 'materials/models/humans/modern/male/sheet_01.vmt',
+    'materials/material 1/sheet_01.vtf': 'materials/models/humans/modern/male/sheet_01.vtf',
+    'materials/material 2/sheet_01.vmt': 'materials/models/humans/modern/female/sheet_01.vmt',
+    'materials/material 2/sheet_01.vtf': 'materials/models/humans/modern/female/sheet_01.vtf',
+    'models/humans/male/group01/bib.vmt': 'materials/models/humans/male/group01/bib.vmt',
+    'models/humans/male/group01/bib.vtf': 'materials/models/humans/male/group01/bib.vtf',
+    'models/model 1/Male_10.mdl': 'models/slav/m/male_10.mdl',
+    'models/model 1/male_10.vvd': 'models/slav/m/male_10.vvd',
+    'models/model 1/male_10.dx90.vtx': 'models/slav/m/male_10.dx90.vtx',
+    'materials/slav stuff/hair.vmt': 'materials/models/humans/slav/hair.vmt',
+    'materials/slav stuff/hair.vtf': 'materials/models/humans/slav/hair.vtf',
+    'materials/odd/thing.mdl': '_not_used/materials/odd/thing.mdl',
+    'materials/Icons/Thing.PNG': 'materials/icons/thing.png',
+}
+
+
+def test_sorting(tmp):
+    # (a path as the game has it: blanks, brackets, Russian letters)
+    addon = os.path.join(tmp, u'Program Files (x86)', u'\u0438\u0433\u0440\u0430', 'addons', 'zcity_csgo_gloves')
+    files = an_addon(addon)
+    want = dict((SORTED.get(rel, rel), data if isinstance(data, bytes) else data.encode('utf-8'))
+                for rel, data in files.items())
+
+    # a trial run changes nothing
+    before = tree(addon)
+    code, text = sort('--addon', addon, '--dry-run')
+    after = tree(addon)
+    after.pop(sort_content.REPORT, None)
+    check(code == 0 and after == before, 'sorting, a trial run: nothing is moved')
+    check(u'\u041f\u0420\u041e\u0411\u041d\u042b\u0419' in text, 'and it says that it was a trial run')
+
+    code, text = sort('--addon', addon)
+    got = tree(addon)
+    report = got.pop(sort_content.REPORT, b'').decode('utf-8-sig')
+    check(code == 0, 'sorting an addon in place: exit code %s' % code)
+    check(sorted(got) == sorted(want), 'every file is where the game looks for it: only in one of the two %s'
+          % sorted(set(got) ^ set(want)))
+    check(got == want, 'and no file was changed, lost or made up')
+    check(not os.path.isdir(os.path.join(addon, 'materials', 'Gate')) and not os.path.isdir(os.path.join(addon, 'materials', 'material 1'))
+          and not os.path.isdir(os.path.join(addon, 'models', 'model 1')) and not os.path.isdir(os.path.join(addon, sort_content.STAGE)),
+          'the folders that are empty now are gone, the stage folder too')
+    for line in (u'[zcity_csgo_gloves]', u'zcity_csgo_gloves/materials/gate/  ->  materials/models/gate/',
+                 u'materials/models/gate/gone.vmt', u'materials/models/humans/slav/eyes.vmt  <-  models/slav/m/male_10.mdl',
+                 u'materials/models/gate/shirt_n.vtf  <-  materials/models/gate/shirt.vmt  $bumpmap'):
+        check(line in report, 'the report of the sorting has: %s' % line)
+    check(u'models/humans/male/group01/normal' not in report, 'a file that Z-City names itself is not asked for')
+    check(u': 15\n' in text and sort_content.ASIDE + u' (' in text, 'the screen tells how many files were moved: %r' % text[-900:])
+
+    # once more: nothing left to do
+    code, text = sort('--addon', addon)
+    again = tree(addon)
+    again.pop(sort_content.REPORT, None)
+    check(code == 0 and again == want, 'sorting twice changes nothing more')
+
+    # ---- content from outside: a folder and an archive, copied in; what is there stays
+    addon2 = os.path.join(tmp, 'addons2', 'zcity_csgo_gloves')
+    files2 = {
+        'addon.json': '{}',
+        'lua/autorun/clothes.lua': files['lua/autorun/clothes.lua'],
+        'materials/models/gate/shirt.vmt': material('models/gate/shirt'),
+    }
+    for rel, data in files2.items():
+        write(os.path.join(addon2, rel), data)
+    outside = os.path.join(tmp, u'\u043a\u043e\u043d\u0442\u0435\u043d\u0442 \u2014 \u043a\u043e\u043f\u0438\u044f')
+    write(os.path.join(outside, 'materials/gate/epl.vmt'), material('models/gate/epl'))
+    write(os.path.join(outside, 'materials/gate/epl.vtf'), texture('epl'))
+    write(os.path.join(outside, 'materials/gate/shirt.vmt'), material('models/gate/other_shirt'))
+    write(os.path.join(outside, 'materials/gate/shirt.vtf'), texture('shirt'))
+    write(os.path.join(outside, 'materials/gate/icon.png'), b'png')
+    write(os.path.join(outside, 'lua/autorun/more.lua'), 'print("x")')
+    write(os.path.join(outside, 'readme.txt'), 'hello')
+    archive = os.path.join(tmp, 'material 1.zip')
+    with zipfile.ZipFile(archive, 'w') as z:
+        z.writestr('material 1/sheet_01.vmt', material('models/humans/modern/male/sheet_01'))
+        z.writestr('material 1/sheet_01.vtf', texture('sheet of the men'))
+    outside_before = tree(outside)
+    code, text = sort('--addon', addon2, outside, archive)
+    got = tree(addon2)
+    report = got.pop(sort_content.REPORT, b'').decode('utf-8-sig')
+    check(code == 0, 'sorting with content from outside: exit code %s' % code)
+    check(sorted(got) == ['addon.json', 'lua/autorun/clothes.lua', 'materials/gate/icon.png', 'materials/models/gate/epl.vmt',
+                          'materials/models/gate/epl.vtf', 'materials/models/gate/shirt.vmt', 'materials/models/gate/shirt.vtf',
+                          'materials/models/humans/modern/male/sheet_01.vmt', 'materials/models/humans/modern/male/sheet_01.vtf'],
+          'content from a folder and from an archive is copied to its places: %s' % sorted(got))
+    check(got['materials/models/gate/shirt.vmt'] == material('models/gate/shirt').encode(),
+          'a file of the addon is not replaced by one from outside')
+    check(u'materials/gate/shirt.vmt' in report and u'\u0435\u0433\u043e \u043c\u0435\u0441\u0442\u043e \u0437\u0430\u043d\u044f\u043b' in report,
+          'the other version is named in the report, with the reason')
+    check(tree(outside) == outside_before and os.path.isfile(archive), 'what was given from outside is left as it is')
+    check(u'readme.txt' in report and u'more.lua' not in tree(addon2), 'Lua and notes from outside are not taken')
+
+    # ---- a run that was cut off: the files in the stage folder go where they were going
+    addon3 = os.path.join(tmp, 'addons3', 'zcity_csgo_gloves')
+    write(os.path.join(addon3, 'lua/autorun/clothes.lua'), files['lua/autorun/clothes.lua'])
+    write(os.path.join(addon3, sort_content.STAGE, '000000'), material('models/gate/epl'))
+    write(os.path.join(addon3, sort_content.STAGE, '000001'), texture('epl'))
+    write(os.path.join(addon3, sort_content.STAGE, 'journal.txt'),
+          '000000\tmaterials/models/gate/epl.vmt\tmaterials/Gate/Epl.VMT\n'
+          '000001\tmaterials/models/gate/epl.vtf\tmaterials/Gate/epl.vtf\n'
+          '000002\tmaterials/models/gate/never.vtf\tmaterials/Gate/never.vtf\n')
+    code, text = sort('--addon', addon3)
+    got = tree(addon3)
+    got.pop(sort_content.REPORT, None)
+    check(code == 0 and sorted(got) == ['lua/autorun/clothes.lua', 'materials/models/gate/epl.vmt', 'materials/models/gate/epl.vtf'],
+          'a run that was cut off is finished first: %s' % sorted(got))
+
+    # ---- a file that cannot be moved (the game has it open): it stays, nothing is lost
+    addon4 = os.path.join(tmp, 'addons4', 'zcity_csgo_gloves')
+    an_addon(addon4)
+    before = tree(addon4)
+    real = os.replace
+
+    def stuck(src, dst):
+        if src.replace(os.sep, '/').endswith('materials/Gate/epl.vtf'):
+            raise PermissionError(13, 'the file is used by another process')
+        return real(src, dst)
+
+    sort_content.os.replace = stuck
+    try:
+        code, text = sort('--addon', addon4)
+    finally:
+        sort_content.os.replace = real
+    got = tree(addon4)
+    got.pop(sort_content.REPORT, None)
+    check(code == 2, 'a file that cannot be moved: the exit code says so (%s)' % code)
+    check('materials/Gate/epl.vtf' in got and 'materials/models/gate/epl.vmt' in got,
+          'it stays where it was, the others are moved')
+    check(sorted(got.values()) == sorted(before.values()), 'and no file is lost or made up')
+    code, text = sort('--addon', addon4)
+    got = tree(addon4)
+    got.pop(sort_content.REPORT, None)
+    check(code == 0 and 'materials/models/gate/epl.vtf' in got and 'materials/Gate/epl.vtf' not in got,
+          'the next run moves it')
+
+    # ---- not an addon
+    code, text = sort('--addon', os.path.join(tmp, 'nowhere'))
+    check(code == 1 and u'\u041e\u0428\u0418\u0411\u041a\u0410' in text, 'a folder that is no addon is refused')
+    code, text = sort('--addon', addon2, os.path.join(tmp, 'no such folder'))
+    check(code == 1, 'a source that does not exist is refused')
 
 
 def main():
@@ -991,6 +1246,7 @@ def main():
         test_folders_of_their_own(tmp)
         test_sources(tmp)
         test_report(tmp)
+        test_sorting(tmp)
         test_random_packings(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

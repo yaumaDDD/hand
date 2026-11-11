@@ -52,17 +52,40 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- 1. the preview model
 -- ---------------------------------------------------------------------------------------------
+-- The hands of the model go only while a glove really is drawn over them; the glove is drawn
+-- after the model, so they go one frame after the glove came.
+local function gloveOn(main, ent)
+	if not IsValid(ent) then return nil end
+	local variant = editorVariant(main)
+	if not variant or not ZCG.HasModel(variant.model) then return nil end
+	local state = ZCG.States[ent]
+	if not state or not state.drawn then return nil end
+	return variant, state
+end
+
 -- runs after the editor's own LayoutEntity, which resets every sub-material in every frame
 local function editorLayout(main, ent)
-	if not IsValid(ent) then return end
-	local variant = editorVariant(main)
-	if not variant or not ZCG.HasModel(variant.model) then return end
-	-- only while a glove really is drawn over the hands; it is drawn after the model, so the
-	-- hands go one frame after the glove came
-	local state = ZCG.States[ent]
-	if not state or not state.drawn then return end
+	local variant = gloveOn(main, ent)
+	if not variant then return end
 	local slot = ZCG.Wearing(ent, variant)
 	if slot then ent:SetSubMaterial(slot, ZCG.HideMaterial()) end
+end
+
+-- runs right before the model is drawn: a model without a material for its hands gets the
+-- bones of this frame with the hands shrunk into the wrists
+local function editorBefore(main, ent)
+	local variant, state = gloveOn(main, ent)
+	if not variant then return end
+	local _, _, bones = ZCG.Wearing(ent, variant)
+	if not bones then return end
+	ent:SetupBones()
+	state.shrunk = ZCG.ShrinkHands(ent, state)
+end
+
+-- runs before the editor's own PostDrawModel: the accessories it draws find whole hands
+local function editorAfter(main, ent)
+	local state = IsValid(ent) and ZCG.States[ent]
+	if state then ZCG.GrowHands(ent, state) end
 end
 
 -- runs after the editor's own PostDrawModel (which draws the accessories and ends with
@@ -72,6 +95,8 @@ local function editorDraw(main, ent)
 	local variant = editorVariant(main)
 	if variant then
 		local _, fingers = ZCG.Wearing(ent, variant)
+		local state = ZCG.States[ent]
+		if state then state.shrunk = false end
 		ZCG.DrawGlove(ent, variant, fingers)
 	else
 		ZCG.ClearGlove(ent)
@@ -84,7 +109,7 @@ local function isViewer(panel)
 end
 
 local function wrapViewer(main, viewer)
-	local layout, postDraw = viewer.LayoutEntity, viewer.PostDrawModel
+	local layout, preDraw, postDraw = viewer.LayoutEntity, viewer.PreDrawModel, viewer.PostDrawModel
 	local broken = false
 
 	local function guard(func, ent)
@@ -102,7 +127,15 @@ local function wrapViewer(main, viewer)
 		return result
 	end
 
+	viewer.PreDrawModel = function(self, ent, ...)
+		local result
+		if isfunction(preDraw) then result = preDraw(self, ent, ...) end
+		if result ~= false then guard(editorBefore, ent) end -- (false: the model is not drawn)
+		return result
+	end
+
 	viewer.PostDrawModel = function(self, ent, ...)
+		guard(editorAfter, ent)
 		local result = postDraw(self, ent, ...)
 		guard(editorDraw, ent)
 		return result

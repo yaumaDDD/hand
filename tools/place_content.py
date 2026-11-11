@@ -261,6 +261,7 @@ class Item(object):
         self.material = None
         self.model_name = None    # a model: the path it was compiled for, without models/
         self.replaced = False     # a later source brought a file for the same place: that one is used
+        self.crowded = None       # the place it belongs to, when another file has it
 
     def same_as(self, other):
         if os.path.getsize(self.path) != os.path.getsize(other.path):
@@ -281,6 +282,32 @@ class Target(object):
         self.group = group        # a model looks for a material in each of its folders: any one will do
         self.sure = sure
         self.asked = asked        # the file that names it, None for Lua
+
+
+# The remarks of a report and the reasons why a file was left out, in plain English. A report in
+# another language (tools/content_report.py) is made from the same pieces.
+NOTES = {
+    'version': '%s: another version is in %s, the one from %s is used',
+    'equal': '%s: %s and %s fit equally, the first one is used',
+    'several names': '%s fits %d names by its file name alone and is not used: pack it with its folders',
+    'several files': '%s: %d different files have this name and nothing says which one is meant; none is used',
+    'unreadable': '%s cannot be read: %s',
+    'no materials': '%s: its materials are not followed (%s)',
+}
+REPLACED = 'a later source has this file'
+OWN_FILE = 'the file of this addon is kept'
+NAMESAKES = 'not told from its namesakes, see the notes'
+UNNAMED = 'nothing names it'
+PLACE_TAKEN = 'its place is taken by another file'
+
+
+class Note(str):
+    """a remark: its English text, and what it is made of (kind, args)"""
+
+    def __new__(cls, kind, *args):
+        self = str.__new__(cls, NOTES[kind] % args)
+        self.kind, self.args = kind, args
+        return self
 
 
 class Report(object):
@@ -362,8 +389,7 @@ def place(items, named, own):
         if earlier is not None:
             earlier.replaced = True
             if not earlier.same_as(item):
-                report.notes.append('%s: another version is in %s, the one from %s is used'
-                                    % (item.default, earlier.source, item.source))
+                report.notes.append(Note('version', item.default, earlier.source, item.source))
         at[item.default] = item
     for name in list(by_name):
         by_name[name] = [item for item in by_name[name] if not item.replaced]
@@ -500,8 +526,7 @@ def place(items, named, own):
             for other in rivals[id(target)]:
                 if other[6] is not item and other[:2] == fit[:2] and not other[6].dests \
                         and not other[6].same_as(item):
-                    report.notes.append('%s: %s and %s fit equally, the first one is used'
-                                        % (target.path, item, other[6]))
+                    report.notes.append(Note('equal', target.path, item, other[6]))
                     break
             settle(item, target.path, 'name')
         count_votes(kind)
@@ -535,14 +560,12 @@ def place(items, named, own):
                     continue
                 paths = set(other[5].path for other in mine)      # Lua and a model may want the same one
                 if len(paths) > 1:
-                    doubts[id(item)] = '%s fits %d names by its file name alone and is not used: pack it ' \
-                                       'with its folders' % (item, len(paths))
+                    doubts[id(item)] = Note('several names', item, len(paths))
                     continue
                 others = [other[6] for other in theirs if other[6] is not item and not other[6].same_as(item)]
                 if others:
                     for one in [item] + others:
-                        doubts[id(one)] = '%s: %d different files have this name and nothing says which ' \
-                                          'one is meant; none is used' % (target.path, len(others) + 1)
+                        doubts[id(one)] = Note('several files', target.path, len(others) + 1)
                     continue
                 if settle(item, target.path, 'name'):
                     settled += 1
@@ -593,6 +616,14 @@ def place(items, named, own):
                 continue
             if dest is not None and settle(item, dest, 'folder'):
                 continue
+            if dest is not None and dest != item.default and is_place(dest, kind):
+                # Its place is known and another file has it: a second version of the same file.
+                # It is not put at the path it was packed under instead - nothing looks there.
+                item.crowded = dest
+                rival = taken.get(dest)
+                if rival is not None and not rival.same_as(item):
+                    report.notes.append(Note('version', dest, item.source, rival.source))
+                continue
             if item.default is not None:
                 settle(item, item.default, 'place')
         count_votes(kind)
@@ -604,7 +635,7 @@ def place(items, named, own):
             item.material = read_material(item.path)
         except (OSError, UnicodeError) as err:
             item.material = Material()
-            report.notes.append('%s cannot be read: %s' % (item, err))
+            report.notes.append(Note('unreadable', item, err))
     models = {}
     for item in items:
         if item.kind != 'mdl':
@@ -687,7 +718,7 @@ def place(items, named, own):
             continue
         found = models[id(item)]
         if not isinstance(found, tuple):
-            report.notes.append('%s: its materials are not followed (%s)' % (item.dests[0], found))
+            report.notes.append(Note('no materials', item.dests[0], found))
             continue
         folders, names = found
         report.models += 1
@@ -776,15 +807,17 @@ def place(items, named, own):
         if doubt is not None and doubt not in report.notes:
             report.notes.append(doubt)
         if item.replaced:
-            why = 'a later source has this file'
+            why = REPLACED
         elif item.default is not None and own(item.default):
-            why = 'the file of this addon is kept'
+            why = OWN_FILE
+        elif item.crowded is not None:
+            why = OWN_FILE if own(item.crowded) else PLACE_TAKEN
         elif doubt is not None:
-            why = 'not told from its namesakes, see the notes'
+            why = NAMESAKES
         elif item.default is None:
-            why = 'nothing names it'
+            why = UNNAMED
         else:
-            why = 'its place is taken by another file'
+            why = PLACE_TAKEN
         report.left_out.append((item, why))
 
     report.missing_named = [path for path in sorted(named)

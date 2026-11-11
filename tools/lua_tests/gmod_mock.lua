@@ -65,6 +65,7 @@ return function(realm)
 
 	function RealTime() return M.time end
 	function CurTime() return M.time end
+	function SysTime() return M.time end
 	function FrameNumber() return M.frame end
 	function ScreenScale(n) return n * (M.scrw or 1920) / 640 end
 	function ScrW() return M.scrw or 1920 end
@@ -77,6 +78,10 @@ return function(realm)
 	VEC.__add = function(a, b) return Vector(a.x + b.x, a.y + b.y, a.z + b.z) end
 	VEC.__sub = function(a, b) return Vector(a.x - b.x, a.y - b.y, a.z - b.z) end
 	VEC.__eq = function(a, b) return a.x == b.x and a.y == b.y and a.z == b.z end
+	VEC.__mul = function(a, b)
+		assert(getmetatable(a) == VEC and type(b) == "number", "the imitation only multiplies Vector * number")
+		return Vector(a.x * b, a.y * b, a.z * b)
+	end
 	function isvector(v) return getmetatable(v) == VEC end
 	function VEC:Distance(o) return math.sqrt((self.x - o.x) ^ 2 + (self.y - o.y) ^ 2 + (self.z - o.z) ^ 2) end
 
@@ -119,6 +124,20 @@ return function(realm)
 			self[col], self[4 + col], self[8 + col] = self[col] * f, self[4 + col] * f, self[8 + col] * f
 		end
 	end
+	function MAT:GetInverse() -- nil when there is none, like the game
+		local a, b, c, d, e, f, g, h, i = self[1], self[2], self[3], self[5], self[6], self[7], self[9], self[10], self[11]
+		local det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+		if math.abs(det) < 1e-12 then return nil end
+		local m = {
+			(e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det, 0,
+			(f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det, 0,
+			(d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det, 0,
+		}
+		for row = 0, 2 do
+			m[row * 4 + 4] = -(m[row * 4 + 1] * self[4] + m[row * 4 + 2] * self[8] + m[row * 4 + 3] * self[12])
+		end
+		return matrix(m)
+	end
 	function MAT:GetInverseTR() -- like the game: only right for a matrix without scale
 		local m = { self[1], self[5], self[9], 0, self[2], self[6], self[10], 0, self[3], self[7], self[11], 0 }
 		for row = 0, 2 do
@@ -159,7 +178,8 @@ return function(realm)
 	function file.Exists(path, where) return M.files[path] == true end
 
 	-- Reading: M.filedata[path] = { [offset] = "bytes", ... } - what the file holds at some
-	-- places, zero bytes everywhere else. A path without an entry cannot be opened.
+	-- places, zero bytes everywhere else - or the whole file as one string. A path without an
+	-- entry cannot be opened.
 	M.filedata, M.opened, M.openNow = {}, 0, 0
 	function file.Open(path, mode, where)
 		assert(mode == "rb" and where == "GAME", "file.Open: only reading from GAME is imitated")
@@ -168,8 +188,19 @@ return function(realm)
 		M.opened, M.openNow = M.opened + 1, M.openNow + 1
 		local f = { pos = 0 }
 		function f:Seek(pos) assert(not self.closed, "Seek on a closed file") self.pos = pos end
+		function f:Size()
+			assert(not self.closed, "Size of a closed file")
+			assert(type(data) == "string", "the imitation only knows the size of a file given as a whole")
+			return #data
+		end
 		function f:Read(count)
 			assert(not self.closed, "Read on a closed file")
+			assert(type(count) == "number" and count >= 0, "Read: a number of bytes expected")
+			if type(data) == "string" then -- like the game: what is there, nothing past the end
+				local out = data:sub(self.pos + 1, self.pos + count)
+				self.pos = self.pos + #out
+				return out
+			end
 			local out = {}
 			for i = 0, count - 1 do
 				local byte = 0
@@ -182,6 +213,14 @@ return function(realm)
 			self.pos = self.pos + count
 			return table.concat(out)
 		end
+		function f:ReadLong() -- 32 bits, little endian, signed; nil at the end of the file
+			local bytes = self:Read(4)
+			if #bytes < 4 then return nil end
+			local a, b, c, d = bytes:byte(1, 4)
+			local n = a + b * 256 + c * 65536 + d * 16777216
+			if n >= 2147483648 then n = n - 4294967296 end
+			return n
+		end
 		function f:Close()
 			assert(not self.closed, "file closed twice")
 			self.closed = true
@@ -189,10 +228,17 @@ return function(realm)
 		end
 		return f
 	end
+	-- M.files is what the game has mounted ("GAME"). Another search path lists what the test put
+	-- into M.pathFiles[name] = { path = true }; one the test did not name lists nothing.
+	M.pathFiles = {}
 	function file.Find(pattern, where)
+		assert(type(pattern) == "string" and pattern:sub(-2) == "/*", "file.Find: the imitation lists whole folders (dir/*)")
 		local dir = pattern:gsub("/%*$", "")
 		local files, dirs, seen = {}, {}, {}
-		for path in pairs(M.files) do
+		local listed = M.files
+		if where ~= nil and where ~= "GAME" then listed = M.pathFiles[where] or {} end
+		M.finds = (M.finds or 0) + 1
+		for path in pairs(listed) do
 			if path:sub(1, #dir + 1) == dir .. "/" then
 				local rest = path:sub(#dir + 2)
 				local first, more = rest:match("^([^/]+)(/?)")
@@ -330,11 +376,65 @@ return function(realm)
 		self.model = path
 		self.bones = nil
 	end
+	-- Like the game: the materials of the model in the order of their sub-material indices, each
+	-- looked for in every folder the model names - and one that is found nowhere is LEFT OUT, so
+	-- that everything after it moves up. (A model given by a plain list has all its materials.)
 	function ENT:GetMaterials()
 		local info = M.models[self.model]
 		local out = {}
+		if info and info.textures then
+			for _, name in ipairs(info.textures.names) do
+				for _, dir in ipairs(info.textures.dirs) do
+					-- (the material system: lower case, forward slashes)
+					local path = string.lower(dir .. "/" .. name):gsub("\\", "/"):gsub("/+", "/"):gsub("^/", "")
+					if M.files["materials/" .. path .. ".vmt"] then
+						out[#out + 1] = path
+						break
+					end
+				end
+			end
+			return out
+		end
 		for i, name in ipairs(info and info.materials or {}) do out[i] = name end
 		return out
+	end
+	M.entityMeta = ENT
+	function FindMetaTable(name) return name == "Entity" and ENT or nil end
+
+	-- the bytes of a model file that names these materials and folders (nothing else is in it)
+	function M.mdlFile(names, dirs)
+		local function long(n)
+			if n < 0 then n = n + 4294967296 end
+			return string.char(n % 256, math.floor(n / 256) % 256, math.floor(n / 65536) % 256, math.floor(n / 16777216) % 256)
+		end
+		local header, entry = 408, 64
+		local texturesAt = header
+		local dirsAt = texturesAt + #names * entry
+		local textAt = dirsAt + #dirs * 4
+		local text, places = {}, {}
+		local function put(str)
+			places[#places + 1] = textAt
+			text[#text + 1] = str .. "\0"
+			textAt = textAt + #str + 1
+		end
+		for _, name in ipairs(names) do put(name) end
+		for _, dir in ipairs(dirs) do put(dir) end
+
+		local out = { "IDST", string.rep("\0", 200), long(#names), long(texturesAt), long(#dirs), long(dirsAt),
+			string.rep("\0", header - 220) }
+		for i = 1, #names do
+			out[#out + 1] = long(places[i] - (texturesAt + (i - 1) * entry)) .. string.rep("\0", entry - 4)
+		end
+		for i = 1, #dirs do out[#out + 1] = long(places[#names + i]) end
+		out[#out + 1] = table.concat(text)
+		return table.concat(out)
+	end
+
+	-- a model whose file is there: its materials are found (or not) by the files of the test
+	function M.installModel(path, names, dirs, bones)
+		M.files[path] = true
+		M.filedata[path] = M.mdlFile(names, dirs)
+		M.models[path] = { bones = bones, textures = { names = names, dirs = dirs } }
 	end
 	function ENT:GetSubMaterial(index)
 		assert(type(index) == "number", "GetSubMaterial: index must be a number")

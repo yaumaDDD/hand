@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Puts the materials and models of clothing addons where the game looks for them - in an addon
+that is installed, on the computer of its owner.  (started by sort_content.bat)
+
+    sort_content.py                   sorts what lies in the materials and models folders of the addon
+    sort_content.py FOLDER|ZIP ...    also takes in the content of these folders and archives (copies)
+    sort_content.py --dry-run ...     only tells what it would do
+
+The game finds a material or a model only at the exact path that the Lua, a model or a material
+names; the files of clothing addons tend to arrive a folder off, or in folders of their own. This
+script reads the names out of the Lua of the addon (lua/...), finds every file by its name -
+tools/place_content.py does that, the same code the build of the addon uses - and moves it to its
+place. Nothing is deleted and no file of the addon is overwritten: what cannot be used is moved to
+the folder _not_used, and everything is written down in sort_content_report.txt.
+
+The addon is the folder this script was shipped in (<addon>/sort_content/); --addon names another.
+Needs Python 3.7+ and nothing else (sort_content.bat fetches a portable one when there is none).
+"""
+import argparse
+import collections
+import io
+import os
+import shutil
+import sys
+import tempfile
+import zipfile
+
+sys.dont_write_bytecode = True      # no __pycache__ inside an addon folder
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import zcg_layout as L  # noqa: E402
+import list_content  # noqa: E402
+import place_content as P  # noqa: E402
+import content_report  # noqa: E402
+
+STAGE = '_sorting'        # files on their way (with a journal, so that a run that was cut off is finished)
+ASIDE = '_not_used'       # files of the addon that have no place in it
+REPORT = 'sort_content_report.txt'
+ROOTS = ('materials', 'models')
+
+
+class UserError(Exception):
+    pass
+
+
+def say(text=u''):
+    print(text)
+    sys.stdout.flush()
+
+
+def walk_files(root):
+    for base, _dirs, files in os.walk(root):
+        for name in files:
+            full = os.path.join(base, name)
+            yield os.path.relpath(full, root).replace('\\', '/'), full
+
+
+def long_path(path):
+    """Windows refuses paths of 260 characters and more unless they are written this way"""
+    if os.name == 'nt' and len(path) >= 240 and not path.startswith('\\\\'):
+        return '\\\\?\\' + os.path.abspath(path)
+    return path
+
+
+# ---- what there is ---------------------------------------------------------------------------
+def find_addon(given):
+    addon = os.path.abspath(given) if given else os.path.dirname(HERE)
+    if not os.path.isdir(os.path.join(addon, 'lua')):
+        raise UserError(u'Это не папка аддона (в ней нет папки lua): %s\n'
+                        u'Запускайте sort_content.bat из папки аддона или укажите её: --addon ПАПКА' % addon)
+    return addon
+
+
+def names_of(folders):
+    """the materials and models the Lua in these folders names, without those of Z-City itself
+    (and without the Lua of the gloves: it only speaks of files the addon has from the start)"""
+    own = ('autorun/%s.lua' % L.ADDON_DIRNAME, L.ADDON_DIRNAME + '/')
+    named, files = set(), 0
+    for folder in folders:
+        for rel, full in walk_files(folder):
+            if not rel.lower().endswith('.lua') or rel.lower().startswith(own):
+                continue
+            files += 1
+            with open(full, 'rb') as f:
+                named |= list_content.names_in(f.read().decode('utf-8-sig', 'replace'))
+    stock = list_content.stock_names()
+    return named - stock, files, bool(stock)
+
+
+def unpack(archive, temp):
+    """the files of an archive, in a folder of their own below temp"""
+    dest = tempfile.mkdtemp(prefix='source_', dir=temp)
+    lower = archive.lower()
+    if lower.endswith('.zip'):
+        with zipfile.ZipFile(archive) as z:
+            for info in z.infolist():
+                if info.is_dir():
+                    continue
+                parts = [p for p in L.zip_name(info).replace('\\', '/').split('/') if p not in ('', '.')]
+                if not parts or '..' in parts:
+                    continue
+                target = os.path.join(dest, *parts)
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with z.open(info) as src, open(long_path(target), 'wb') as f:
+                    shutil.copyfileobj(src, f)
+        return dest
+    if lower.endswith('.7z'):
+        try:
+            import py7zr
+        except ImportError:
+            raise UserError(u'Архив .7z здесь не читается: распакуйте его и укажите папку: %s' % archive)
+        with py7zr.SevenZipFile(archive) as z:
+            z.extractall(dest)
+        return dest
+    raise UserError(u'Не папка и не архив .zip: %s' % archive)
+
+
+def collect(addon, sources, temp):
+    """returns (items for place_content, files of the addon that only need lower-case paths,
+    files from outside that keep their path, what the sources brought)"""
+    name = os.path.basename(addon)
+    items, lower_case, extra, brought = [], [], [], []
+
+    order = 0
+    for source in sources:
+        order += 1
+        if not os.path.exists(source):
+            raise UserError(u'Нет такой папки или файла: %s' % source)
+        label = os.path.basename(os.path.normpath(source)) or source
+        if label == name:
+            label += u' (%d)' % order      # (reports tell the sources apart by their names)
+        root = source if os.path.isdir(source) else unpack(source, temp)
+        entry = dict(name=label, kind='folder' if os.path.isdir(source) else 'archive', no_place=[],
+                     content=0, other=0, lua=0)
+        for rel, full in sorted(walk_files(root)):
+            if P.kind_of(rel):
+                items.append(P.Item(label, rel, full, L.dropin_destination(rel), order))
+                entry['content'] += 1
+                continue
+            dest = L.dropin_destination(rel)
+            if dest is None:
+                entry['no_place'].append(rel)
+            elif dest.split('/', 1)[0] in ROOTS:
+                extra.append((full, dest))     # an icon, a note ...: by its folders, as it is
+                entry['other'] += 1
+            else:
+                entry['lua'] += 1              # Lua, sounds: not the business of this tool
+        brought.append(entry)
+
+    # The addon itself comes last: what lies in it is not replaced by what comes from outside.
+    # Of two of its own files for one place the one that lies there already stays.
+    mine = dict(name=name, kind='folder', no_place=[], content=0, other=0, lua=0)
+    for top in ROOTS:
+        for rel, full in sorted(walk_files(os.path.join(addon, top))):
+            rel = top + '/' + rel
+            if L.is_own_content(rel):
+                continue
+            if P.kind_of(rel):
+                default = L.dropin_destination(rel)
+                item = P.Item(name, rel, full, default, order + (2 if default == rel else 1))
+                item.in_addon = True
+                items.append(item)
+                mine['content'] += 1
+            elif rel != rel.lower():
+                lower_case.append((rel, rel.lower()))
+    brought.append(mine)
+    return items, lower_case, extra, brought
+
+
+# ---- what to do ------------------------------------------------------------------------------
+class Job(object):
+    def __init__(self):
+        self.moves = []     # (path in the addon now, path in the addon then)
+        self.aside = []     # (path in the addon now, why it has no place)
+        self.copies = []    # (file, path in the addon then)
+        self.stay = 0       # files of the addon that lie where they belong
+
+
+def plan(addon, items, lower_case, extra, report):
+    job = Job()
+    places = collections.defaultdict(list)
+    for dest, item in report.placed:
+        places[id(item)].append(dest)
+    reasons = dict((id(item), reason) for item, reason in report.left_out)
+
+    for item in items:
+        dests = places.get(id(item), [])
+        if not getattr(item, 'in_addon', False):
+            for dest in dests:
+                job.copies.append((item.path, dest))
+            continue
+        if not dests:
+            job.aside.append((item.inner, reasons.get(id(item), P.UNNAMED)))
+            continue
+        first = item.inner if item.inner in dests else dests[0]
+        if first == item.inner:
+            job.stay += 1
+        else:
+            job.moves.append((item.inner, first))
+        for dest in dests:
+            if dest != first:   # one file, wanted at two paths
+                job.copies.append((os.path.join(addon, first), dest))
+    job.moves += lower_case
+    for full, dest in extra:
+        job.copies.append((full, dest))
+    return job
+
+
+def free_name(path):
+    if not os.path.lexists(path):
+        return path
+    n = 1
+    while os.path.lexists('%s.%d' % (path, n)):
+        n += 1
+    return '%s.%d' % (path, n)
+
+
+def prune(folder):
+    """removes the empty folders below a folder (not the folder itself)"""
+    for base, dirs, _files in os.walk(folder, topdown=False):
+        for name in dirs:
+            try:
+                os.rmdir(os.path.join(base, name))
+            except OSError:
+                pass
+
+
+def finish(addon, pending, problems):
+    """the second half of a move: from the stage to the place. pending: [(staged file, then, before)]"""
+    for staged, then, before in pending:
+        target = os.path.join(addon, then)
+        if os.path.lexists(target):
+            # the file that lies there could not be moved away: back to where it came from
+            back = os.path.join(addon, before)
+            target = back if not os.path.lexists(back) else free_name(os.path.join(addon, ASIDE, before))
+            problems.append((before, u'место занято: %s' % then))
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            os.replace(long_path(staged), long_path(target))
+        except OSError as err:
+            problems.append((before, u'%s' % err))
+
+
+def resume(addon):
+    """a run that was cut off left files in the stage folder: they go where they were going"""
+    stage = os.path.join(addon, STAGE)
+    journal = os.path.join(stage, 'journal.txt')
+    if not os.path.isdir(stage):
+        return 0
+    pending, problems = [], []
+    if os.path.isfile(journal):
+        with io.open(journal, encoding='utf-8') as f:
+            for line in f:
+                parts = line.rstrip('\n').split('\t')
+                if len(parts) == 3 and os.path.isfile(os.path.join(stage, parts[0])):
+                    pending.append((os.path.join(stage, parts[0]), parts[1], parts[2]))
+    finish(addon, pending, problems)
+    if os.path.isfile(journal):
+        os.remove(journal)
+    try:
+        os.rmdir(stage)
+    except OSError:
+        raise UserError(u'В папке %s остались файлы от прерванного запуска, и неизвестно, куда они шли. '
+                        u'Разберите её вручную и запустите ещё раз.' % stage)
+    return len(pending)
+
+
+def apply(addon, job):
+    """does what the job says. Returns [(path, what went wrong)]"""
+    problems = []
+    stage = os.path.join(addon, STAGE)
+    staged = []
+    todo = list(job.moves)
+    for now, _reason in job.aside:
+        todo.append((now, os.path.relpath(free_name(os.path.join(addon, ASIDE, now)), addon).replace('\\', '/')))
+    if todo:
+        os.makedirs(stage)
+        # First everything that moves leaves the tree: then no file is in the way of another one,
+        # and a folder that only differs in the case of its name can be made anew.
+        with io.open(os.path.join(stage, 'journal.txt'), 'w', encoding='utf-8') as journal:
+            for n, (now, then) in enumerate(todo):
+                key = '%06d' % n
+                journal.write(u'%s\t%s\t%s\n' % (key, then, now))
+                journal.flush()
+                try:
+                    os.replace(long_path(os.path.join(addon, now)), os.path.join(stage, key))
+                except OSError as err:
+                    problems.append((now, u'%s' % err))
+                    continue
+                staged.append((os.path.join(stage, key), then, now))
+        for top in ROOTS:
+            prune(os.path.join(addon, top))
+        finish(addon, staged, problems)
+        os.remove(os.path.join(stage, 'journal.txt'))
+        try:
+            os.rmdir(stage)
+        except OSError:
+            pass
+
+    for source, dest in job.copies:
+        target = os.path.join(addon, dest)
+        if os.path.lexists(target):
+            continue        # (decided by place_content: only possible when a file could not leave)
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copyfile(long_path(source), long_path(target))
+        except OSError as err:
+            problems.append((dest, u'%s' % err))
+    return problems
+
+
+# ---- telling about it ------------------------------------------------------------------------
+def summary(addon, named, lua_files, stock_known, brought, report, job, dry, problems):
+    """the lines for the screen and for the head of the report"""
+    name = os.path.basename(addon)
+    out = [u'Аддон: %s' % addon,
+           u'Lua аддона (файлов: %d) называет материалов и моделей: %d' % (lua_files, len(named))]
+    if not stock_known:
+        out.append(u'  (списка имён самого Z-City рядом нет: в «не хватает» попадут и его файлы)')
+    for entry in brought:
+        where = u'в папках materials и models аддона' if entry['name'] == name and entry is brought[-1] \
+            else u'в «%s»' % entry['name']
+        line = u'Файлов контента %s: %d' % (where, entry['content'])
+        if entry['other']:
+            line += u', прочих файлов для materials / models: %d' % entry['other']
+        if entry['lua']:
+            line += u'; Lua и звуки (%d) не тронуты — этот инструмент раскладывает только материалы и модели' % entry['lua']
+        out.append(line)
+
+    verb = u'Будет' if dry else u'Было'
+    moved = len(job.moves)
+    out.append(u'')
+    if dry:
+        out.append(u'ПРОБНЫЙ ЗАПУСК: ничего не перемещено. Вот что было бы сделано.')
+    out.append(u'Уже лежит на своём месте: %d' % job.stay)
+    out.append(u'%s перемещено внутри аддона: %d' % (verb, moved))
+    out.append(u'%s скопировано в аддон: %d' % (verb, len(job.copies)))
+    out.append(u'%s убрано в папку %s (не пригодилось): %d' % (verb, ASIDE, len(job.aside)))
+    if problems:
+        out.append(u'НЕ УДАЛОСЬ переместить: %d — закройте игру (она держит файлы открытыми) и запустите ещё раз'
+                   % len(problems))
+        for path, what in problems[:20]:
+            out.append(u'    %s: %s' % (path, what))
+        if len(problems) > 20:
+            out.append(u'    ... и ещё %d' % (len(problems) - 20))
+
+    out.append(u'')
+    missing = len(report.missing_named) + len(report.missing_materials) + len(report.missing_textures)
+    if missing:
+        out.append(u'Не хватает файлов (их нет ни в аддоне, ни в том, что вы дали):')
+        out.append(u'    названных в Lua: %d из %d' % (len(report.missing_named), len(named)))
+        out.append(u'    материалов, которые ищут модели: %d из %d'
+                   % (len(report.missing_materials), report.materials_wanted))
+        out.append(u'    текстур, которые ищут материалы: %d из %d'
+                   % (len(report.missing_textures), report.textures_wanted))
+        out.append(u'  Часть из них — файлы самой игры и Z-City, их и не должно быть в аддоне. Остальные нужно')
+        out.append(u'  добавить: положите их в папку materials или models аддона (в любые папки) и запустите ещё раз.')
+    else:
+        out.append(u'Все названные файлы на месте.')
+    if report.notes:
+        out.append(u'Замечаний: %d (файлы-тёзки, которые нечем различить, и т. п.) — см. отчёт' % len(report.notes))
+    return out
+
+
+def main(argv=None):
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            # (a console shows any text; a file or a pipe gets UTF-8 instead of the code page)
+            if stream.isatty():
+                stream.reconfigure(errors='replace')
+            else:
+                stream.reconfigure(encoding='utf-8', errors='replace')
+
+    parser = argparse.ArgumentParser(description='Sorts the materials and models of an installed addon by name.')
+    parser.add_argument('sources', nargs='*', help='folders or .zip archives with more content to take in')
+    parser.add_argument('--addon', help='the addon folder (default: the one this script lies in)')
+    parser.add_argument('--lua', action='append', default=[], help='another folder with Lua that names files')
+    parser.add_argument('--dry-run', action='store_true', help='only tell what would be done')
+    args = parser.parse_args(argv)
+
+    temp = tempfile.mkdtemp(prefix='zcg_sort_')
+    try:
+        addon = find_addon(args.addon)
+        if not args.dry_run:
+            resumed = resume(addon)
+            if resumed:
+                say(u'Прошлый запуск был прерван: файлов доведено до места: %d' % resumed)
+
+        say(u'Читаю Lua аддона ...')
+        named, lua_files, stock_known = names_of([os.path.join(addon, 'lua')] + args.lua)
+        say(u'Читаю файлы контента ...')
+        items, lower_case, extra, brought = collect(addon, args.sources, temp)
+        say(u'Ищу каждому файлу место (файлов: %d) ...' % len(items))
+        report = P.place(items, named, L.is_own_content)
+        job = plan(addon, items, lower_case, extra, report)
+
+        problems = []
+        if not args.dry_run and (job.moves or job.aside or job.copies):
+            say(u'Перекладываю ...')
+            problems = apply(addon, job)
+
+        head = summary(addon, named, lua_files, stock_known, brought, report, job, args.dry_run, problems)
+        say()
+        for line in head:
+            say(line)
+
+        reasons = collections.Counter(content_report.why(reason) for _now, reason in job.aside)
+        more = list(head)
+        if job.aside:
+            more += [u'', u'Убрано в %s (причины):' % ASIDE] + [u'    %s — файлов: %d' % pair for pair in sorted(reasons.items())]
+        listing = os.path.join(addon, REPORT)
+        content_report.write(listing, brought, report, named, 'sort_content.py', more)
+        say()
+        say(u'Подробный отчёт: %s' % listing)
+        if not args.dry_run and not problems:
+            say(u'Готово. Запустите игру и наберите в консоли zcg_content — он покажет, чего ещё не хватает.')
+        return 2 if problems else 0
+    except UserError as err:
+        say()
+        say(u'ОШИБКА: %s' % err)
+        return 1
+    finally:
+        shutil.rmtree(temp, ignore_errors=True)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

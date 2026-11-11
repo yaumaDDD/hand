@@ -73,7 +73,14 @@ def names_in(text):
     return found
 
 
+STOCK_LIST = 'stock_names.txt'
+
+
 def stock_names():
+    """the files Z-City itself names: out of its source (z_city.zip in the repository), or out of
+    the list the build ships next to these scripts where that archive is not at hand"""
+    if _STOCK:
+        return set(_STOCK[0])
     path = os.path.join(ROOT, 'z_city.zip')
     found = set()
     if os.path.isfile(path):
@@ -81,7 +88,14 @@ def stock_names():
             for info in z.infolist():
                 if info.filename.lower().endswith('.lua'):
                     found |= names_in(z.read(info).decode('utf-8-sig', 'replace'))
+    elif os.path.isfile(os.path.join(HERE, STOCK_LIST)):
+        with open(os.path.join(HERE, STOCK_LIST), 'r', encoding='utf-8') as f:
+            found = set(line.strip() for line in f if line.strip() and not line.startswith('#'))
+    _STOCK.append(frozenset(found))
     return found
+
+
+_STOCK = []     # read once
 
 
 def addon_title(z, names, inner):

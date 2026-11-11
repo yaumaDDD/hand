@@ -103,6 +103,91 @@ return function(testdir, luaroot)
 		end
 		check(listed, "zcg_content lists a missing file")
 
+		-- ---- the materials a model is made of
+		local SLAV = "models/slav/m/male_10.mdl"
+		M.installModel(SLAV, { "players_sheet", "Hair", "hands" }, { "models\\Humans\\Slav\\", "distac/gloves/" }, nil)
+		M.installModel("models/zcband/band_team.mdl", { "band", "hair" }, { "models/humans/slav/", "distac/gloves/" }, nil)
+		M.files["materials/distac/gloves/hands.vmt"] = true
+		M.files["materials/models/humans/slav/band.vmt"] = true
+		M.advance(11) -- (a model file that could not be read is looked at again after ten seconds)
+		local HAIR = "materials/models/humans/slav/hair.vmt  <-  material of " .. SLAV
+			.. " and 1 more models (or materials/distac/gloves/hair.vmt)"
+		local SHEET = "materials/models/humans/slav/players_sheet.vmt  <-  material of " .. SLAV
+			.. " (or materials/distac/gloves/players_sheet.vmt)"
+		local own
+		before = #ZCG.ContentMissing(false)
+		missing, models, materials, own = ZCG.ContentMissing(false)
+		eq(own, 5, "content: the materials of the models that are installed are counted")
+		check(has(missing, HAIR), "content: a material a model is made of and that is not installed is listed, once for all its models")
+		check(has(missing, SHEET), "content: with every folder the model looks into")
+		for _, line in ipairs(missing) do
+			check(line:find("gloves/hands.vmt  <-", 1, true) == nil and line:find("slav/band.vmt  <-", 1, true) == nil,
+				"content: a material that is found in one of the folders is not missing")
+		end
+		-- a material that the tables name too is listed once
+		AP.Clothes[1].sheet = "models/humans/slav/players_sheet"
+		missing = ZCG.ContentMissing(false)
+		check(not has(missing, SHEET) and has(missing, "materials/models/humans/slav/players_sheet.vmt  <-  male clothes sheet"),
+			"content: a material named by the tables and by a model is listed once")
+		AP.Clothes[1].sheet = nil
+
+		-- ---- a file of that name lies somewhere else
+		M.pathFiles.THIRDPARTY = {
+			["materials/Humans/Slav/hair.vmt"] = true, ["materials/humans/slav/players_sheet.vtf"] = true,
+			["materials/material 1/swiss.VMT"] = true, ["models/pack/band_team_f.mdl"] = true,
+			["materials/a/swiss.vmt"] = true, ["materials/b/swiss.vmt"] = true, ["materials/c/swiss.vmt"] = true,
+		}
+		M.pathFiles.MOD = { ["materials/Humans/Slav/hair.vmt"] = true, ["materials/x/unrelated.vmt"] = true }
+		local found, cut = ZCG.FindByName({ ["hair.vmt"] = true, ["swiss.vmt"] = true, ["band_team_f.mdl"] = true, ["nowhere.vmt"] = true })
+		eq(cut, false, "content: the search by name went through")
+		eq(found["hair.vmt"] and #found["hair.vmt"], 1, "content: a file found in two search paths is one file")
+		eq(found["hair.vmt"] and found["hair.vmt"][1], "materials/Humans/Slav/hair.vmt", "content: where a file of that name lies")
+		eq(found["swiss.vmt"] and #found["swiss.vmt"], 3, "content: at most three places are kept for a name")
+		eq(found["band_team_f.mdl"] and found["band_team_f.mdl"][1], "models/pack/band_team_f.mdl", "content: models are looked for as well")
+		eq(found["nowhere.vmt"], nil, "content: a name that is nowhere")
+		eq(found["players_sheet.vtf"], nil, "content: only the names that were asked for")
+
+		local function logged(text)
+			local n = 0
+			for _, line in ipairs(M.log) do
+				if line:find(text, 1, true) then n = n + 1 end
+			end
+			return n
+		end
+		M.log = {}
+		M.command("zcg_content", me)
+		check(M.log[1]:find("the installed models are made of 5 materials", 1, true) ~= nil, "zcg_content counts the materials of the models")
+		eq(logged(HAIR .. "   [a file of that name: materials/Humans/Slav/hair.vmt]"), 1, "zcg_content says where a missing file lies")
+		eq(logged(BAND_F .. "   [a file of that name: models/pack/band_team_f.mdl]"), 1, "also for a model")
+		eq(logged("[a file of that name: materials/humans/slav/players_sheet.vtf"), 0, "a texture is not taken for a material")
+		eq(logged("3 of them have a file of the same name in another folder"), 1, "it counts them")
+		eq(logged("start sort_content.bat in the folder of this addon"), 1, "and names the tool that moves them")
+		eq(logged("leaves a purple and black part on that model"), 1, "it says what a missing material of a model does")
+
+		-- nothing of that name anywhere: the files have to be brought first
+		M.pathFiles = {}
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("[a file of that name"), 0, "zcg_content: no file of that name, no remark")
+		eq(logged("put the files into the materials and models folders of this addon"), 1, "it says where to put the files")
+		-- (no search path of an addon lists anything: everything the game has mounted is searched)
+		M.files["materials/wrong/place/hair.vmt"] = true
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("[a file of that name: materials/wrong/place/hair.vmt]"), 1, "zcg_content looks through everything when the addons cannot be listed")
+		M.files["materials/wrong/place/hair.vmt"] = nil
+
+		-- one line for the player when the game has started
+		M.log = {}
+		hook.Run("InitPostEntity")
+		M.advance(16)
+		eq(logged("models and materials of the appearance menu are not installed on this computer"), 1,
+			"the player is told once that content is missing")
+		eq(logged("type zcg_content for the list"), 1, "and how to see the list")
+
+		M.models[SLAV], M.filedata[SLAV] = nil, nil
+		M.models["models/zcband/band_team.mdl"], M.filedata["models/zcband/band_team.mdl"] = nil, nil
+
 		-- nothing left to complain about
 		AP.Clothes[1].bib, AP.Clothes[2].swiss, AP.PlayerModels[1]["Male 10"] = nil, nil, nil
 		AP.FacemapsSlots, AP.MultiFacemaps, hg.Accessories = nil, nil, nil

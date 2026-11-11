@@ -41,7 +41,7 @@ return function(testdir, luaroot)
 	eq(#ZCG.Variants, 81, "number of gloves")
 	eq(#ZCG.Families, 11, "number of glove families")
 	eq(ZCG.Ready, nil, "not registered while Z-City is missing")
-	eq(#M.csfiles, 7, "files sent to clients")
+	eq(#M.csfiles, 8, "files sent to clients")
 	eq(#util.precached, 13, "precached models")
 	eq(#resource.files, 0, "nothing in FastDL by default")
 	eq(#resource.workshop, 0, "no workshop download by default")
@@ -245,6 +245,56 @@ return function(testdir, luaroot)
 	bob.superadmin = true
 	M.command("zcg_status", bob)
 	check(#M.log > n, "super admins may use zcg_status")
+
+	-- ---------------------------------------------------------------- a material is not installed
+	-- (a listen server has the files of the player: the game leaves a missing material out of
+	-- Entity:GetMaterials there as well, and Z-City counts in that list when it dresses a player)
+	do
+		local SLAV = "models/slav/m/male_10.mdl"
+		M.installModel(SLAV, { "players_sheet", "hair", "pants", "cross", "hands" },
+			{ "models/humans/slav/", "models/humans/male/group01/", "distac/gloves/" }, nil)
+		for _, name in ipairs({ "models/humans/male/group01/players_sheet", "distac/gloves/pants", "distac/gloves/cross", "distac/gloves/hands" }) do
+			M.files["materials/" .. name .. ".vmt"] = true
+		end
+		hg.Appearance.PlayerModels[1]["Male 10"] = {
+			mdl = SLAV, sex = false,
+			submatSlots = { main = "models/humans/male/group01/players_sheet", pants = "distac/gloves/pants",
+				boots = "distac/gloves/cross", hands = "distac/gloves/hands" },
+		}
+		local CLOTHES = hg.Appearance.Clothes[1].normal
+		local erin = M.newPlayer("erin", SLAV)
+		eq(#ZCG.EngineGetMaterials(erin), 4, "(the imitation: the game names four of the five materials)")
+		eq(#erin:GetMaterials(), 5, "server: Entity:GetMaterials names every material of the model")
+		Z.applyAppearance(erin, appearance("Male 10", nil))
+		eq(erin:GetSubMaterial(0), CLOTHES, "server: the jacket is on the jacket")
+		eq(erin:GetSubMaterial(1), "", "server: nothing on the material that is not installed")
+		eq(erin:GetSubMaterial(2), CLOTHES, "server: the trousers on the trousers")
+		eq(erin:GetSubMaterial(3), CLOTHES, "server: the boots on the boots")
+		eq(erin:GetSubMaterial(4), CLOTHES, "server: the hands on the hands")
+
+		-- CompleteMaterialList = false: the list of the game, with its gaps
+		ZCG.Config.CompleteMaterialList = false
+		include("zcity_csgo_gloves/sh_materials.lua")
+		eq(#erin:GetMaterials(), 4, "CompleteMaterialList = false leaves Entity:GetMaterials as the game made it")
+		eq(M.entityMeta.GetMaterials, ZCG.EngineGetMaterials, "the function of the game is back")
+		eq(#ZCG.MaterialList(erin), 5, "the addon itself still knows the whole list")
+		ZCG.Config.CompleteMaterialList = true
+		include("zcity_csgo_gloves/sh_materials.lua")
+		eq(#erin:GetMaterials(), 5, "and it can be switched on again")
+		include("zcity_csgo_gloves/sh_materials.lua")
+		eq(#ZCG.EngineGetMaterials(erin), 4, "loading the file again does not wrap the function twice")
+
+		-- the server console is told about the materials too
+		M.log = {}
+		M.command("zcg_content", NULL)
+		local listed = false
+		for _, line in ipairs(M.log) do
+			if line:find("materials/models/humans/slav/hair.vmt  <-  material of " .. SLAV, 1, true) then listed = true end
+		end
+		check(listed, "zcg_content on the server lists the material a model lacks")
+		erin:Remove()
+		hg.Appearance.PlayerModels[1]["Male 10"] = nil
+	end
 
 	eq(#M.errors, 0, "no errors: " .. table.concat(M.errors, " | "))
 

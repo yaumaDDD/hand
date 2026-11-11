@@ -110,6 +110,12 @@ return function(M)
 		ent:SetupBones()
 		if ent.tpik then ent.tpik(ent) end
 
+		-- (for the tests: the pose the entity has when the hooks get it)
+		ent.posed = {}
+		for i, def in ipairs(M.models[ent.model] and M.models[ent.model].bones or {}) do
+			ent.posed[def[1]] = M.copyMatrix(ent.bones[i - 1])
+		end
+
 		hook.Run("CoolPostDrawAppearance", ent, owner or ent)
 		ent:DrawModel()
 
@@ -186,6 +192,7 @@ return function(M)
 
 			function viewer:PostDrawModel(Entity)
 				main.accessoriesDrawn = (main.accessoriesDrawn or 0) + 1
+				if main.onAccessories then main.onAccessories(Entity) end -- (for the tests)
 				Entity:SetupBones()
 			end
 
@@ -222,7 +229,7 @@ return function(M)
 	-- what DModelPanel:Paint does with its entity
 	function Z.paintViewer(viewer)
 		viewer:LayoutEntity(viewer.Entity)
-		if IsValid(viewer.Entity) then
+		if IsValid(viewer.Entity) and viewer:PreDrawModel(viewer.Entity) ~= false then
 			viewer.Entity:DrawModel()
 			viewer:PostDrawModel(viewer.Entity)
 		end
