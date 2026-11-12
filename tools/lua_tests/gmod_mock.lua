@@ -279,6 +279,10 @@ return function(realm)
 		assert(SERVER, "AddCSLuaFile on the client")
 		M.csfiles[#M.csfiles + 1] = path or "<this file>"
 	end
+	function CompileFile(path)
+		if M.luafiles[path] ~= nil then return (loadstring(M.luafiles[path], "@" .. path)) end
+		return (loadfile(M.luaroot .. "/" .. path))
+	end
 	function include(path)
 		M.included[#M.included + 1] = path
 		local f

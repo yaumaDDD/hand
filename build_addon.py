@@ -586,7 +586,8 @@ def run_lua(out, versions=()):
         if listed:
             write_bound(bound, by_file, titles, left_out)
             check_bound(bound, by_file, everything)
-    return dict(result=result, files=files, tried=True, bound=listed, titles=titles, left_out=left_out)
+    return dict(result=result, files=files, tried=True, bound=listed, titles=titles, left_out=left_out,
+                versions=list(versions))
 
 
 # what stands at the place of a Lua file that only a left-out version of a pack has
@@ -737,13 +738,89 @@ def step_sort_tool(out, ran=None):
     if ran and ran['tried']:
         names = set(result.names) - stock if result is not None else set()
         by = dict((name, result.names[name]['by']) for name in names)
-        list_content.write_run_list(os.path.join(dest, list_content.RUN_LIST), names, ran['files'], ran=result is not None,
-                                    failed=lua_failed(ran), by=by, titles=ran.get('titles'),
+        files, titles = dict(ran['files']), dict(ran.get('titles') or {})
+        # (the versions that are in the addon together with the one taken: step_combine)
+        for joined in ran.get('merged', ()):
+            first = sorted(joined['files'])[0]
+            files.update(joined['files'])
+            for rel in joined['files']:
+                titles[rel] = joined['title']
+            for name in joined['names'] - stock - names:
+                names.add(name)
+                by[name] = first
+        list_content.write_run_list(os.path.join(dest, list_content.RUN_LIST), names, files, ran=result is not None,
+                                    failed=lua_failed(ran), by=by, titles=titles,
                                     left_out=[(entry['title'], entry['instead'], entry['names'] - stock,
                                                entry.get('own', set()) - stock)
                                               for entry in ran.get('left_out', ())])
         listed = len(names)
     return len(SORT_TOOL), len(stock), listed
+
+
+# Two versions together. The version of a pack that is left out has the same Lua files as the one
+# that is taken, so the game cannot load it - but its table file can be run by the addon itself,
+# in a box, and what it adds be put into the menu next to what the loaded version made
+# (lua/zcity_csgo_gloves/sh_merge.lua). That is done when the version taken is the first of its
+# group (the newer one, which the menus are written for); a build with the other one gets empty
+# files at the same places, so that the two builds have the same files.
+MERGED_DIR = L.ADDON_DIRNAME + '/merged'
+MERGED_LUA = L.ADDON_DIRNAME + '/sh_merged.lua'
+BOUND_LEFT_OUT = '\n-- Packs whose Lua is NOT in this addon'
+
+
+def step_combine(out, ran, combine=True):
+    """ran: what run_lua returned. Returns [(title, the title it joins, [Lua files], names)] of
+    the versions that are in the addon together with the one that was taken; they are taken out
+    of ran['left_out'] (ran['left_out_all'] keeps them: the addon can still be switched)."""
+    ran['left_out_all'] = list(ran.get('left_out', ()))
+    ran['merged'] = []
+    joined, index = [], []
+    for entry, version in zip(list(ran.get('left_out', ())), ran.get('versions', ())):
+        group = next((g for g in L.PACK_VERSIONS if entry['title'] in g), ())
+        together = combine and bool(group) and entry['instead'] == group[0]
+        files = {}
+        for dest in sorted(version['lua']):
+            name = posixpath.basename(dest)
+            if not name.lower().startswith('sh_'):
+                continue
+            # (a file that is the same in both versions is loaded already)
+            taken = os.path.join(out, dest.replace('/', os.sep))
+            if os.path.isfile(taken) and read_bytes(taken) == version['lua'][dest]:
+                continue
+            rel = MERGED_DIR + '/' + name
+            path = os.path.join(out, 'lua', rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            data = version['lua'][dest] if together else (
+                '-- Left empty on purpose by build_addon.py: in a build with "%s" this is the place of the table\n'
+                '-- file of "%s", which is the version that is loaded here.\n' % (entry['instead'], entry['title'])).encode('ascii')
+            with open(path, 'wb') as f:
+                f.write(data)
+            files[rel] = lua_names.lua_text(data)
+        if together and files:
+            for rel in sorted(files):
+                index.append((rel[len(L.ADDON_DIRNAME) + 1:], entry['title']))
+            ran['left_out'].remove(entry)
+            ran['merged'].append(dict(title=entry['title'], instead=entry['instead'], files=files, names=set(entry['names'])))
+            joined.append((entry['title'], entry['instead'], sorted(files), entry['names']))
+    if ran.get('left_out_all'):
+        lines = ['-- Written by build_addon.py. The table files of the other version of a pack that this addon runs in a',
+                 '-- box and adds to the appearance menu (sh_merge.lua). Empty in a build with that other version.',
+                 'ZCGloves.Merged = {']
+        for rel, title in index:
+            lines.append('\t{ file = %s, title = %s },' % (lua_string(rel), lua_string(lua_names.lua_text(title.encode('utf-8')))))
+        lines.append('}')
+        with open(os.path.join(out, 'lua', MERGED_LUA), 'w', encoding='ascii', newline='\n') as f:
+            f.write('\n'.join(lines) + '\n')
+    if joined:
+        # (the game has both: nothing is "another version that is not here" any more)
+        bound = os.path.join(out, 'lua', BOUND_LUA)
+        if os.path.isfile(bound) and not ran['left_out']:
+            with open(bound, 'r', encoding='ascii') as f:
+                text = f.read()
+            if BOUND_LEFT_OUT in text:
+                with open(bound, 'w', encoding='ascii', newline='\n') as f:
+                    f.write(text[:text.index(BOUND_LEFT_OUT)].rstrip('\n') + '\n')
+    return joined
 
 
 # The Lua of the versions that were left out goes into the addon as well, beside the scripts of
@@ -1214,6 +1291,9 @@ def main():
                     help='of the drop-in packs that are versions of one addon - they bring the same Lua files, and the '
                          'game can only have one (PACK_VERSIONS in tools/zcg_layout.py) - take this one, by the title in '
                          'its addon.json: --pack "Z-City Appearance Mod LEGACY". By default the first one listed there.')
+    ap.add_argument('--no-combine', action='store_true',
+                    help='do not put the other version of a pack into the menu next to the one that is taken '
+                         '(sh_merge.lua): the addon then has one version, as up to 2.9.0')
     ap.add_argument('--no-versions', action='store_true',
                     help='do not put the Lua of the versions that were left out beside sort_content.bat '
                          '(sort_content/versions): the addon then cannot switch to them by itself')
@@ -1257,6 +1337,7 @@ def main():
 
     foreign = ()
     left_out = ()
+    joined = []
     # (the report of a build that was told to take a version with an archive of its own is named after
     # it, like the archive: content_report_legacy.txt - it does not replace the report of the other build)
     listing = os.path.join(os.path.dirname(out), 'content_report%s.txt' % zip_path('')[:-len('.zip')])
@@ -1271,7 +1352,9 @@ def main():
             os.remove(bat)
     else:
         sources, content, named, ran = step_dropins(extractor, temp, out, by_hand)
-        left_out = ran.get('left_out', ()) if ran else ()
+        if ran and ran.get('tried'):
+            joined = step_combine(out, ran, combine=not args.no_combine)
+        left_out = ran.get('left_out_all', ran.get('left_out', ())) if ran else ()
         scripts, stock, listed = step_sort_tool(out, ran)
         print('  sort_content.bat: %d scripts, %d names of Z-City itself that it leaves alone%s'
               % (scripts, stock, '' if listed is None else ", %d names the addon's Lua gives when it is run" % listed))
@@ -1338,6 +1421,9 @@ def main():
         raise BuildError('the build is not usable, see the problems above')
     print('  %d gloves, %d materials: every model finds its materials and textures' % (len(L.variants()), vmts))
 
+    for title, instead, files, names in joined:
+        print('Together: "%s" is in the menu next to "%s" - %s; %d files only it names are asked for as well'
+              % (title, instead, ', '.join('lua/' + rel for rel in files), len(names)))
     if left_out and not args.no_versions:
         print('Versions')
         for title, folder, files in step_versions(out, temp, args, left_out):

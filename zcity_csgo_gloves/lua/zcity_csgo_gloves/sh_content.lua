@@ -945,6 +945,7 @@ function ZCG.ContentReport(out)
 			.. " zcg_content in the console of the game checks those)")
 	end
 	ZCG.BoundReport(out)
+	if ZCG.MergeReport then ZCG.MergeReport(out) end
 	if ZCG.FoundReport then ZCG.FoundReport(out) end
 	return #missing
 end
