@@ -2,11 +2,13 @@
 # -*- coding: utf-8 -*-
 """Build the ready-to-install Garry's Mod addon "zcity_csgo_gloves".
 
-    python build_addon.py [--out DIR] [--zip] [--original-textures] [--keep-temp]
+    python build_addon.py [--out DIR] [--src DIR] [--zip] [--original-textures] [--keep-temp] [DIR ...]
 
 The repository keeps the heavy content (models, textures) in the .7z / .zip archives it was delivered
 in, plus a small addon skeleton (Lua, materials, icons) in zcity_csgo_gloves/.  This script
-unpacks the archives and puts everything where the game expects it:
+unpacks the archives and puts everything where the game expects it.  The archives do not have to
+lie next to the script: every folder below it (and below every --src folder) is searched, at any
+depth, and an archive that was already unpacked by hand is taken as a folder of the same name:
 
     build/zcity_csgo_gloves/        <- copy this folder to garrysmod/addons/
         addon.json
@@ -117,7 +119,7 @@ def extract(extractor, archive, dest):
         with zipfile.ZipFile(archive) as z:
             z.extractall(dest)
     else:
-        extractor(archive, dest)
+        extractor()(archive, dest)  # extractor: returns the function, asked for only when needed
     with open(marker, 'w', encoding='utf-8') as f:
         f.write(stamp)
     return True
@@ -181,19 +183,149 @@ def mb(size):
 
 
 # ---------------------------------------------------------------------------------------------
+# finding the sources: anywhere below the search folders, packed or unpacked
+# ---------------------------------------------------------------------------------------------
+ARCHIVE_EXTS = ('.7z', '.zip')  # most archives are .7z, the later uploads .zip
+# never searched: not sources, and the addon skeleton has folders named like the archives
+SKIP_DIRS = {'.git', '.github', '__pycache__', 'node_modules'}
+
+
+class Sources(object):
+    """every file and folder below the search roots, by lower-case name; the match nearest to
+    a root wins, then the alphabetically first one"""
+
+    def __init__(self, roots, exclude):
+        self.roots = []
+        for root in roots:
+            root = os.path.abspath(root)
+            if root not in self.roots:
+                self.roots.append(root)
+        exclude = [os.path.normcase(os.path.abspath(path)) for path in exclude]
+        self.files, self.dirs = {}, {}
+        seen = set()
+        for root in self.roots:
+            if not os.path.isdir(root):
+                raise BuildError('--src: not a folder: %s' % root)
+            for dp, dirs, files in os.walk(root):
+                key = os.path.normcase(os.path.abspath(dp))
+                if key in seen:  # a root inside another root
+                    dirs[:] = []
+                    continue
+                seen.add(key)
+                dirs[:] = sorted(d for d in dirs if d.lower() not in SKIP_DIRS
+                                 and os.path.normcase(os.path.abspath(os.path.join(dp, d))) not in exclude)
+                depth = 0 if dp == root else os.path.relpath(dp, root).count(os.sep) + 1
+                for d in dirs:
+                    self.dirs.setdefault(d.lower(), []).append((depth, os.path.join(dp, d)))
+                for fn in files:
+                    if fn.lower().endswith(ARCHIVE_EXTS):
+                        self.files.setdefault(fn.lower(), []).append((depth, os.path.join(dp, fn)))
+        for found in list(self.files.values()) + list(self.dirs.values()):
+            found.sort(key=lambda item: (item[0], item[1].lower()))
+
+    def archive(self, name):
+        """path of <name>.7z / <name>.zip or None"""
+        best = None
+        for ext in ARCHIVE_EXTS:
+            for item in self.files.get((name + ext).lower(), [])[:1]:
+                if best is None or item[0] < best[0]:
+                    best = item
+        return best and best[1]
+
+    def folders(self, name):
+        return [path for _depth, path in self.dirs.get(name.lower(), [])]
+
+    def where(self, path):
+        """path as shown to the user: relative to the root it was found below"""
+        for root in self.roots:
+            if os.path.normcase(path).startswith(os.path.normcase(root) + os.sep):
+                rel = os.path.relpath(path, root)
+                return rel if root == self.roots[0] else os.path.join(root, rel)
+        return path
+
+    def searched(self):
+        return ', '.join(self.roots) + ' and every folder below'
+
+
+def has_file(folder, exts):
+    for _dp, _dirs, files in os.walk(folder):
+        for fn in files:
+            if fn.lower().endswith(exts):
+                return True
+    return False
+
+
+def unpacked_archive(sources, name, maps):
+    """An archive of zcg_layout.ARCHIVES that somebody unpacked by hand: {inner folder: path}
+    or None.  Accepted are a folder called like the archive that holds the inner folder(s)
+    ("driver1/driver1/..."), and, when the archive holds one folder, that folder itself -
+    called like the archive or like the inner folder ("driver1/...", "models1/..." or "2/...")."""
+    def fits(folder, dest):
+        return has_file(folder, ('.mdl',) if dest == '@models' else ('.vtf', '.vmt'))
+
+    def child(folder, inner):  # sub-folder by name, whatever its case
+        for entry in sorted(os.listdir(folder)):
+            if entry.lower() == inner.lower() and os.path.isdir(os.path.join(folder, entry)):
+                return os.path.join(folder, entry)
+        return None
+
+    for folder in sources.folders(name):
+        found = {}
+        for inner, dest in maps:
+            path = child(folder, inner)
+            if path and fits(path, dest):
+                found[inner] = path
+        if len(found) == len(maps):
+            return found
+    if len(maps) == 1:
+        inner, dest = maps[0]
+        names = [name] if inner.lower() == name.lower() else [name, inner]
+        for candidate in names:
+            for folder in sources.folders(candidate):
+                if fits(folder, dest):
+                    return {inner: folder}
+    return None
+
+
+def unpacked_optimized(sources, name):
+    """a reduced-textures archive unpacked by hand: the folder that holds its materials folder"""
+    for folder in sources.folders(name):
+        for dp, dirs, _files in os.walk(folder):
+            dirs.sort()
+            if any(d.lower() == 'materials' for d in dirs) and has_file(dp, ('.vtf',)):
+                return dp
+    return None
+
+
+# ---------------------------------------------------------------------------------------------
 # build steps
 # ---------------------------------------------------------------------------------------------
-def step_extract(extractor, temp):
+def step_extract(extractor, temp, sources):
+    """unpacks the archives into temp; returns {(archive, inner folder): path} for the ones that
+    were found already unpacked (they are read where they are)"""
     names = sorted(L.ARCHIVES)
-    for i, name in enumerate(names, 1):
-        # most archives are .7z, the later uploads .zip
-        found = [os.path.join(HERE, name + ext) for ext in ('.7z', '.zip') if os.path.isfile(os.path.join(HERE, name + ext))]
-        if not found:
-            raise BuildError('archive is missing: %s (.7z or .zip)' % os.path.join(HERE, name))
-        archive = found[0]
-        print('  [%2d/%d] %s' % (i, len(names), os.path.basename(archive)), end='', flush=True)
-        fresh = extract(extractor, archive, os.path.join(temp, name))
-        print('' if fresh else '  (already unpacked)')
+    plan, missing = [], []
+    for name in names:
+        archive = sources.archive(name)
+        folders = None if archive else unpacked_archive(sources, name, L.ARCHIVES[name])
+        if not archive and not folders:
+            missing.append(name)
+        plan.append((name, archive, folders))
+    if missing:
+        raise BuildError('%d of %d archives were not found - neither as .7z / .zip nor as an unpacked folder:\n    %s\n'
+                         'searched: %s' % (len(missing), len(names), '\n    '.join(missing), sources.searched()))
+
+    ready = {}
+    for i, (name, archive, folders) in enumerate(plan, 1):
+        if archive:
+            print('  [%2d/%d] %s' % (i, len(names), sources.where(archive)), end='', flush=True)
+            fresh = extract(extractor, archive, os.path.join(temp, name))
+            print('' if fresh else '  (already unpacked)')
+        else:
+            for inner, path in sorted(folders.items()):
+                ready[(name, inner)] = path
+                print('  [%2d/%d] %s  (folder, used as it is)' % (i, len(names), sources.where(path) + os.sep))
+    return ready
 
 
 def check_out(out):
@@ -265,14 +397,19 @@ def step_textures(idx, out):
     return wanted
 
 
-def step_optimized(extractor, temp, out, wanted):
+def step_optimized(extractor, temp, out, wanted, sources):
     replaced, saved = 0, 0
     for number, name in enumerate(OPTIMIZED, 1):
-        archive = os.path.join(HERE, name)
-        if not os.path.isfile(archive):
-            raise BuildError('%s is missing (use --original-textures to build without it)' % archive)
-        dest = os.path.join(temp, '_optimized' + (str(number) if number > 1 else ''))
-        extract(extractor, archive, dest)
+        stem = os.path.splitext(name)[0]
+        archive = sources.archive(stem)
+        if archive:
+            dest = os.path.join(temp, '_optimized' + (str(number) if number > 1 else ''))
+            extract(extractor, archive, dest)
+        else:
+            dest = unpacked_optimized(sources, stem)
+            if not dest:
+                raise BuildError('%s was not found, packed or unpacked (use --original-textures to build without it)\n'
+                                 'searched: %s' % (name, sources.searched()))
         for rel, full in walk_files(dest):
             rel = rel.lower()
             if not rel.endswith('.vtf') or rel not in wanted:
@@ -490,6 +627,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--out', default=os.path.join(HERE, 'build', L.ADDON_DIRNAME),
                     help='where to put the addon folder (default: build/%s)' % L.ADDON_DIRNAME)
+    ap.add_argument('folders', nargs='*', metavar='DIR',
+                    help='the same as --src (so that folders can be dropped onto build_addon.bat)')
+    ap.add_argument('--src', action='append', default=[], metavar='DIR',
+                    help='one more folder to search for the archives, with all its sub-folders '
+                         '(the folder of this script is always searched; may be given several times)')
     ap.add_argument('--temp', default=os.path.join(HERE, 'build', '_extract'),
                     help='where to unpack the archives (default: build/_extract)')
     ap.add_argument('--keep-temp', action='store_true',
@@ -507,10 +649,22 @@ def main():
         raise BuildError('--out and --temp must be separate folders')
     check_out(out)
 
-    description, extractor = pick_extractor()
-    print('Unpacking the archives with %s' % description.strip())
-    step_extract(extractor, temp)
-    idx = make_vmts.build_index(temp)
+    # everything below this script and below the --src folders, except what is not a source
+    sources = Sources([HERE] + args.src + args.folders, exclude=[
+        out, temp, os.path.join(HERE, 'build'), os.path.join(HERE, L.ADDON_DIRNAME),
+        os.path.join(HERE, 'tools'), os.path.join(HERE, 'docs')])
+
+    # asked for only when something is packed: unpacked folders need neither py7zr nor 7-Zip
+    picked = []
+
+    def extractor():
+        if not picked:
+            picked.append(pick_extractor())
+        return picked[0][1]
+
+    print('Looking for the archives in %s' % sources.searched())
+    ready = step_extract(extractor, temp, sources)
+    idx = make_vmts.build_index(temp, ready)
 
     print('Assembling %s' % out)
     step_skeleton(out)
@@ -522,7 +676,7 @@ def main():
     if args.original_textures:
         print('  original textures kept (--original-textures)')
     else:
-        replaced, saved = step_optimized(extractor, temp, out, wanted)
+        replaced, saved = step_optimized(extractor, temp, out, wanted, sources)
         print('  %d oversized textures replaced by their 1024 px DXT5 versions (saves %s)' % (replaced, mb(saved)))
 
     print('Checking')

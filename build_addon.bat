@@ -1,6 +1,8 @@
 @echo off
 rem Builds the Garry's Mod addon into build\zcity_csgo_gloves - see README.md.
 rem Arguments are passed on to build_addon.py, for example:  build_addon.bat --zip
+rem The archives are searched in this folder and in every folder below it, packed (.7z / .zip)
+rem or already unpacked. Folders dropped onto this file are searched as well.
 setlocal
 cd /d "%~dp0"
 

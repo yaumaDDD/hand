@@ -38,12 +38,13 @@ ENVMAP_KEYS = {'$envmap', '$envmaptint'}
 TINT_KEYS = {'$color2', '$blendtintbybasealpha'}
 
 
-def build_index(src_root):
-    """addon-relative lowercase path -> source file"""
+def build_index(src_root, ready=None):
+    """addon-relative lowercase path -> source file
+    ready: {(archive, inner folder): path} for archives that lie unpacked somewhere else"""
     idx = {}
     for arc, maps in L.ARCHIVES.items():
         for inner, dest in maps:
-            base = os.path.join(src_root, arc, inner)
+            base = (ready or {}).get((arc, inner)) or os.path.join(src_root, arc, inner)
             if not os.path.isdir(base):
                 raise SystemExit('missing extracted archive folder: %s' % base)
             for dp, _, files in os.walk(base):
