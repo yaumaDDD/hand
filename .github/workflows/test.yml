@@ -37,8 +37,12 @@ jobs:
         with:
           python-version: '3.11'
 
+      # (vpk and sourcepp are not needed by anything that is shipped: test_content.py checks its
+      # reading of the game's archives against them, and passes over that when they are missing)
       - name: Install the test tools
-        run: python -m pip install lupa==2.8
+        run: |
+          python -m pip install lupa==2.8
+          python -m pip install vpk==1.4.0 sourcepp==2026.11.1 || echo "::warning::vpk / sourcepp could not be installed - the archives are not checked against them"
 
       - name: Test the Lua code
         run: python tools/test_lua.py

@@ -405,6 +405,13 @@ class Report(object):
         self.misplaced = []
         self.missing_named = []       # paths the Lua names
         self.missing_materials = []   # (model in the addon, material name, the paths it is looked for at)
+        # every material of every model that was followed: (model in the addon, material name,
+        # the paths it is looked for at, the one of them that has a file - None when none has)
+        self.model_materials = []
+        # every path somebody asks for: the Lua, a model (each folder it looks into), a material
+        # (its textures, the material it includes). A file that lies at one of them is the file
+        # that is meant there - not a stray namesake of a file that is missing elsewhere.
+        self.asked = set()
         self.missing_textures = []    # (material in the addon, parameter, texture path)
         self.models = 0               # models whose materials were followed
         self.materials_wanted = 0     # ... and how many materials they name
@@ -1438,7 +1445,9 @@ def place(items, named, own, spare=()):
                             if path.endswith(('.mdl', '.vmt')) and free(path)]
     report.materials_wanted = len(model_wants)
     for item, name, group in model_wants:
-        if all(free(path) for path in group):
+        there = next((path for path in group if not free(path)), None)
+        report.model_materials.append((item.dests[0], name, group, there))
+        if there is None:
             report.missing_materials.append((item.dests[0], name, group))
     for target in list(wanted.values()):
         if target.asked is not None and free(target.path) and not only_spare(target.asked):
@@ -1451,4 +1460,7 @@ def place(items, named, own, spare=()):
         if free(target.path):
             item, key = target.asked
             report.missing_textures.append((item.dests[0], key, target.path))
+    report.asked = set(named) | set(wanted) | set(textures)
+    for target in of_models:
+        report.asked.add(target.path)
     return report

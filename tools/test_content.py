@@ -28,10 +28,16 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, ROOT)
 import build_addon  # noqa: E402
 import content_report  # noqa: E402
+import game_files  # noqa: E402
 import list_content  # noqa: E402
 import place_content as P  # noqa: E402
 import sort_content  # noqa: E402
 import zcg_layout as L  # noqa: E402
+
+# (sort_content.py looks into the game for the files an addon lacks. A game that happens to be
+# installed where the tests run is none of their business: only the tests that bring a game of
+# their own name one. The scripts started by test_sort_tool.py inherit this.)
+os.environ['ZCG_GAME'] = '-'
 
 CHECKS = [0, 0]
 
@@ -1414,7 +1420,7 @@ def test_numbered_folders_of_the_owner(tmp):
           'numbered folders: a file nothing is known about stays in its folder: %s' % sorted(set(got) ^ set(moved)))
     text = text.replace('\r\n', '\n')
     check(u'Уже лежит на своём месте: 12\n' in text and u'перемещено внутри аддона: 0\n' in text and
-          u'Оставлено в тех же папках (про эти файлы ничего не известно, папки — в отчёте): 2\n' in text,
+          u'Оставлено в тех же папках (их никто не называет — ни Lua, ни модели: другого места у них нет; папки — в отчёте): 2\n' in text,
           'numbered folders: ... and is counted neither as a file in its place nor as a moved one: %s'
           % [line.encode('ascii', 'backslashreplace').decode('ascii') for line in text.split('\n') if u': 2' in line or u': 12' in line])
     check(u'Оставлено в тех же папках — файлов: 2 ' in report and
@@ -2560,9 +2566,13 @@ def test_missing_by_pack(tmp):
     check(u'        lua/autorun/shirts.lua \u2014 1: materials/models/shirts/ \u2014 1' in text,
           'a Lua file without a pack goes by its own name: %r' % text[-900:])
     report = io.open(os.path.join(root, sort_content.REPORT), encoding='utf-8-sig').read().replace(u'\r\n', u'\n')
-    check(u'\n  The Faces Pack (lua/%s) \u2014 4\n    materials/models/faces/coat.vmt\n    %s\n  lua/autorun/shirts.lua \u2014 1\n'
-          u'    materials/models/shirts/tie.vmt\n' % (faces, u'\n    '.join(modern)) in report,
-          'the report lists the missing names pack by pack, the pack with the most first: %r' % report[-700:])
+    nowhere = (u'    \u2014 \u043d\u0438\u0433\u0434\u0435 \u043d\u0435\u0442 \u2014 \u043d\u0438 \u043f\u043e \u044d\u0442\u043e\u043c\u0443 '
+               u'\u043f\u0443\u0442\u0438, \u043d\u0438 \u043f\u043e\u0434 \u044d\u0442\u0438\u043c \u0438\u043c\u0435\u043d\u0435\u043c '
+               u'\u0432 \u0434\u0440\u0443\u0433\u043e\u0439 \u043f\u0430\u043f\u043a\u0435\n')
+    check(u'\n  The Faces Pack (lua/%s) \u2014 4\n    materials/models/faces/coat.vmt%s    %s  lua/autorun/shirts.lua \u2014 1\n'
+          u'    materials/models/shirts/tie.vmt%s' % (faces, nowhere, u'    '.join(name + nowhere for name in modern), nowhere) in report,
+          'the report lists the missing names pack by pack, the pack with the most first - and what the look for each found: %r'
+          % report[report.find(u'The Faces Pack (lua'):][:900])
     check(u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415' not in text, 'nothing to warn of: %r' % text[:600])
     again = u'\u043f\u0435\u0440\u0435\u0442\u0430\u0449\u0438\u0442\u0435 \u0438\u0445 \u0435\u0449\u0451 \u0440\u0430\u0437'
     check(again in text, 'with names missing and nothing handed over, it reminds of the folders that were handed over before: %r' % text[-500:])
@@ -3444,6 +3454,805 @@ def test_random_trees(tmp, runs=60):
           'random trees that say other folders: a second run changes %d of %d files' % (total['changed by a second run'], total['files']))
 
 
+# ---- the game: do the files an addon lacks come with the game? ---------------------------------
+def a_vpk(names, version=1, preload=0):
+    """a *_dir.vpk that lists these files, the way the game writes one"""
+    listed = collections.OrderedDict()
+    for name in names:
+        folder, _slash, base = name.rpartition('/')
+        stem, dot, ext = base.rpartition('.')
+        if not dot:
+            stem, ext = base, ' '
+        listed.setdefault(ext, collections.OrderedDict()).setdefault(folder or ' ', []).append(stem)
+    body = b''
+    for ext, folders in listed.items():
+        body += ext.encode('utf-8') + b'\x00'
+        for folder, stems in folders.items():
+            body += folder.encode('utf-8') + b'\x00'
+            for stem in stems:
+                body += stem.encode('utf-8') + b'\x00' + struct.pack('<IHHIIH', 0xdeadbeef, preload, 0x7fff, 0, 10, 0xffff)
+                body += b'p' * preload
+            body += b'\x00'
+        body += b'\x00'
+    body += b'\x00'
+    data = b'what the files hold'
+    head = struct.pack('<3I', 0x55AA1234, version, len(body))
+    if version == 2:
+        # (the second version: how long the data in this file is, and three lists of checksums after it)
+        return head + struct.pack('<4I', len(data), 0, 48, 0) + body + data + b'\x00' * 48
+    return head + body + data
+
+
+def a_gma(title, names, version=3, needs=(), packed=False):
+    """an addon archive (.gma) with these files, the way gmad writes one; packed: the way Steam
+    keeps an old one"""
+    out = b'GMAD' + bytes(bytearray([version])) + struct.pack('<QQ', 76561198000000000, 1700000000)
+    if version > 1:
+        for name in needs:
+            out += name.encode('utf-8') + b'\x00'
+        out += b'\x00'
+    out += title.encode('utf-8') + b'\x00' + b'{"description": "made up", "type": "model"}\x00' + b'Author Name\x00'
+    out += struct.pack('<i', 1)
+    for number, name in enumerate(names, 1):
+        out += struct.pack('<I', number) + name.encode('utf-8') + b'\x00' + struct.pack('<qI', 5, 0x1234)
+    out += struct.pack('<I', 0) + b'12345' * len(names) + struct.pack('<I', 0)
+    if packed:
+        import lzma
+        out = lzma.compress(out, format=lzma.FORMAT_ALONE)
+    return out
+
+
+def a_game(root):
+    """A computer with the game: Steam with two libraries, the game in the second one, with its
+    archives, addons as folders and as archives, addons of the workshop, another game beside it.
+    Returns (the folder of Steam, the library, the game)."""
+    steam, library = os.path.join(root, 'Steam'), os.path.join(root, 'Games Library')
+    game = os.path.join(library, 'steamapps', 'common', 'GarrysMod')
+    inner = os.path.join(game, 'garrysmod')
+    write(os.path.join(steam, 'steamapps', 'libraryfolders.vdf'),
+          '"libraryfolders"\n{\n\t"0"\n\t{\n\t\t"path"\t\t"%s"\n\t\t"apps"\n\t\t{\n\t\t\t"228980"\t\t"1"\n\t\t}\n\t}\n'
+          '\t"1"\n\t{\n\t\t"path"\t\t"%s"\n\t\t"apps"\n\t\t{\n\t\t\t"4000"\t\t"123"\n\t\t}\n\t}\n}\n'
+          % (steam.replace('\\', '\\\\'), library.replace('\\', '\\\\')))
+    write(os.path.join(inner, 'gameinfo.txt'), 'x')
+    write(os.path.join(inner, 'garrysmod_dir.vpk'),
+          a_vpk(['models/player/charple.mdl', 'materials/models/humans/male/mouth.vmt', 'scripts/a_file', 'at_the_top.txt']))
+    write(os.path.join(game, 'sourceengine', 'hl2_textures_dir.vpk'),
+          a_vpk(['materials/models/eli/eli_tex4z.vmt', 'materials\\Models\\Humans\\Male\\Eyeball_L.vmt'], version=2, preload=7))
+    write(os.path.join(game, 'sourceengine', 'hl2_textures_000.vpk'), b'the files of an archive: not a list')
+    write(os.path.join(game, 'sourceengine', 'odd_dir.vpk'), b'not an archive at all')
+    write(os.path.join(inner, 'materials', 'loose', 'one.vmt'), 'x')
+    write(os.path.join(inner, 'download', 'materials', 'from_a_server', 'two.vmt'), 'x')
+    write(os.path.join(inner, 'addons', 'zcity_content', 'materials', 'distac', 'gloves', 'Hands.vmt'), 'x')
+    write(os.path.join(inner, 'addons', 'zcity_content', 'materials', 'models', 'faces', 'face_01.vmt'), 'x')
+    write(os.path.join(inner, 'addons', 'gloves an older copy', 'lua', 'autorun', 'zcity_csgo_gloves.lua'), 'x')
+    write(os.path.join(inner, 'addons', 'gloves an older copy', 'materials', 'only', 'in_the_copy.vmt'), 'x')
+    write(os.path.join(inner, 'addons', 'no content here', 'lua', 'x.lua'), 'x')
+    write(os.path.join(inner, 'addons', 'pack.gma'), a_gma('A Pack In Addons', ['materials/in/addons_gma.vmt', 'lua/x.lua']))
+    write(os.path.join(inner, 'addons', 'cut_off.gma'), a_gma('Cut Off', ['materials/in/cut_off.vmt'])[:40])
+    write(os.path.join(inner, 'cache', 'workshop', '777.gma'), a_gma('Cached', ['materials/in/cache.vmt'], version=1))
+    workshop = os.path.join(library, 'steamapps', 'workshop', 'content', '4000')
+    write(os.path.join(workshop, '111', 'faces.gma'),
+          a_gma(u'Enhanced Faces \u2014 v4', ['materials/models/faces/Face_01.vmt', 'materials/models/faces/face_02.vmt'], needs=['cstrike']))
+    write(os.path.join(workshop, '222', '222_legacy.bin'),
+          a_gma('An Old One', ['models/old/thing.mdl'] + ['materials/pad/%04d.vmt' % n for n in range(3000)], packed=True))
+    write(os.path.join(workshop, '333', 'garbage.gma'), bytes(bytearray(range(256))) * 20)
+    write(os.path.join(workshop, '444', 'preview.jpg'), b'not an addon')
+    write(os.path.join(library, 'steamapps', 'common', 'Counter-Strike Source', 'cstrike', 'cstrike_pak_dir.vpk'),
+          a_vpk(['materials/models/cstrike/t_leet.vmt']))
+    return steam, library, game
+
+
+def test_game_files(tmp):
+    """sort_content.py sees one folder. What a model of the game is made of - the eyes, the mouth,
+    the hands - is not in it and never will be: told as missing, it buries the files that really
+    are. tools/game_files.py looks the names up where the game looks: its archives, its addons."""
+    root = os.path.join(tmp, 'a game')
+    steam, library, game = a_game(root)
+    inner = os.path.join(game, 'garrysmod')
+
+    # ---- the lists of the archives
+    names = game_files.vpk_names(os.path.join(inner, 'garrysmod_dir.vpk'))
+    check(names == ['models/player/charple.mdl', 'materials/models/humans/male/mouth.vmt', 'scripts/a_file', 'at_the_top.txt'],
+          'a vpk: its files, also one without an extension and one at the top: %s' % names)
+    names = game_files.vpk_names(os.path.join(game, 'sourceengine', 'hl2_textures_dir.vpk'))
+    check(names == ['materials/models/eli/eli_tex4z.vmt', 'materials/models/humans/male/eyeball_l.vmt'],
+          'a vpk of the second version, with bytes kept in the list: lower case, forward slashes: %s' % names)
+    for label, data in (('not an archive', b'not an archive at all'), ('too short', b'\x34\x12'),
+                        ('a version nobody knows', struct.pack('<3I', 0x55AA1234, 7, 10) + b'x' * 10),
+                        ('a list of nothing', struct.pack('<3I', 0x55AA1234, 1, 0))):
+        path = os.path.join(root, 'odd', label + '.vpk')
+        write(path, data)
+        try:
+            game_files.vpk_names(path)
+            check(False, 'a vpk that is none is refused: ' + label)
+        except ValueError:
+            check(True, '')
+    whole = a_vpk(['materials/a/one.vmt', 'materials/a/two.vmt', 'materials/b/three.vmt'])
+    write(os.path.join(root, 'odd', 'cut.vpk'), whole[:12 + 30])
+    check(game_files.vpk_names(os.path.join(root, 'odd', 'cut.vpk')) == ['materials/a/one.vmt'],
+          'a list that ends early gives what it holds')
+
+    title, names = game_files.gma_names(os.path.join(library, 'steamapps', 'workshop', 'content', '4000', '111', 'faces.gma'))
+    check(title == u'Enhanced Faces \u2014 v4' and names == ['materials/models/faces/face_01.vmt', 'materials/models/faces/face_02.vmt'],
+          'an addon archive: its title and its files, lower case: %r %s' % (title, names))
+    title, names = game_files.gma_names(os.path.join(inner, 'cache', 'workshop', '777.gma'))
+    check(title == 'Cached' and names == ['materials/in/cache.vmt'], 'the first version of the format has no list of what it needs')
+    title, names = game_files.gma_names(os.path.join(library, 'steamapps', 'workshop', 'content', '4000', '222', '222_legacy.bin'))
+    check(title == 'An Old One' and len(names) == 3001 and names[0] == 'models/old/thing.mdl' and names[-1] == 'materials/pad/2999.vmt',
+          'an archive that Steam keeps compressed is read as well, a long list too: %r %d' % (title, len(names)))
+    for path in (os.path.join(inner, 'addons', 'cut_off.gma'),
+                 os.path.join(library, 'steamapps', 'workshop', 'content', '4000', '333', 'garbage.gma'),
+                 os.path.join(library, 'steamapps', 'workshop', 'content', '4000', '444', 'preview.jpg')):
+        try:
+            game_files.gma_names(path)
+            check(False, 'an addon archive that is none is refused: ' + os.path.basename(path))
+        except ValueError:
+            check(True, '')
+
+    # ---- finding the game
+    found = game_files.find(steam=[steam])
+    check(found is not None and found.root == game and found.how == 'steam' and found.library == library,
+          'the game is found through the libraries of Steam: %s' % (found and found.root))
+    check(game_files.libraries(steam) == [steam, library], 'the libraries: %s' % game_files.libraries(steam))
+    old = os.path.join(root, 'Old Steam')
+    write(os.path.join(old, 'steamapps', 'libraryfolders.vdf'),
+          '"LibraryFolders"\n{\n\t"TimeNextStatsReport"\t\t"1"\n\t"1"\t\t"%s"\n}\n' % library.replace('\\', '\\\\'))
+    found = game_files.find(steam=[old])
+    check(found is not None and found.root == game, 'the older way Steam writes its libraries down is read as well')
+    check(game_files.find(steam=[os.path.join(root, 'no steam here')]) is None and game_files.find(steam=[]) is None,
+          'no Steam, no game')
+    around = game_files.find(addon=os.path.join(inner, 'addons', 'zcity_csgo_gloves'), steam=[])
+    check(around is not None and around.root == game and around.how == 'around' and around.library == library,
+          'an addon that lies in the game says where the game is')
+    check(game_files.find(addon=os.path.join(root, 'a desktop', 'zcity_csgo_gloves'), steam=[]) is None,
+          'an addon that lies elsewhere does not')
+    for label, path in (('the game', game), ('its garrysmod folder', inner), ('a folder below it', os.path.join(inner, 'addons'))):
+        given = game_files.find(given=path)
+        check(given is not None and given.root == game and given.how == 'given', 'a game that is named: ' + label)
+    check(game_files.find(given=root) is None and game_files.find(given=os.path.join(root, 'nothing')) is None,
+          'a folder that is no game is not taken for one')
+    packed = os.path.join(root, 'a pack with the whole path')
+    write(os.path.join(packed, 'garrysmod', 'addons', 'pack', 'materials', 'x.vmt'), 'x')
+    check(game_files.sure_game(game) == game and game_files.sure_game(inner) == game
+          and game_files.sure_game(os.path.join(inner, 'addons')) is None and game_files.sure_game(packed) is None
+          and game_files.sure_game(os.path.join(packed, 'garrysmod')) is None and game_files.sure_game(root) is None,
+          'sure_game(): the game and its garrysmod folder - not a pack that only has a folder of that name')
+    check(game_files.sure_game(library) == game and game_files.sure_game(os.path.join(library, 'steamapps')) == game
+          and game_files.sure_game(os.path.join(library, 'steamapps', 'common')) == game,
+          'sure_game(): ... and the folders of Steam the game lies in')
+
+    # ---- looking names up
+    wanted = ['models/player/charple.mdl', 'materials/models/humans/male/mouth.vmt', 'materials/models/eli/eli_tex4z.vmt',
+              'materials/models/humans/male/eyeball_l.vmt', 'materials/loose/one.vmt', 'materials/from_a_server/two.vmt',
+              'materials/distac/gloves/hands.vmt', 'materials/only/in_the_copy.vmt', 'materials/in/addons_gma.vmt',
+              'materials/in/cache.vmt', 'materials/in/cut_off.vmt', 'materials/models/faces/face_01.vmt',
+              'materials/models/faces/face_02.vmt', 'models/old/thing.mdl', 'materials/pad/2999.vmt',
+              'materials/models/cstrike/t_leet.vmt', 'materials/nowhere/x.vmt', 'lua/x.lua']
+    seen = game_files.look(game_files.find(steam=[steam]), wanted, own_marker='lua/autorun/zcity_csgo_gloves.lua')
+    want = {
+        'models/player/charple.mdl': ('vpk', 'garrysmod/garrysmod_dir.vpk'),
+        'materials/models/humans/male/mouth.vmt': ('vpk', 'garrysmod/garrysmod_dir.vpk'),
+        'materials/models/eli/eli_tex4z.vmt': ('vpk', 'sourceengine/hl2_textures_dir.vpk'),
+        'materials/models/humans/male/eyeball_l.vmt': ('vpk', 'sourceengine/hl2_textures_dir.vpk'),
+        'materials/loose/one.vmt': ('loose', 'garrysmod'),
+        'materials/from_a_server/two.vmt': ('download', 'garrysmod/download'),
+        'materials/distac/gloves/hands.vmt': ('folder', 'zcity_content'),
+        'materials/in/addons_gma.vmt': ('gma', 'A Pack In Addons'),
+        'materials/in/cache.vmt': ('gma', 'Cached'),
+        'materials/models/faces/face_01.vmt': ('folder', 'zcity_content'),
+        'materials/models/faces/face_02.vmt': ('workshop', (u'Enhanced Faces \u2014 v4', '111')),
+        'models/old/thing.mdl': ('workshop', ('An Old One', '222')),
+        'materials/pad/2999.vmt': ('workshop', ('An Old One', '222')),
+        'materials/models/cstrike/t_leet.vmt': ('other', 'Counter-Strike Source'),
+        'lua/x.lua': ('gma', 'A Pack In Addons'),
+    }
+    check(seen.where == want, 'every name is found where the game has it - the first place it is seen at:\n    %s'
+          % '\n    '.join('%s: %s' % (name, seen.where.get(name)) for name in wanted if seen.where.get(name) != want.get(name)))
+    check(dict(seen.looked) == {'vpk': 2, 'loose': 1, 'download': 1, 'folder': 1, 'gma': 2, 'workshop': 2, 'other': 1},
+          'what was looked through is counted: %s' % dict(seen.looked))
+    check(sorted(os.path.basename(path) for path, _why in seen.unread) == ['cut_off.gma', 'garbage.gma', 'odd_dir.vpk'],
+          'an archive that cannot be read is told, and passed over: %s' % seen.unread)
+    check(seen.skipped == ['gloves an older copy'] and 'materials/only/in_the_copy.vmt' not in seen.where,
+          'a copy of this addon in the addons folder is not looked into: it is about to be replaced')
+    check(dict(seen.by_kind()) == {'vpk': 4, 'loose': 1, 'download': 1, 'folder': 2, 'gma': 3, 'workshop': 3, 'other': 1}
+          and dict(seen.by_kind(['materials/loose/one.vmt', 'materials/nowhere/x.vmt'])) == {'loose': 1},
+          'by_kind(): %s' % dict(seen.by_kind()))
+    mine = game_files.look(game_files.find(given=game), wanted, skip=[os.path.join(inner, 'addons', 'zcity_content')])
+    check(mine.skipped == [] and 'materials/distac/gloves/hands.vmt' not in mine.where
+          and mine.where.get('materials/models/faces/face_01.vmt') == ('workshop', (u'Enhanced Faces \u2014 v4', '111'))
+          and mine.where.get('materials/only/in_the_copy.vmt') == ('folder', 'gloves an older copy'),
+          'the addon that is being sorted is not looked into either - and is no other copy of itself: %s' % mine.skipped)
+    late = game_files.look(game_files.find(given=game), wanted, seconds=-1)
+    check(late.cut and not late.where, 'a search that takes too long stops, and says so')
+    gone = game_files.look(game_files.Game(os.path.join(root, 'no such game'), 'given'), wanted)
+    check(not gone.where and not gone.cut, 'a game that is not there gives nothing, and nothing goes wrong')
+    check(not game_files.look(game_files.find(given=game), []).looked, 'nothing asked, nothing looked through')
+    # (an archive right in the workshop folder, not in a folder of its number: its number is in its name)
+    there = os.path.join(library, 'steamapps', 'workshop', 'content', '4000', '987654_legacy.bin')
+    write(there, a_gma('Right There', ['materials/right/there.vmt'], packed=True))
+    again = game_files.look(game_files.find(given=game), ['materials/right/there.vmt'])
+    check(again.where == {'materials/right/there.vmt': ('workshop', ('Right There', '987654'))},
+          'an archive that lies right in the workshop folder is read as well: %s' % again.where)
+    os.remove(there)
+
+    # ---- in words
+    check(content_report.game_place(('vpk', 'sourceengine/hl2_textures_dir.vpk')).endswith(u'sourceengine/hl2_textures_dir.vpk')
+          and u'An Old One' in content_report.game_place(('workshop', ('An Old One', '222')))
+          and u'222' in content_report.game_place(('workshop', ('An Old One', '222')))
+          and u'Counter-Strike Source' in content_report.game_place(('other', 'Counter-Strike Source'))
+          and content_report.game_place(('something new', 'x')) == u'x',
+          'where the game has a file, in words')
+    check(all(kind in content_report.GAME_PLACES for kind in game_files.KINDS)
+          and set(kind for kinds, _words in content_report.GAME_KINDS for kind in kinds) == set(game_files.KINDS),
+          'every kind of place has its words')
+    check(content_report.game_kinds({'vpk': 3, 'workshop': 2, 'gma': 1, 'folder': 4}).count(u'\u2014') == 3
+          and content_report.game_kinds({}) == u'', 'the places are counted kind by kind')
+
+
+def test_archives_against_other_readers(tmp):
+    """tools/game_files.py reads the lists of the game's archives itself, and the tests above
+    feed it archives they wrote themselves: a mistake about the format made on both sides would
+    not show. So two libraries that such archives are opened with everywhere are asked as well -
+    vpk (ValvePython) and sourcepp (the library of VPKEdit): what they write, game_files has to
+    read, and what the tests write, they have to read the same way.
+    Run when the libraries are installed (pip install vpk sourcepp); the layout of a .gma is
+    also that of Facepunch's own reader (gmad, include/AddonReader.h)."""
+    root = os.path.join(tmp, 'other readers')
+    names = ['materials/models/humans/male/eyeball_l.vmt', 'materials/models/humans/male/eyeball_l.vtf',
+             'materials/models/humans/male/mouth.vmt', 'models/player/charple.mdl', 'models/player/charple.dx90.vtx',
+             'scripts/soundscapes.txt', 'at_the_top.txt', 'materials/a b/with space.vmt', 'resource/fonts/x.ttf']
+    names += ['materials/pad/%04d.vmt' % n for n in range(1500)]
+    small = ['materials/models/eli/eli_tex4z.vmt', 'materials/models/eli/eli_tex4z.vtf', 'models/eli.mdl', 'top.txt',
+             'materials/other/thing.vmt', 'scripts/a_file']
+    ran = []
+
+    try:
+        import vpk
+    except ImportError:
+        vpk = None
+    if vpk is not None:
+        try:
+            src = os.path.join(root, 'vpk', 'src')
+            for name in names:
+                write(os.path.join(src, *name.split('/')), b'data of ' + name.encode('utf-8'))
+            for version in (1, 2):
+                pack = vpk.new(src)
+                pack.version = version
+                path = os.path.join(root, 'vpk', 'written_v%d_dir.vpk' % version)
+                pack.save(path)
+                theirs = sorted(name.lower() for name in vpk.open(path))
+                check(sorted(game_files.vpk_names(path)) == theirs == sorted(names),
+                      'a vpk of version %d written by the vpk library is read the way that library reads it (%d files)'
+                      % (version, len(theirs)))
+            for version, preload in ((1, 0), (2, 0), (1, 9), (2, 300)):
+                path = os.path.join(root, 'vpk', 'tests_v%d_%d_dir.vpk' % (version, preload))
+                write(path, a_vpk(small[:5], version=version, preload=preload))
+                check(sorted(vpk.open(path)) == sorted(game_files.vpk_names(path)) == sorted(small[:5]),
+                      'a vpk of version %d the tests write (%d bytes kept in its list) is one for the vpk library too'
+                      % (version, preload))
+            ran.append('vpk %s' % getattr(vpk, '__version__', '?'))
+        except Exception as err:     # (another version of the library, with other calls: not our trouble)
+            print('  (the vpk library could not be asked: %r)' % (err,))
+
+    try:
+        from sourcepp import vpkpp
+    except ImportError:
+        vpkpp = None
+    if vpkpp is not None:
+        def listed(pack):
+            found = []
+            pack.run_for_all_entries(lambda path, entry: found.append(path))
+            return sorted(found)
+
+        try:
+            for version in (1, 2):
+                for split in (False, True):
+                    # split: files in the numbered archives beside the list, some with bytes kept in the list
+                    path = os.path.join(root, 'sourcepp', 'written_v%d_%d_dir.vpk' % (version, split))
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    pack = vpkpp.VPK.create(path, version)
+                    options = vpkpp.EntryOptions()
+                    for number, name in enumerate(names + ['no_extension', 'folder/no_extension']):
+                        if split:
+                            options.vpk_save_to_directory = number % 3 == 0
+                            options.vpk_preload_bytes = (0, 4, 300)[number % 3]
+                        pack.add_entry_from_mem(name, b'data of ' + name.encode('utf-8') * 4, options)
+                    pack.bake('', vpkpp.BakeOptions(), None)
+                    theirs = [name.lower() for name in listed(vpkpp.PackFile.open(path))]
+                    check(sorted(game_files.vpk_names(path)) == theirs == sorted(names + ['no_extension', 'folder/no_extension']),
+                          'a vpk of version %d written by sourcepp%s is read the way sourcepp reads it (%d files)'
+                          % (version, ', its files in numbered archives' if split else '', len(theirs)))
+            for version, preload in ((1, 0), (2, 0), (1, 9), (2, 300)):
+                path = os.path.join(root, 'sourcepp', 'tests_v%d_%d_dir.vpk' % (version, preload))
+                write(path, a_vpk(small, version=version, preload=preload))
+                check(listed(vpkpp.PackFile.open(path)) == sorted(game_files.vpk_names(path)) == sorted(small),
+                      'a vpk of version %d the tests write (%d bytes kept in its list) is one for sourcepp too' % (version, preload))
+            # (Version 3 is what gmad writes; 2 differs in nothing here. Not asked: version 1 and
+            # a list of needed content that is not empty - there sourcepp reads otherwise than
+            # Facepunch's own reader, which game_files follows; no archive in use is like that.)
+            wanted = ['materials/models/faces/face_01.vmt', 'materials/models/faces/face_01.vtf', 'models/old/thing.mdl',
+                      'lua/autorun/x.lua'] + ['materials/pad/%04d.vmt' % n for n in range(1500)]
+            for version in (3, 2):
+                path = os.path.join(root, 'sourcepp', 'tests_v%d.gma' % version)
+                write(path, a_gma(u'A Pack \u2014 v4', wanted, version=version))
+                pack = vpkpp.PackFile.open(path)
+                title, mine = game_files.gma_names(path)
+                check(pack is not None and listed(pack) == sorted(mine) == sorted(wanted) and title == u'A Pack \u2014 v4'
+                      and pack.read_entry('models/old/thing.mdl') == b'12345',
+                      'a .gma of version %d the tests write is one for sourcepp too, the files in it as well' % version)
+                # sourcepp adds a file and writes the archive anew
+                pack.add_entry_from_mem('materials/added/by_sourcepp.vmt', b'added', vpkpp.EntryOptions())
+                out = os.path.join(root, 'sourcepp', 'anew_v%d' % version)
+                os.makedirs(out)
+                pack.bake(out, vpkpp.BakeOptions(), None)
+                anew = os.path.join(out, os.path.basename(path))
+                title, mine = game_files.gma_names(anew)
+                check(sorted(mine) == listed(vpkpp.PackFile.open(anew)) == sorted(wanted + ['materials/added/by_sourcepp.vmt'])
+                      and title == u'A Pack \u2014 v4',
+                      'a .gma of version %d written by sourcepp is read the way sourcepp reads it (%d files)' % (version, len(mine)))
+                import lzma
+                with open(anew, 'rb') as f:
+                    data = f.read()
+                write(os.path.join(out, 'legacy.bin'), lzma.compress(data, format=lzma.FORMAT_ALONE) + b'bytes after the end')
+                check(game_files.gma_names(os.path.join(out, 'legacy.bin')) == (title, mine),
+                      '... and the same archive kept compressed, with something after its end')
+            ran.append('sourcepp %s' % getattr(__import__('sourcepp'), '__version__', '?'))
+        except Exception as err:
+            print('  (sourcepp could not be asked: %r)' % (err,))
+    print('  archives against other readers: %s' % (', '.join(ran) or 'not run - neither vpk nor sourcepp is installed'))
+
+
+def test_the_close_look(tmp):
+    """A name without a file is told as missing only after it was looked for everywhere: at its
+    path and by its file name alone, in every folder - and what was found is told with it."""
+    root = os.path.join(tmp, 'close look')
+    zcity_model = 'models/tnb/halflife/male_legs_medic.mdl'
+    stock = list_content.stock_names()
+    check(zcity_model in stock, 'a model that Z-City itself names (%d names)' % len(stock))
+    files = {
+        # a face the Lua names in male_03 lies in male_04, where the Lua names it too: another file
+        'materials/models/humans/modern/male/male_04/facemap_01.vmt': material('models/humans/modern/male/male_04/facemap_01'),
+        'materials/models/humans/modern/male/male_04/facemap_01.vtf': texture('face 4'),
+        # the Lua names mossman_face; the folder holds names much like it
+        'materials/models/humans/slav/mossman/mossman_face1.vmt': material('models/humans/slav/mossman/mossman_face1'),
+        'materials/models/humans/slav/mossman/mossman_goth_face.vmt': material('models/humans/slav/mossman/mossman_goth_face'),
+        'materials/models/humans/slav/mossman/sheet.vmt': material('models/humans/slav/mossman/sheet'),
+        # a material the Lua names in gate/ lies in a folder where the Lua names another file: at home there
+        'materials/models/shirts/shirt.vmt': material('models/shirts/shirt'),
+        'materials/models/shirts/epl.vmt': material('models/shirts/epl_of_the_shirts'),
+        # the same name twice in folders that say nothing: not told apart, none is taken
+        'materials/stuff a/cap.vmt': material('elsewhere/a'),
+        'materials/stuff b/cap.vmt': material('elsewhere/b'),
+        # a loose file that the Lua names in two folders: not used at all
+        'loose/hat.vmt': material('elsewhere/hat'),
+        # a player model the Lua names: what it is made of comes with the game and with Z-City
+        'models/zcity/m/male_10.mdl': model(['models/humans/male/group01', 'models/humans/male', 'distac/gloves'],
+                                            ['mouth', 'hands', 'players_sheet', 'own_shirt'], 'zcity/m/male_10.mdl'),
+        'materials/models/humans/male/group01/own_shirt.vmt': material('models/humans/male/group01/own_shirt', bumpmap='models/humans/male/group01/own_shirt_n'),
+        'materials/models/humans/male/group01/own_shirt.vtf': texture('own shirt'),
+        # a model Z-City names, and one nobody names: the pack has a material of that name in another folder
+        zcity_model: model(['models/tnb/citizens'], ['male_rebel1'], zcity_model[len('models/'):]),
+        'models/tnb/halflife2/torso.mdl': model(['models/tnb/techcom', 'models/tnb/heads'], ['torso_tshirt1', 'gone'], 'tnb/halflife2/torso.mdl'),
+        'materials/models/tnb/citizens/torso_tshirt1.vmt': material('models/tnb/citizens/torso_tshirt1', bumpmap='models/tnb/citizens/torso_tshirt_normal'),
+        'materials/models/tnb/citizens/torso_tshirt1.vtf': texture('tshirt'),
+        'models/tnb/halflife2/vest.mdl': model(['models/tnb/citizens'], ['torso_tshirt1'], 'tnb/halflife2/vest.mdl'),
+    }
+    for rel, data in files.items():
+        write(os.path.join(root, 'content', rel), data)
+    named = ['materials/models/humans/modern/male/male_03/facemap_01.vmt', 'materials/models/humans/modern/male/male_04/facemap_01.vmt',
+             'materials/models/humans/slav/mossman/mossman_face.vmt', 'materials/models/humans/slav/mossman/sheet.vmt',
+             'materials/models/gate/epl.vmt', 'materials/models/shirts/shirt.vmt', 'materials/models/gate/cap.vmt',
+             'materials/models/gate/hat.vmt', 'materials/models/shirts/hat.vmt',
+             'materials/models/nothing/like_it.vmt', 'models/zcity/m/male_10.mdl', 'models/player/charple.mdl']
+    report, placed = run(os.path.join(root, 'content'), named)
+    check(report.missing_named == ['materials/models/gate/cap.vmt', 'materials/models/gate/epl.vmt', 'materials/models/gate/hat.vmt',
+                                   'materials/models/humans/modern/male/male_03/facemap_01.vmt',
+                                   'materials/models/humans/slav/mossman/mossman_face.vmt',
+                                   'materials/models/nothing/like_it.vmt', 'materials/models/shirts/hat.vmt', 'models/player/charple.mdl'],
+          'what the Lua names and nothing brought: %s' % report.missing_named)
+    check([(str(item), why) for item, why in report.left_out] == [('content.zip: loose/hat.vmt', 'not told from its namesakes, see the notes')],
+          'and what was not used: %s' % report.left_out)
+    check('materials/models/humans/male/group01/mouth.vmt' in report.asked and 'materials/distac/gloves/mouth.vmt' in report.asked
+          and 'materials/models/humans/male/group01/own_shirt_n.vtf' in report.asked and set(named) <= report.asked
+          and 'materials/models/shirts/epl.vmt' not in report.asked,
+          'a report knows every path somebody asks for: the Lua, a model in each of its folders, a material')
+    check(len(report.model_materials) == 8 and sum(1 for row in report.model_materials if row[3] is None) == 6
+          and ('models/zcity/m/male_10.mdl', 'own_shirt',
+               ('materials/models/humans/male/group01/own_shirt.vmt', 'materials/models/humans/male/own_shirt.vmt',
+                'materials/distac/gloves/own_shirt.vmt'), 'materials/models/humans/male/group01/own_shirt.vmt') in report.model_materials,
+          'and every material of every model, with the file that was found for it: %s'
+          % [(row[0], row[1], row[3]) for row in report.model_materials])
+
+    class Game(object):
+        where = {'models/player/charple.mdl': ('vpk', 'garrysmod/garrysmod_dir.vpk'),
+                 'materials/models/humans/male/mouth.vmt': ('vpk', 'sourceengine/hl2_textures_dir.vpk'),
+                 'materials/distac/gloves/hands.vmt': ('workshop', ('Z-City Content', '42')),
+                 'materials/models/humans/male/group01/own_shirt_n.vtf': ('folder', 'shirts')}
+
+    look = content_report.Check(report, named, stock, Game(), lambda item: '_not_used/' + item.inner)
+    rows = dict((row.path, row) for row in look.named)
+    cap, epl, face = rows['materials/models/gate/cap.vmt'], rows['materials/models/gate/epl.vmt'], \
+        rows['materials/models/humans/modern/male/male_03/facemap_01.vmt']
+    check(cap.state == 'same' and cap.same == [('materials/stuff a/cap.vmt', 'unasked'), ('materials/stuff b/cap.vmt', 'unasked')],
+          'two files of the name of a missing one, not told apart: both are told, where they lie: %s' % cap.same)
+    check(rows['materials/models/gate/hat.vmt'].same == [('_not_used/loose/hat.vmt', 'aside')]
+          and rows['materials/models/shirts/hat.vmt'].same == [('_not_used/loose/hat.vmt', 'aside')],
+          'a file of that name that was not used at all: told, with the place it was put to: %s' % rows['materials/models/gate/hat.vmt'].same)
+    check(epl.state == 'same' and epl.same == [('materials/models/shirts/epl.vmt', 'unasked')],
+          'a file of that name in a folder where it is at home: told, with its place: %s' % epl.same)
+    check(face.state == 'same' and face.same == [('materials/models/humans/modern/male/male_04/facemap_01.vmt', 'asked')],
+          'a file of that name that the Lua names where it lies: another file, and told as that: %s' % face.same)
+    mossman = rows['materials/models/humans/slav/mossman/mossman_face.vmt']
+    check(mossman.state == 'nowhere' and mossman.near == ['mossman_face1.vmt', 'mossman_goth_face.vmt'],
+          'no file of that name anywhere - and the names much like it in its folder: %s' % mossman.near)
+    check(rows['materials/models/nothing/like_it.vmt'].state == 'nowhere' and not rows['materials/models/nothing/like_it.vmt'].near,
+          'nothing at all')
+    check(rows['models/player/charple.mdl'].state == 'game' and rows['models/player/charple.mdl'].game[0] == 'vpk',
+          'a file the game has is told as that')
+    check(dict(look.states(look.named)) == {'same': 5, 'nowhere': 2, 'game': 1}, 'counted: %s' % dict(look.states(look.named)))
+    check(look.folder_state('materials/models/humans/slav/mossman') == ('materials/models/humans/slav/mossman', 3, 0)
+          and look.folder_state('materials/models/humans/modern/male/male_03') == ('materials/models/humans/modern/male', 0, 1)
+          and look.folder_state('materials/models/gate') == ('materials/models', 0, 3)
+          and look.folder_state('sound/x') == (None, 0, 0),
+          'the folder a missing file belongs to: is it there, and if not, the nearest one that is: %s'
+          % (look.folder_state('materials/models/gate'),))
+
+    whose = dict(((row.by, row.name), row) for row in look.materials)
+    check(sorted((row.by, row.name, row.who, row.state) for row in look.materials) == [
+        ('models/tnb/halflife/male_legs_medic.mdl', 'male_rebel1.vmt', 'zcity', 'nowhere'),
+        ('models/tnb/halflife2/torso.mdl', 'gone.vmt', 'others', 'nowhere'),
+        ('models/tnb/halflife2/torso.mdl', 'torso_tshirt1.vmt', 'others', 'same'),
+        ('models/zcity/m/male_10.mdl', 'hands.vmt', 'ours', 'game'),
+        ('models/zcity/m/male_10.mdl', 'mouth.vmt', 'ours', 'game'),
+        ('models/zcity/m/male_10.mdl', 'players_sheet.vmt', 'ours', 'nowhere')],
+          'a material of a model: whose model it is - of the Lua, of Z-City, of nobody - and what was found: %s'
+          % sorted((row.by, row.name, row.who, row.state) for row in look.materials))
+    check(whose[('models/tnb/halflife2/torso.mdl', 'torso_tshirt1.vmt')].same == [('materials/models/tnb/citizens/torso_tshirt1.vmt', 'asked')]
+          and whose[('models/zcity/m/male_10.mdl', 'hands.vmt')].game == ('workshop', ('Z-City Content', '42'))
+          and whose[('models/zcity/m/male_10.mdl', 'mouth.vmt')].game == ('vpk', 'sourceengine/hl2_textures_dir.vpk'),
+          'a model looks into several folders: a file in any of them will do, in the game as well')
+    check(sorted((row.path, row.who, row.state) for row in look.textures) == [
+        ('materials/elsewhere/a.vtf', 'others', 'nowhere'),
+        ('materials/elsewhere/b.vtf', 'others', 'nowhere'),
+        ('materials/models/humans/male/group01/own_shirt_n.vtf', 'ours', 'game'),             # a named model takes its material
+        ('materials/models/humans/slav/mossman/mossman_face1.vtf', 'others', 'nowhere'),
+        ('materials/models/humans/slav/mossman/mossman_goth_face.vtf', 'others', 'nowhere'),
+        ('materials/models/humans/slav/mossman/sheet.vtf', 'ours', 'nowhere'),                # the Lua names its material
+        ('materials/models/shirts/epl_of_the_shirts.vtf', 'others', 'nowhere'),
+        ('materials/models/shirts/shirt.vtf', 'ours', 'nowhere'),
+        ('materials/models/tnb/citizens/torso_tshirt_normal.vtf', 'others', 'nowhere')],      # nobody names the model that takes it
+          'a texture: of a material the Lua names or a named model takes - or of one nothing uses: %s'
+          % sorted((row.path, row.who, row.state) for row in look.textures))
+    check(len(look.of(look.materials, content_report.OURS)) == 3 and len(look.of(look.materials, content_report.ZCITY)) == 1
+          and dict(look.game_paths(look.materials)) == {'workshop': 1, 'vpk': 1}, 'of(), game_paths()')
+    bare = content_report.Check(report, named)
+    check(all(row.game is None for row in bare.named + bare.materials + bare.textures)
+          and sorted(set(row.who for row in bare.materials)) == ['others', 'ours']
+          and dict((row.path, row) for row in bare.named)['materials/models/gate/hat.vmt'].same == [('content.zip: loose/hat.vmt', 'aside')],
+          'without a game and without the names of Z-City the look is as close as it gets')
+
+    # ---- the report
+    path = os.path.join(root, 'report.txt')
+    sources = [{'name': 'content.zip', 'kind': 'archive', 'no_place': []}]
+    content_report.write(path, sources, report, named, 'build_addon.py', check=look, tail=[u'', u'(the tail of the tool)'])
+    text = io.open(path, encoding='utf-8-sig').read().replace(u'\r\n', u'\n')
+    for line in (
+            u'Lua называет, а файла нет — 8 из 12 (искалось по точному пути и по одному имени файла, во всех папках и подпапках, и в самой игре;',
+            u'    materials/models/gate/cap.vmt    — по этому пути нет; под этим именем лежит: materials/stuff a/cap.vmt (там его никто не называет); '
+            u'materials/stuff b/cap.vmt (там его никто не называет)\n',
+            u'    materials/models/gate/hat.vmt    — по этому пути нет; под этим именем лежит: _not_used/loose/hat.vmt (не использован)\n',
+            u'    materials/models/shirts/hat.vmt    — по этому пути нет; под этим именем лежит: _not_used/loose/hat.vmt (не использован)\n',
+            u'    materials/models/gate/epl.vmt    — по этому пути нет; под этим именем лежит: materials/models/shirts/epl.vmt (там его никто не называет)\n',
+            u'    materials/models/humans/modern/male/male_03/facemap_01.vmt    — по этому пути нет; под этим именем лежит: '
+            u'materials/models/humans/modern/male/male_04/facemap_01.vmt (там его называют — это другой файл)\n',
+            u'    materials/models/humans/slav/mossman/mossman_face.vmt    — нигде нет — ни по этому пути, ни под этим именем в другой папке; '
+            u'похожие имена в его папке: mossman_face1.vmt, mossman_goth_face.vmt\n',
+            u'    models/player/charple.mdl    — в аддоне нет; В ИГРЕ ЕСТЬ: архив игры garrysmod/garrysmod_dir.vpk\n',
+            u'  Папки, в которых этих файлов нет:\n',
+            u'      materials/models/gate/ — такой папки нет; ближайшая, что есть: materials/models/ (файлов в ней 0, папок 3)\n',
+            u'      materials/models/shirts/ — папка есть: файлов в ней 2, папок 0\n',
+            u'      materials/models/humans/slav/mossman/ — папка есть: файлов в ней 3, папок 0\n',
+            u'Модель ищет материал, а его нет — 6 из 8\n',
+            u'  Модели, которые называет Lua аддона — моделей: 1; не найдено материалов: 3 (разных имён: 3)\n',
+            u'      hands.vmt — моделей: 1 — В ИГРЕ ЕСТЬ: аддон мастерской «Z-City Content» (номер 42)\n',
+            u'      players_sheet.vmt — моделей: 1 — нигде нет — ни в папках, где ищут модели, ни под этим именем в другой папке\n',
+            u'  Модели, которые называет сам Z-City — моделей: 1; не найдено материалов: 1 (разных имён: 1)\n',
+            u'  Остальные модели (их не называет ни Lua аддона, ни Z-City: на одежду не влияют) — моделей: 1; не найдено материалов: 2 (разных имён: 2)\n',
+            u'      torso_tshirt1.vmt — моделей: 1 — в папках, где ищут модели, нет; под этим именем лежит: '
+            u'materials/models/tnb/citizens/torso_tshirt1.vmt (модель ищет не там)\n',
+            u'    materials/models/humans/male/group01/mouth.vmt | materials/models/humans/male/mouth.vmt | materials/distac/gloves/mouth.vmt'
+            u'  <-  models/zcity/m/male_10.mdl    = В ИГРЕ ЕСТЬ\n',
+            u'    materials/models/tnb/techcom/gone.vmt | materials/models/tnb/heads/gone.vmt  <-  models/tnb/halflife2/torso.mdl\n',
+            u'Материал ищет текстуру, а её нет — 9 из 12\n',
+            u'    materials/models/humans/male/group01/own_shirt_n.vtf  <-  materials/models/humans/male/group01/own_shirt.vmt  $bumpmap'
+            u'    — в аддоне нет; В ИГРЕ ЕСТЬ: папка addons/shirts игры\n',
+            u'    materials/models/tnb/citizens/torso_tshirt_normal.vtf  <-  materials/models/tnb/citizens/torso_tshirt1.vmt  $bumpmap'
+            u'    — нигде нет — ни по этому пути, ни под этим именем в другой папке\n',
+            u'\n(the tail of the tool)\n'):
+        check(line in text, 'the report says: %s' % line.strip().encode('ascii', 'backslashreplace').decode('ascii'))
+    check(text.endswith(u'(the tail of the tool)\n'), 'what a tool adds goes to the very end')
+    plain = u'\n'.join(content_report.lines(sources, report, named, 'build_addon.py'))
+    check(u'В ИГРЕ' not in plain and u'и в самой игре' not in plain
+          and u'    materials/models/nothing/like_it.vmt    — нигде нет — ни по этому пути, ни под этим именем в другой папке' in plain,
+          'a report without a game does not speak of one')
+
+    # two models that want one name, the game has it for one of them: told as that
+    class Half(object):
+        where = {'materials/models/tnb/techcom/torso_tshirt1.vmt': ('gma', 'A Pack')}
+    extra = dict(files)
+    extra['models/tnb/halflife2/coat.mdl'] = model(['models/tnb/skynet'], ['torso_tshirt1'], 'tnb/halflife2/coat.mdl')
+    del extra['materials/models/tnb/citizens/torso_tshirt1.vmt']
+    for rel, data in extra.items():
+        write(os.path.join(root, 'more', rel), data)
+    report, _placed = run(os.path.join(root, 'more'), named)
+    half = content_report.Check(report, named, stock, Half())
+    lines = content_report.material_lines(half)
+    check(any(u'torso_tshirt1.vmt — моделей: 3 — В ИГРЕ ЕСТЬ для 1 из 3 моделей: аддон «A Pack» (.gma в папке игры)' in line for line in lines),
+          'a name the game has for some of the models that want it: %s' % [line for line in lines if u'torso_tshirt1' in line])
+
+
+def test_every_folder(tmp):
+    """Every folder is gone into, however deep it lies - and the tool says so: how many folders,
+    how deep, what kinds of files; what became of each file; and, once the files are moved, what
+    the materials and models folders hold then. What it cannot read it names."""
+    root = os.path.join(tmp, 'every folder', 'zcity_csgo_gloves')
+    deep = '/'.join('level%d' % n for n in range(1, 13))
+    long_name = '/'.join(['a folder with quite a long name %02d' % n for n in range(1, 9)])
+    lua = u"""
+        hg.Appearance.Clothes[1].deep = "models/pack/%s/shirt"
+        hg.Appearance.Clothes[1].face = "models/humans/modern/male/male_04/facemap_04"
+        hg.Appearance.Clothes[1].eli = "models/eli/eli_tex4z"
+        AppAddModel("Male 10", "models/zcity/m/male_10.mdl", false, {})
+    """ % deep
+    files = {
+        'addon.json': b'{}',
+        'lua/autorun/clothes.lua': lua.encode('utf-8'),
+        'lua/autorun/zcity_csgo_gloves.lua': b'ZCGloves = ZCGloves or {}\nZCGloves.Version = "9.9.9"\n',
+        'materials/zcity_csgo_gloves/icons/moto_1.png': b'png of the addon',
+        'materials/models/weapons/v_models/arms/glove_x/a/b/c/d/e/f/g/left.vmt': material('models/weapons/v_models/arms/glove_x/left').encode('utf-8'),
+        'models/zcity_csgo_gloves/v_glove.mdl': model([], [], 'v_glove.mdl'),
+        'materials/put_materials_here.txt': b'note',
+    }
+    thrown = {
+        # twelve folders down, in a numbered folder
+        'materials/materials1/models/pack/%s/shirt.vmt' % deep: ('materials/models/pack/%s/shirt.vmt' % deep, material('models/pack/%s/shirt' % deep)),
+        'materials/materials1/models/pack/%s/shirt.vtf' % deep: ('materials/models/pack/%s/shirt.vtf' % deep, texture('deep shirt')),
+        'materials/materials1/models/pack/level1/level2/Half.VTF': ('materials/models/pack/level1/level2/half.vtf', texture('half way')),
+        # a path far beyond 260 characters
+        'materials/materials2/models/%s/far.vmt' % long_name: ('materials/models/%s/far.vmt' % long_name, material('models/%s/far' % long_name)),
+        'materials/materials2/models/%s/far.vtf' % long_name: ('materials/models/%s/far.vtf' % long_name, texture('far')),
+        # a player model with its files, among the materials; it is made of files of the game
+        u'materials/\u043c\u043e\u0438 \u043c\u043e\u0434\u0435\u043b\u0438/models3/zcity/m/male_10.mdl': (
+            'models/zcity/m/male_10.mdl', model(['models/humans/male/group01', 'models/humans/male', 'distac/gloves'],
+                                                ['mouth', 'hands', 'players_sheet'], 'zcity/m/male_10.mdl')),
+        u'materials/\u043c\u043e\u0438 \u043c\u043e\u0434\u0435\u043b\u0438/models3/zcity/m/male_10.vvd': ('models/zcity/m/male_10.vvd', b'vvd of male_10'),
+        u'materials/\u043c\u043e\u0438 \u043c\u043e\u0434\u0435\u043b\u0438/models3/zcity/m/male_10.dx90.vtx': ('models/zcity/m/male_10.dx90.vtx', b'vtx of male_10'),
+        # a model nobody names, and a picture
+        'models/models4/props/crate.mdl': ('models/props/crate.mdl', model(['models/props'], ['crate_skin'], 'props/crate.mdl')),
+        'models/models4/props/crate.phy': ('models/props/crate.phy', b'phy of the crate'),
+        'models/models4/props/crate.jpg': ('materials/models/props/crate.jpg', b'a picture of the crate'),
+    }
+    for rel, data in files.items():
+        write(os.path.join(root, rel), data)
+    made = {}
+    for rel, (dest, data) in thrown.items():
+        full = sort_content.long_path(os.path.join(root, *rel.split('/')))
+        try:
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, 'wb') as f:
+                f.write(data if isinstance(data, bytes) else data.encode('utf-8'))
+            made[rel] = dest
+        except OSError:
+            pass    # (a computer that refuses such a path: nothing to try there)
+    check(len(made) >= len(thrown) - 2, 'the files are there to begin with: %d of %d' % (len(made), len(thrown)))
+    long_made = any('quite a long name' in rel for rel in made)
+    longest = max(len(os.path.join(root, *rel.split('/'))) for rel in made)
+    check(not long_made or longest > 300, 'one of them lies at a path of %d characters' % longest)
+
+    def lies(rel):
+        return os.path.isfile(sort_content.long_path(os.path.join(root, *rel.split('/'))))
+
+    steam, library, game = a_game(os.path.join(tmp, 'every folder', 'computer'))
+    write(os.path.join(library, 'steamapps', 'workshop', 'content', '4000', '555', 'zcity.gma'),
+          a_gma('Z-City Content', ['materials/distac/gloves/hands.vmt', 'materials/models/humans/male/group01/players_sheet.vmt']))
+
+    # ---- a trial run: everything is counted, nothing is moved
+    code, text = sort('--addon', root, '--dry-run', '--game', game)
+    check(code == 0 and all(lies(rel) for rel in made) and not any(lies(dest) for dest in made.values()),
+          'a trial run moves nothing: %r' % text[-300:])
+    check(u'Проверка после раскладки' not in text and u'будет лежать' in io.open(os.path.join(root, sort_content.REPORT), encoding='utf-8-sig').read(),
+          'and does not check what it did not do')
+    # materials1/models/pack/level1 ... level12; materials2/models/<eight>; <mine>/models3/zcity/m;
+    # models4/props; and the three folders above the gloves, which are not the gloves' own
+    folders = 15 + (10 if long_made else 0) + 4 + 2 + 3
+    kinds = (2, 3, 1 + (1 if long_made else 0), 2 + (1 if long_made else 0), 1 + 1)
+    check(u'Пройдены все папки и подпапки, до самой глубокой: папок — %d, файлов в них — %d\n' % (folders, len(made) + 1) in text,
+          'it says how many folders it went into (%d) and how many files it found there: %r' % (folders, text[:1500]))
+    check(u'  самая глубокая — на 16-м уровне: materials/materials1/models/pack/%s/\n' % deep in text,
+          'how deep the deepest one lies: %r' % text[:1500])
+    check(u'  моделей .mdl — %d, файлов к ним (.vvd .vtx .phy .ani) — %d, материалов .vmt — %d, текстур .vtf — %d, прочих — %d\n' % kinds in text,
+          'what kinds of files: %r' % text[:1500])
+    check(u'  (своих файлов аддона — перчаток — 3: они не в счёт и не трогаются)\n' in text,
+          'and that the files of the addon itself are not among them - nor their folders, however deep')
+
+    # ---- for real
+    code, text = sort('--addon', root, '--game', game)
+    check(code == 0 and all(lies(dest) for dest in made.values()) and not any(lies(rel) for rel in made),
+          'every file is at its place, from whatever depth: %r'
+          % sorted(rel.encode('ascii', 'backslashreplace') for rel in made if not lies(made[rel])))
+    check(not os.path.isdir(os.path.join(root, 'materials', 'materials1')) and not os.path.isdir(os.path.join(root, 'models', 'models4')),
+          'and the folders they came in are gone')
+    check(u'Проверка после раскладки — папки materials и models аддона пройдены ещё раз, каждая подпапка:\n' in text
+          and u'; файлов моделей: 0\n' in text and u'; материалов и текстур: 0\n' in text
+          and u'  папок с номерами (materials1, models2 …) не осталось: всё из них разложено\n' in text
+          and u'  в папке _not_used (не пригодилось, ничего не удалено): файлов 0\n' in text,
+          'afterwards the folders are gone through once more, and what they hold is told: %r' % text)
+    check(u'  models: папок 4, файлов 6 — моделей .mdl 3, файлов к ним (.vvd .vtx .phy .ani) 3, прочих 0; материалов и текстур: 0\n' in text,
+          'the files of the addon itself are counted there: %r' % [line for line in text.split(u'\n') if line.startswith(u'  models:')])
+    check(u'Подпапки внутри materials и models — так и должно быть' in text, 'it says that folders inside the two are how it has to be')
+    check(u'Игра на этом компьютере: %s\n' % game in text
+          and u'  недостающие файлы искались и в ней: архивов игры — 2, папок в addons — 1, аддонов .gma в папке игры — 2, '
+              u'аддонов мастерской — 3, других игр Steam — 1\n' in text
+          and u'  (в папке addons игры лежит ещё одна копия этого аддона — «gloves an older copy»: её файлы не в счёт.\n' in text
+          and u'  не прочитано архивов: 3 (' in text,
+          'it names the game it looked into, and what of it: %r' % [line for line in text.split(u'\n') if u'игр' in line.lower()][:8])
+    check(u'    названных в Lua: 2 из 4\n        из них: нигде нет — 1, есть в самой игре — 1\n' in text,
+          'a name the Lua has and the addon lacks: in the game, or nowhere: %r' % text[-2500:])
+    check(u'    материалов, которые ищут модели: 4 из 4\n'
+          u'        моделям, которые называет Lua аддона (их 1) — 3: есть в самой игре — 3\n'
+          u'        прочим моделям (их 1) — 1: нигде нет — 1\n'
+          u'            это модели из models/props/ — 1\n' in text,
+          'the materials of the models, by whose model it is - and from which pack the models nobody names are: %r' % text[-2500:])
+    check(u'  ИТОГ для одежды аддона (прочие модели не в счёт):\n'
+          u'    есть в самой игре — 4: в архивах самой игры — 2, в аддонах из папки addons — 1, в аддонах мастерской — 1\n'
+          u'    нет ни в аддоне, ни в игре — 1: из Lua — 1, материалов моделей — 0, текстур — 0\n' in text,
+          'and the bottom line: what the clothes of the addon lack for real: %r' % text[-2500:])
+    report = io.open(os.path.join(root, sort_content.REPORT), encoding='utf-8-sig').read().replace(u'\r\n', u'\n')
+    check(u'    materials/models/eli/eli_tex4z.vmt    — в аддоне нет; В ИГРЕ ЕСТЬ: архив игры sourceengine/hl2_textures_dir.vpk\n' in report
+          and u'      hands.vmt — моделей: 1 — В ИГРЕ ЕСТЬ: папка addons/zcity_content игры\n' in report
+          and u'      players_sheet.vmt — моделей: 1 — В ИГРЕ ЕСТЬ: аддон мастерской «Z-City Content» (номер 555)\n' in report
+          and u'      mouth.vmt — моделей: 1 — В ИГРЕ ЕСТЬ: архив игры garrysmod/garrysmod_dir.vpk\n' in report,
+          'the report tells where the game has each of them')
+    check(u'\nАрхивы игры, которые не удалось прочитать — 3\n' in report and u'cut_off.gma: ' in report,
+          'and which archives of the game it could not read')
+    check(u'\nВсе файлы, папка за папкой: где лежал  ->  где лежит теперь — папок: %d, файлов: %d\n' % (5 if long_made else 4, len(made)) in report
+          and u'    materials/materials1/models/pack/%s/  ->  materials/models/pack/%s/    файлов: 2\n        shirt.vmt, shirt.vtf\n' % (deep, deep) in report
+          and u'    materials/materials1/models/pack/level1/level2/  ->  materials/models/pack/level1/level2/    файлов: 1\n        Half.VTF\n' in report
+          and u'    materials/\u043c\u043e\u0438 \u043c\u043e\u0434\u0435\u043b\u0438/models3/zcity/m/  ->  models/zcity/m/    файлов: 3\n'
+              u'        male_10.dx90.vtx, male_10.mdl, male_10.vvd\n' in report
+          and u'    models/models4/props/  ->  materials/models/props/    файлов: 1\n        crate.jpg\n' in report
+          and u'    models/models4/props/  ->  models/props/    файлов: 2\n        crate.mdl, crate.phy\n' in report,
+          'the report lists every folder with its files: where each lay and where it lies now: %r' % report[report.find(u'Все файлы'):][:1500])
+
+    # ---- once more: nothing to do, and the list says where everything lies
+    code, text = sort('--addon', root, '--no-game')
+    report = io.open(os.path.join(root, sort_content.REPORT), encoding='utf-8-sig').read().replace(u'\r\n', u'\n')
+    check(code == 0 and all(lies(dest) for dest in made.values()) and u'перемещено внутри аддона: 0\n' in text,
+          'a second run moves nothing: %r' % text[:600])
+    check(u'Игра на этом компьютере' not in text and u'в самой игре' not in text.replace(u'покажет', u'')
+          and u'        из них: нет ни в одной папке — 2\n' in text
+          and u'  Этих файлов нет ни в одной папке аддона.' in text and u'ИТОГ' not in text,
+          'told to leave the game alone, it does, and says what it knows: %r' % text[-1800:])
+    check(u'    models/zcity/m/    — лежит на своём месте    файлов: 3\n        male_10.dx90.vtx, male_10.mdl, male_10.vvd\n' in report,
+          'a file that lies right is listed as that')
+
+    # ---- a game that is named and is none: refused before anything is moved
+    write(os.path.join(root, 'materials', 'materials5', 'models', 'late', 'x.vtf'), texture('late'))
+    code, text = sort('--addon', root, '--game', os.path.join(tmp, 'every folder', 'no game'))
+    check(code == 1 and u'ОШИБКА' in text and u'--game' in text and lies('materials/materials5/models/late/x.vtf'),
+          'a folder that is no game is refused, and nothing is touched: %r' % text)
+
+    # ---- no game on the computer: said, with what to do about it
+    saved, roots = os.environ.pop('ZCG_GAME', None), game_files.steam_roots
+    game_files.steam_roots = lambda: []
+    try:
+        code, text = sort('--addon', root)
+    finally:
+        game_files.steam_roots = roots
+        if saved is not None:
+            os.environ['ZCG_GAME'] = saved
+    check(code == 0 and u'Игра на этом компьютере не найдена' in text and lies('materials/models/late/x.vtf')
+          and u'перетащите мышью папку игры (GarrysMod — ту, в которой лежит\n  garrysmod) на sort_content.bat' in text
+          and u'        из них: нет ни в одной папке — 2\n' in text,
+          'without a game it says that it could not look into one: %r' % text[-1800:])
+    saved = os.environ.pop('ZCG_GAME', None)
+    os.environ['ZCG_GAME'] = game
+    try:
+        code, text = sort('--addon', root)
+    finally:
+        del os.environ['ZCG_GAME']
+        if saved is not None:
+            os.environ['ZCG_GAME'] = saved
+    check(code == 0 and u'Игра на этом компьютере: %s\n' % game in text, 'the game can be named with a variable as well')
+
+    # ---- the folder of the game handed over like a folder of content: it is the game, nothing is taken from it
+    write(os.path.join(game, 'garrysmod', 'materials', 'of_the_game', 'loose.vmt'), material('of_the_game/loose'))
+    pack = os.path.join(tmp, 'every folder', 'a pack')
+    write(os.path.join(pack, 'garrysmod', 'addons', 'pack', 'materials', 'models', 'late', 'y.vtf'), texture('y'))
+    for handed in (game, os.path.join(game, 'garrysmod')):
+        code, text = sort('--addon', root, handed, pack)
+        check(code == 0 and u'Папка «%s» — это сама игра: из неё ничего не берётся' % handed in text
+              and u'Игра на этом компьютере: %s\n' % game in text and not lies('materials/of_the_game/loose.vmt'),
+              'the folder of the game dropped onto the tool is the game to look into, not content: %r' % text[:700])
+        check(lies('materials/models/late/y.vtf'),
+              '... and a pack of content that holds a folder called garrysmod is still content')
+
+    # ---- an addon that lies in the game: that game is the one
+    inside = os.path.join(game, 'garrysmod', 'addons', 'zcity_csgo_gloves')
+    for rel, data in files.items():
+        write(os.path.join(inside, rel), data)
+    write(os.path.join(inside, 'materials', 'models', 'pack', deep.replace('/', os.sep), 'shirt.vmt'), material('models/pack/%s/shirt' % deep))
+    saved = os.environ.pop('ZCG_GAME', None)
+    try:
+        code, text = sort('--addon', inside)
+    finally:
+        if saved is not None:
+            os.environ['ZCG_GAME'] = saved
+    check(code == 0 and u'Игра на этом компьютере: %s\n' % game in text and u'есть в самой игре — 1' in text
+          and u'«zcity_csgo_gloves»' not in text,
+          'an addon in the addons folder of the game looks into that game - and not into itself: %r'
+          % [line for line in text.split(u'\n') if u'игр' in line.lower()][:8])
+
+    # ---- what is left behind is told: a heap under a numbered name, a file below the wrong folder
+    left = os.path.join(tmp, 'every folder', 'left', 'zcity_csgo_gloves')
+    for rel, data in files.items():
+        write(os.path.join(left, rel), data)
+    write(os.path.join(left, 'materials', 'materials7', 'nobody_knows.vtf'), texture('nobody knows'))
+    write(os.path.join(left, 'materials', 'materials7', 'nor_this.vmt'), material('elsewhere/nor_this'))
+    code, text = sort('--addon', left)
+    check(code == 0 and u'  в папках с номерами осталось файлов: 2 (materials/materials7 — 2) — о них ничего не известно, см. отчёт\n' in text
+          and u'не осталось: всё из них разложено' not in text,
+          'files that stay in a numbered folder are counted by the check afterwards: %r' % text[-2500:])
+    report = io.open(os.path.join(left, sort_content.REPORT), encoding='utf-8-sig').read().replace(u'\r\n', u'\n')
+    check(u'    materials/materials7/    — оставлено как есть: про эти файлы ничего не известно    файлов: 2\n'
+          u'        nobody_knows.vtf, nor_this.vmt\n' in report,
+          'and listed, with the reason')
+    write(os.path.join(left, 'materials', 'stray', 'thing.mdl'), model([], [], 'thing.mdl'))
+    write(os.path.join(left, 'models', 'stray', 'skin.vtf'), texture('skin'))
+    after = sort_content.verify(left)
+    check(after['wrong'] == ['materials/stray/thing.mdl', 'models/stray/skin.vtf']
+          and after['roots']['materials'].kinds['mdl'] == 1 and after['roots']['models'].kinds['vtf'] == 1
+          and dict(after['numbered']) == {'materials/materials7': 2} and after['aside'] == 0,
+          'verify() finds a file of a model below materials and a texture below models: %s' % after['wrong'])
+    lines = u'\n'.join(sort_content.verify_lines(after))
+    check(u'ВНИМАНИЕ: не в своей папке остались файлы — 2 (materials/stray/thing.mdl, models/stray/skin.vtf)' in lines
+          and u'; файлов моделей: 1\n' in lines and u'; материалов и текстур: 1\n' in lines,
+          'and that is told as a warning: %r' % lines)
+
+    # ---- a folder that cannot be read is told, not passed over
+    locked = os.path.join(tmp, 'every folder', 'locked', 'zcity_csgo_gloves')
+    for rel, data in files.items():
+        write(os.path.join(locked, rel), data)
+    write(os.path.join(locked, 'materials', 'materials1', 'models', 'open', 'a.vtf'), texture('a'))
+    write(os.path.join(locked, 'materials', 'materials1', 'models', 'shut', 'b.vtf'), texture('b'))
+    shut = os.path.join(locked, 'materials', 'materials1', 'models', 'shut')
+    os.chmod(shut, 0)
+    try:
+        readable = True
+        try:
+            os.listdir(shut)
+        except OSError:
+            readable = False
+        if readable:
+            check(True, '(this computer reads a folder whatever its rights are: nothing to try)')
+        else:
+            seen = sort_content.Seen()
+            found = sorted(rel for rel, _full in sort_content.walk_files(os.path.join(locked, 'materials'), seen, 'materials/'))
+            check(found == ['materials1/models/open/a.vtf', 'put_materials_here.txt', 'zcity_csgo_gloves/icons/moto_1.png',
+                            'models/weapons/v_models/arms/glove_x/a/b/c/d/e/f/g/left.vmt'][:len(found)] or len(seen.unread) == 1,
+                  'the walk goes on past a folder it cannot read: %s' % found)
+            check(len(seen.unread) == 1 and seen.unread[0][0].replace('\\', '/').endswith('materials1/models/shut'),
+                  'and keeps it: %s' % seen.unread)
+            code, text = sort('--addon', locked)
+            check(code == 0 and u'ВНИМАНИЕ: не удалось прочитать папок: 1' in text and u'shut' in text,
+                  'the tool names it on the screen: %r' % text[:1500])
+    finally:
+        os.chmod(shut, 0o755)
+    seen = sort_content.Seen()
+    check(list(sort_content.walk_files(os.path.join(locked, 'no such folder'), seen)) == [] and not seen.unread and seen.folders == 0,
+          'a folder that is not there is no folder that could not be read')
+
+
 def main():
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, 'reconfigure'):
@@ -3471,6 +4280,10 @@ def main():
         test_versions_of_a_pack(tmp)
         test_numbered_folders_of_the_owner(tmp)
         test_thrown_in_folders(tmp)
+        test_game_files(tmp)
+        test_archives_against_other_readers(tmp)
+        test_the_close_look(tmp)
+        test_every_folder(tmp)
         test_random_trees(tmp)
         test_random_packings(tmp)
     finally:

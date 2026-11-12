@@ -3,11 +3,16 @@ rem Puts the materials and models of clothing addons where the game looks for th
 rem
 rem   double click           sorts what lies in the materials and models folders of this addon
 rem   drop folders on it     also takes in the content of those folders (or .zip archives)
+rem   drop the game on it    (the folder GarrysMod) - nothing is taken from it: the files the addon
+rem                          lacks are looked for in it. The game is found without that as well,
+rem                          when the addon lies in its addons folder or Steam has it.
 rem
 rem The content can be thrown in the way it was collected: the materials and models folders of
 rem other addons as materials1, materials2, models1 ... - into materials, into models, into both,
 rem or beside them. Every folder and subfolder is gone through: the files of models end up below
 rem models, materials and textures below materials, and the numbered folders go away.
+rem Afterwards it tells what it went through - how many folders, how deep - goes through the
+rem two folders once more, and tells what they hold and which files are missing for real.
 rem
 rem Close the game first: it keeps the files it uses open. Nothing is deleted - see the README,
 rem "sort_content.bat". The work is done by sort_content\sort_content.py; this file only finds

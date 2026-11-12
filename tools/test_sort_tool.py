@@ -12,7 +12,8 @@ to them. Then:
     the portable Python sort_content.bat fetches), from another folder; once more with Lua that
     names its materials in a table, and the list of names the build makes for that by running it;
     and with the folders of an owner thrown at the addon the way he collects them - materials1,
-    models2 ... in materials, in models, beside them, handed over;
+    models2 ... in materials, in models, beside them, handed over; and in the addons folder of
+    a made-up game, whose archives it has to look into for what the addon lacks;
   * on Windows: sort_content.bat itself is run, with the Python that is installed and - when
     ZCG_TEST_PORTABLE is set, it needs the internet - with the portable one it fetches, kept in a
     folder with a Russian name as the profile of a Russian user has.
@@ -171,6 +172,38 @@ def main():
             check(got == want, 'the shipped script, numbered folders %s: no file was changed' % how)
             if done.returncode != 0 or got != want:
                 show('the shipped script, numbered folders %s' % how, done)
+
+        # ---- the game: what the addon lacks is looked for in the game it lies in
+        # (the tests keep the tool away from a game that is installed here: ZCG_GAME, see
+        # test_content.py - these two runs are the ones that look for it the way the owner's will)
+        seeking = dict(env)
+        seeking.pop('ZCG_GAME', None)
+        game = os.path.join(tmp, u'Steam Library', 'steamapps', 'common', 'GarrysMod')
+        addon = os.path.join(game, 'garrysmod', 'addons', L.ADDON_DIRNAME)
+        want = shipped(addon)
+        T.write(os.path.join(game, 'garrysmod', 'gameinfo.txt'), 'x')
+        T.write(os.path.join(game, 'garrysmod', 'garrysmod_dir.vpk'), T.a_vpk(['materials/models/gate/gone.vmt'], version=2))
+        T.write(os.path.join(game, 'garrysmod', 'addons', 'pack.gma'), T.a_gma('A Pack', ['materials/models/gate/other.vmt']))
+        script = os.path.join(addon, build_addon.SORT_TOOL_DIR, 'sort_content.py')
+        done = subprocess.run([sys.executable, '-I', '-B', script], cwd=tmp, env=seeking, **quiet)
+        judge('the shipped script in the addons folder of a game', addon, want, done)
+        text = done.stdout.decode('utf-8', 'replace')
+        _got, report = result(addon)
+        check(u'\u0418\u0433\u0440\u0430 \u043d\u0430 \u044d\u0442\u043e\u043c \u043a\u043e\u043c\u043f\u044c\u044e\u0442\u0435\u0440\u0435: %s' % game in text,
+              'it finds the game the addon lies in: %r' % text[-1500:])
+        check(u'materials/models/gate/gone.vmt    \u2014 \u0432 \u0430\u0434\u0434\u043e\u043d\u0435 \u043d\u0435\u0442; \u0412 \u0418\u0413\u0420\u0415 \u0415\u0421\u0422\u042c: '
+              u'\u0430\u0440\u0445\u0438\u0432 \u0438\u0433\u0440\u044b garrysmod/garrysmod_dir.vpk' in (report or b'').decode('utf-8-sig', 'replace'),
+              'and tells that the game has the file the addon lacks, in which archive')
+        # ... and an addon that lies elsewhere looks for the game Steam has: found or not, it says which
+        addon = os.path.join(tmp, u'\u0440\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b', L.ADDON_DIRNAME)
+        want = shipped(addon)
+        script = os.path.join(addon, build_addon.SORT_TOOL_DIR, 'sort_content.py')
+        done = subprocess.run([sys.executable, '-I', '-B', script], cwd=tmp, env=seeking, **quiet)
+        judge('the shipped script, looking for the game of this computer', addon, want, done)
+        text = done.stdout.decode('utf-8', 'replace')
+        said = [line for line in text.splitlines() if line.startswith(u'\u0418\u0433\u0440\u0430 \u043d\u0430 \u044d\u0442\u043e\u043c \u043a\u043e\u043c\u043f\u044c\u044e\u0442\u0435\u0440\u0435')]
+        check(len(said) == 1, 'it says whether this computer has the game: %r' % text[-1500:])
+        print('  the game of this computer: %s' % (said[0].encode('ascii', 'backslashreplace').decode('ascii') if said else '?'))
 
         if os.name != 'nt':
             print('  (not on Windows: sort_content.bat itself is not run)')

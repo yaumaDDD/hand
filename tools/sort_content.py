@@ -37,6 +37,7 @@ import argparse
 import collections
 import io
 import os
+import posixpath
 import re
 import shutil
 import sys
@@ -51,6 +52,7 @@ import zcg_layout as L  # noqa: E402
 import list_content  # noqa: E402
 import place_content as P  # noqa: E402
 import content_report  # noqa: E402
+import game_files  # noqa: E402
 
 STAGE = '_sorting'        # files on their way (with a journal, so that a run that was cut off is finished)
 ASIDE = '_not_used'       # files of the addon that have no place in it
@@ -73,17 +75,77 @@ def say(text=u''):
     sys.stdout.flush()
 
 
-def walk_files(root):
-    for base, _dirs, files in os.walk(root):
+class Seen(object):
+    """what a walk through the folders came by: every folder is gone into, however deep it lies,
+    and this is the count of it - and the list of what could not be read, so that a folder that
+    was passed over is told and not just missing from the result"""
+
+    def __init__(self, own=None):
+        self.own = own                          # own(path): a folder of the addon's own content - not counted
+        self.folders = 0                        # folders gone into
+        self.depth, self.deepest = 0, u''       # the deepest one: how many folders down, and its path
+        self.kinds = collections.Counter()      # the files: 'mdl', 'part', 'vmt', 'vtf', 'other'; 'own' - of the addon itself
+        self.unread = []                        # (folder, why): folders that could not be listed
+
+    def folder(self, path):
+        if self.own is not None and self.own(path + '/'):
+            return
+        self.folders += 1
+        depth = path.count('/') + 1
+        if depth > self.depth:
+            self.depth, self.deepest = depth, path
+
+    @property
+    def files(self):
+        return sum(count for kind, count in self.kinds.items() if kind != 'own')
+
+
+def deep(path):
+    """a folder the way Windows reads it however long the paths below it get: paths of 260
+    characters and more are refused unless they are written like this"""
+    if os.name != 'nt':
+        return path
+    path = os.path.abspath(path)
+    if path.startswith('\\\\?\\'):
+        return path
+    if path.startswith('\\\\'):
+        return '\\\\?\\UNC\\' + path[2:]
+    return '\\\\?\\' + path
+
+
+def plain(path):
+    """a path without what deep() put in front of it: the way it is shown"""
+    if path.startswith('\\\\?\\UNC\\'):
+        return '\\\\' + path[8:]
+    if path.startswith('\\\\?\\'):
+        return path[4:]
+    return path
+
+
+def walk_files(root, seen=None, shown=u''):
+    """(path below the folder, the file) for every file below a folder, in every folder below it.
+    seen: a Seen that counts the folders (shown: what to call the root in it) and keeps the ones
+    that could not be read - without it they are passed over in silence."""
+    top = deep(root)
+    if not os.path.isdir(top):
+        return      # (an addon without a models folder: nothing to go through, and nothing went wrong)
+
+    def failed(err):
+        if seen is not None:
+            seen.unread.append((plain(getattr(err, 'filename', None) or top), getattr(err, 'strerror', None) or u'%s' % err))
+
+    for base, _dirs, files in os.walk(top, onerror=failed):
+        inner = base[len(top):].replace('\\', '/').strip('/')
+        if seen is not None and inner:
+            seen.folder(shown + inner)
         for name in files:
-            full = os.path.join(base, name)
-            yield os.path.relpath(full, root).replace('\\', '/'), full
+            yield (inner + '/' + name if inner else name), os.path.join(base, name)
 
 
 def long_path(path):
     """Windows refuses paths of 260 characters and more unless they are written this way"""
-    if os.name == 'nt' and len(path) >= 240 and not path.startswith('\\\\'):
-        return '\\\\?\\' + os.path.abspath(path)
+    if os.name == 'nt' and len(path) >= 240:
+        return deep(path)
     return path
 
 
@@ -262,13 +324,16 @@ def unpack(archive, temp):
     raise UserError(u'Не папка и не архив .zip: %s' % archive)
 
 
-def collect(addon, sources, temp, real=()):
+def collect(addon, sources, temp, real=(), seen=None):
     """returns (items for place_content, files of the addon that only need lower-case paths,
     files from outside that keep their path, what the sources brought, files of the addon that
     are no content and move along with their folders: [(path, path then - None for a file
     that lies right in a numbered folder)]).
-    real: the folders the game is known to have (real_folders)"""
+    real: the folders the game is known to have (real_folders);
+    seen: a Seen that counts the folders and the files gone through"""
     name = os.path.basename(addon)
+    if seen is None:
+        seen = Seen(L.is_own_content)
     items, lower_case, extra, brought, along = [], [], [], [], []
 
     order = 0
@@ -282,10 +347,11 @@ def collect(addon, sources, temp, real=()):
         root = source if os.path.isdir(source) else unpack(source, temp)
         entry = dict(name=label, kind='folder' if os.path.isdir(source) else 'archive', no_place=[],
                      content=0, other=0, lua=0)
-        files = sorted(walk_files(root))
+        files = sorted(walk_files(root, seen, label + u': '))
         # (the numbered folders that hold a tree: a file right in one of them is a file of its top)
         trees = L.tree_roots(rel for rel, _full in files if P.kind_of(rel))
         for rel, full in files:
+            seen.kinds[P.kind_of(rel) or 'other'] += 1
             if P.kind_of(rel):
                 items.append(P.Item(label, rel, full, L.dropin_destination(rel), order,
                                     L.merged_destination(rel, trees=trees),
@@ -297,7 +363,7 @@ def collect(addon, sources, temp, real=()):
             if dest is None:
                 entry['no_place'].append(rel)
             elif dest.split('/', 1)[0] in ROOTS:
-                extra.append((full, dest))     # an icon, a note ...: by its folders, as it is
+                extra.append((full, dest, u'%s: %s' % (label, rel)))    # an icon, a note ...: by its folders, as it is
                 entry['other'] += 1
             else:
                 entry['lua'] += 1              # Lua, sounds: not the business of this tool
@@ -310,9 +376,12 @@ def collect(addon, sources, temp, real=()):
     mine = dict(name=name, kind='folder', no_place=[], content=0, other=0, lua=0, beside=beside(addon), archives=[])
     files = []
     for top, inside in [(top, None) for top in ROOTS] + mine['beside']:
-        for rel, full in sorted(walk_files(os.path.join(addon, top))):
+        for rel, full in sorted(walk_files(os.path.join(addon, top), seen, top + '/')):
             rel = top + '/' + rel
-            if not L.is_own_content(rel):
+            if L.is_own_content(rel):
+                seen.kinds['own'] += 1
+            else:
+                seen.kinds[P.kind_of(rel) or 'other'] += 1
                 files.append((rel, full, rel if inside is None else inside + '/' + rel))
     trees = L.tree_roots((seen for rel, _full, seen in files if P.kind_of(rel)), real)
     for rel, full, seen in files:
@@ -354,6 +423,13 @@ class Job(object):
         self.numbered = collections.OrderedDict()
         # files of a model that lay below materials/ and go below models/, and the other way round
         self.crossed = collections.Counter()
+        # what became of every file that was gone through: (where it lay, where it lies then, how) -
+        # how: IN_PLACE (it lay right), KEPT (nothing is known of it: it stays), MOVED, COPIED, a
+        # reason (put aside), or LEFT (a file of a folder that was handed over: not taken)
+        self.fate = []
+
+
+IN_PLACE, KEPT, MOVED, COPIED, LEFT = 'in place', 'kept', 'moved', 'copied', 'left'
 
 
 def plan(addon, items, lower_case, extra, report, along=(), real=()):
@@ -375,19 +451,29 @@ def plan(addon, items, lower_case, extra, report, along=(), real=()):
     for item in items:
         dests = places.get(id(item), [])
         if not getattr(item, 'in_addon', False):
+            shown = u'%s: %s' % (item.source, item.inner)
             for dest in dests:
                 job.copies.append((item.path, dest))
+                job.fate.append((shown, dest, COPIED))
+            if not dests:
+                job.fate.append((shown, None, reasons.get(id(item), LEFT)))
             continue
         if not dests:
-            job.aside.append((item.inner, reasons.get(id(item), P.UNNAMED)))
+            reason = reasons.get(id(item), P.UNNAMED)
+            job.aside.append((item.inner, reason))
+            job.fate.append((item.inner, ASIDE + '/' + item.inner, reason))
             count(item.inner, aside=1)
             continue
         first = item.inner if item.inner in dests else dests[0]
         if id(item) in unknown and first.lower() == item.inner.lower():
             job.unknown += 1
             job.lowered += first != item.inner
+            job.fate.append((item.inner, first, KEPT))
         elif first == item.inner:
             job.stay += 1
+            job.fate.append((item.inner, first, IN_PLACE))
+        else:
+            job.fate.append((item.inner, first, MOVED))
         count(item.inner, moved=first.lower() != item.inner.lower())
         if first != item.inner:
             job.moves.append((item.inner, first))
@@ -397,7 +483,9 @@ def plan(addon, items, lower_case, extra, report, along=(), real=()):
         for dest in dests:
             if dest != first:   # one file, wanted at two paths
                 job.copies.append((os.path.join(addon, first), dest))
+                job.fate.append((item.inner, dest, COPIED))
     job.moves += lower_case
+    job.fate += [(now, then, MOVED) for now, then in lower_case]
 
     # What is no material and no model moves along with its folder - to a place that is free.
     taken = set(dest for dest, _item in report.placed)
@@ -409,12 +497,14 @@ def plan(addon, items, lower_case, extra, report, along=(), real=()):
         if then is None:
             waiting[numbered_folder(now, real)].append(now)     # right in a numbered folder: nowhere to go
             count(now)
-        elif then in taken or os.path.lexists(os.path.join(addon, then)):
+        elif then in taken or os.path.lexists(long_path(os.path.join(addon, then))):
             job.aside.append((now, NOT_CONTENT))
+            job.fate.append((now, ASIDE + '/' + now, NOT_CONTENT))
             count(now, aside=1)
         else:
             taken.add(then)
             job.moves.append((now, then))
+            job.fate.append((now, then, MOVED))
             count(now, moved=1)
     # ... and a note that lay right in a numbered folder does not keep that folder there, once
     # everything else has moved out of it
@@ -422,25 +512,29 @@ def plan(addon, items, lower_case, extra, report, along=(), real=()):
         files, moved, aside = job.numbered[folder]
         if files - moved - aside == len(notes):
             job.aside += [(now, LEFT_BEHIND) for now in notes]
+            job.fate += [(now, ASIDE + '/' + now, LEFT_BEHIND) for now in notes]
             job.numbered[folder][2] += len(notes)
-    for full, dest in extra:
-        if not os.path.lexists(os.path.join(addon, dest)):     # (it is there already: an earlier run)
+        else:
+            job.fate += [(now, now, KEPT) for now in notes]
+    for full, dest, shown in extra:
+        if not os.path.lexists(long_path(os.path.join(addon, dest))):     # (it is there already: an earlier run)
             job.copies.append((full, dest))
+            job.fate.append((shown, dest, COPIED))
     return job
 
 
 def free_name(path):
-    if not os.path.lexists(path):
+    if not os.path.lexists(long_path(path)):
         return path
     n = 1
-    while os.path.lexists('%s.%d' % (path, n)):
+    while os.path.lexists(long_path('%s.%d' % (path, n))):
         n += 1
     return '%s.%d' % (path, n)
 
 
 def prune(folder):
     """removes the empty folders below a folder (not the folder itself)"""
-    for base, dirs, _files in os.walk(folder, topdown=False):
+    for base, dirs, _files in os.walk(deep(folder), topdown=False):
         for name in dirs:
             try:
                 os.rmdir(os.path.join(base, name))
@@ -452,13 +546,13 @@ def finish(addon, pending, problems):
     """the second half of a move: from the stage to the place. pending: [(staged file, then, before)]"""
     for staged, then, before in pending:
         target = os.path.join(addon, then)
-        if os.path.lexists(target):
+        if os.path.lexists(long_path(target)):
             # the file that lies there could not be moved away: back to where it came from
             back = os.path.join(addon, before)
-            target = back if not os.path.lexists(back) else free_name(os.path.join(addon, ASIDE, before))
+            target = back if not os.path.lexists(long_path(back)) else free_name(os.path.join(addon, ASIDE, before))
             problems.append((before, u'место занято: %s' % then))
         try:
-            os.makedirs(os.path.dirname(target), exist_ok=True)
+            os.makedirs(long_path(os.path.dirname(target)), exist_ok=True)
             os.replace(long_path(staged), long_path(target))
         except OSError as err:
             problems.append((before, u'%s' % err))
@@ -528,10 +622,10 @@ def apply(addon, job):
 
     for source, dest in job.copies:
         target = os.path.join(addon, dest)
-        if os.path.lexists(target):
+        if os.path.lexists(long_path(target)):
             continue        # (decided by place_content: only possible when a file could not leave)
         try:
-            os.makedirs(os.path.dirname(target), exist_ok=True)
+            os.makedirs(long_path(os.path.dirname(target)), exist_ok=True)
             shutil.copyfile(long_path(source), long_path(target))
         except OSError as err:
             problems.append((dest, u'%s' % err))
@@ -550,11 +644,129 @@ def addon_version(addon):
     return found.group(1) if found else u''
 
 
-def summary(addon, names, brought, report, job, dry, problems):
-    """the lines for the screen and for the head of the report"""
+def verify(addon, real=()):
+    """The materials and models folders of the addon as they are now, gone through once more -
+    every folder below them: how many folders and files of which kind each of the two holds, the
+    files that lie below the wrong one (a model below materials/, a material below models/), the
+    numbered folders that still hold files, and how many files _not_used holds.
+    Returns {'roots': {top: Seen}, 'wrong': [paths], 'numbered': {folder: files}, 'aside': files,
+    'unread': [(folder, why)]}."""
+    after = dict(roots=collections.OrderedDict(), wrong=[], numbered=collections.Counter(), aside=0, unread=[])
+    for top in ROOTS:
+        seen = Seen()
+        for rel, _full in walk_files(os.path.join(addon, top), seen, top + '/'):
+            rel = top + '/' + rel
+            kind = P.kind_of(rel) or 'other'
+            seen.kinds[kind] += 1
+            if L.is_own_content(rel):
+                continue
+            if kind != 'other' and P.ROOT_OF[kind] != top:
+                after['wrong'].append(rel)
+            folder = numbered_folder(rel, real)
+            if folder is not None:
+                after['numbered'][folder] += 1
+        after['roots'][top] = seen
+        after['unread'] += seen.unread
+    for top, _inside in beside(addon):
+        count = sum(1 for _pair in walk_files(os.path.join(addon, top)))
+        if count:
+            after['numbered'][top] += count
+    after['aside'] = sum(1 for _pair in walk_files(os.path.join(addon, ASIDE))) if os.path.isdir(os.path.join(addon, ASIDE)) else 0
+    return after
+
+
+def verify_lines(after):
+    """what verify() found, for the screen and the report"""
+    out = [u'Проверка после раскладки — папки materials и models аддона пройдены ещё раз, каждая подпапка:']
+    seen = after['roots']['materials']
+    kinds = seen.kinds
+    out.append(u'  materials: папок %d, файлов %d — материалов .vmt %d, текстур .vtf %d, прочих %d; файлов моделей: %d'
+               % (seen.folders, sum(kinds.values()), kinds['vmt'], kinds['vtf'], kinds['other'], kinds['mdl'] + kinds['part']))
+    seen = after['roots']['models']
+    kinds = seen.kinds
+    out.append(u'  models: папок %d, файлов %d — моделей .mdl %d, файлов к ним (.vvd .vtx .phy .ani) %d, прочих %d; '
+               u'материалов и текстур: %d'
+               % (seen.folders, sum(kinds.values()), kinds['mdl'], kinds['part'], kinds['other'], kinds['vmt'] + kinds['vtf']))
+    wrong = after['wrong']
+    if wrong:
+        out.append(u'  ВНИМАНИЕ: не в своей папке остались файлы — %d (%s%s): игра их там не видит.'
+                   % (len(wrong), u', '.join(wrong[:3]), u' …' if len(wrong) > 3 else u''))
+        out.append(u'  Почему они остались — в отчёте, «Все файлы, папка за папкой» и «Не использовано».')
+    numbered = after['numbered']
+    if numbered:
+        names = sorted(numbered, key=P.natural)
+        out.append(u'  в папках с номерами осталось файлов: %d (%s%s) — о них ничего не известно, см. отчёт'
+                   % (sum(numbered.values()), u', '.join(u'%s — %d' % (name, numbered[name]) for name in names[:3]),
+                      u' …' if len(names) > 3 else u''))
+    else:
+        out.append(u'  папок с номерами (materials1, models2 …) не осталось: всё из них разложено')
+    out.append(u'  в папке %s (не пригодилось, ничего не удалено): файлов %d' % (ASIDE, after['aside']))
+    out.append(u'  Подпапки внутри materials и models — так и должно быть: игра ищет файл по полному пути,')
+    out.append(u'  а materials/models/… — это материалы моделей (по правилам игры они лежат в materials).')
+    return out
+
+
+def state_words(counts, game):
+    """'нигде нет — 42, есть в самой игре — 8' for the states of names without a file
+    (content_report.Check.states); game: was the game looked into?"""
+    parts = []
+    if counts.get('nowhere'):
+        parts.append((u'нигде нет — %d' if game else u'нет ни в одной папке — %d') % counts['nowhere'])
+    if counts.get('same'):
+        parts.append(u'под этим именем лежит в другой папке — %d' % counts['same'])
+    if counts.get('game'):
+        parts.append(u'есть в самой игре — %d' % counts['game'])
+    return u', '.join(parts)
+
+
+def game_lines(game, found, asked):
+    """what there is to tell about the game: was it found, what of it was looked through.
+    game: a game_files.Game or None; found: game_files.Found or None (nothing was missing);
+    asked: 'off' when the user did not want the game looked into"""
+    if asked == 'off':
+        return []
+    if game is None:
+        return [u'Игра на этом компьютере не найдена (Steam с Garry’s Mod нет, и аддон лежит не в папке addons игры).',
+                u'  Какие из недостающих файлов есть в самой игре, здесь не проверить: это покажет zcg_content в игре.',
+                u'  Чтобы проверялось и здесь: перетащите мышью папку игры (GarrysMod — ту, в которой лежит',
+                u'  garrysmod) на sort_content.bat — или положите аддон в garrysmod/addons игры и запустите там.']
+    out = [u'Игра на этом компьютере: %s' % game.root]
+    if found is None:
+        return out
+    looked = found.looked
+    parts = []
+    for kinds, words in (((game_files.VPK,), u'архивов игры — %d'),
+                         ((game_files.FOLDER,), u'папок в addons — %d'),
+                         ((game_files.GMA,), u'аддонов .gma в папке игры — %d'),
+                         ((game_files.WORKSHOP,), u'аддонов мастерской — %d'),
+                         ((game_files.OTHER,), u'других игр Steam — %d')):
+        count = sum(looked.get(kind, 0) for kind in kinds)
+        if count:
+            parts.append(words % count)
+    out.append(u'  недостающие файлы искались и в ней: %s' % (u', '.join(parts) or u'в ней нет ни архивов, ни аддонов'))
+    if found.skipped:
+        out.append(u'  (в папке addons игры лежит ещё одна копия этого аддона — %s: её файлы не в счёт.'
+                   % u', '.join(u'«%s»' % name for name in found.skipped[:3]))
+        out.append(u'  В игре должна остаться одна копия аддона — эта.)')
+    if found.unread:
+        out.append(u'  не прочитано архивов: %d (%s%s) — что в них, не известно'
+                   % (len(found.unread), os.path.basename(found.unread[0][0]), u' …' if len(found.unread) > 1 else u''))
+    if found.cut:
+        out.append(u'  поиск в игре остановлен: слишком долго — просмотрено не всё')
+    return out
+
+
+def summary(addon, names, brought, report, job, dry, problems, seen=None, check=None, after=None, game=None,
+            found=None, asked=None):
+    """the lines for the screen and for the head of the report.
+    seen: what collect() went through; check: the close look at what is missing
+    (content_report.Check); after: what verify() found once the files were moved; game, found,
+    asked: see game_lines()"""
     name = os.path.basename(addon)
     named = names.named
     version = addon_version(addon)
+    if check is None:
+        check = content_report.Check(report, named)
     out = [u'Аддон: %s%s' % (addon, u'   (версия %s)' % version if version else u''),
            u'Lua аддона (файлов: %d) называет материалов и моделей: %d' % (names.files, len(named))]
     if names.by_running:
@@ -612,6 +824,22 @@ def summary(addon, names, brought, report, job, dry, problems):
         if entry['lua']:
             line += u'; Lua и звуки (%d) не тронуты — этот инструмент раскладывает только материалы и модели' % entry['lua']
         out.append(line)
+    if seen is not None:
+        # (the proof that no folder was passed over: how many were gone into, and how deep)
+        kinds = seen.kinds
+        out.append(u'Пройдены все папки и подпапки, до самой глубокой: папок — %d, файлов в них — %d' % (seen.folders, seen.files))
+        if seen.depth:
+            out.append(u'  самая глубокая — на %d-м уровне: %s/' % (seen.depth, seen.deepest))
+        out.append(u'  моделей .mdl — %d, файлов к ним (.vvd .vtx .phy .ani) — %d, материалов .vmt — %d, текстур .vtf — %d, '
+                   u'прочих — %d' % (kinds['mdl'], kinds['part'], kinds['vmt'], kinds['vtf'], kinds['other']))
+        if kinds['own']:
+            out.append(u'  (своих файлов аддона — перчаток — %d: они не в счёт и не трогаются)' % kinds['own'])
+        if seen.unread:
+            out.append(u'ВНИМАНИЕ: не удалось прочитать папок: %d — что в них лежит, не известно, и оно не разложено:' % len(seen.unread))
+            for path, what in seen.unread[:10]:
+                out.append(u'    %s: %s' % (path, what))
+            if len(seen.unread) > 10:
+                out.append(u'    ... и ещё %d' % (len(seen.unread) - 10))
 
     verb = u'Будет' if dry else u'Было'
     moved = len(job.moves) - job.lowered
@@ -620,7 +848,8 @@ def summary(addon, names, brought, report, job, dry, problems):
         out.append(u'ПРОБНЫЙ ЗАПУСК: ничего не перемещено. Вот что было бы сделано.')
     out.append(u'Уже лежит на своём месте: %d' % job.stay)
     if job.unknown:
-        out.append(u'Оставлено в тех же папках (про эти файлы ничего не известно, папки — в отчёте): %d' % job.unknown)
+        out.append(u'Оставлено в тех же папках (их никто не называет — ни Lua, ни модели: другого места у них нет; папки — в отчёте): %d'
+                   % job.unknown)
     out.append(u'%s перемещено внутри аддона: %d' % (verb, moved))
     out.append(u'%s скопировано в аддон: %d' % (verb, len(job.copies)))
     out.append(u'%s убрано в папку %s (не пригодилось): %d' % (verb, ASIDE, len(job.aside)))
@@ -635,12 +864,22 @@ def summary(addon, names, brought, report, job, dry, problems):
             out.append(u'    %s: %s' % (path, what))
         if len(problems) > 20:
             out.append(u'    ... и ещё %d' % (len(problems) - 20))
+    if after is not None:
+        out.append(u'')
+        out += verify_lines(after)
 
     out.append(u'')
+    out += game_lines(game, found, asked)
+    in_game = found is not None
     missing = len(report.missing_named) + len(report.missing_materials) + len(report.missing_textures)
     if missing:
-        out.append(u'Не хватает файлов (их нет ни в аддоне, ни в том, что вы дали):')
+        out.append(u'Не хватает файлов — в аддоне их нет. Каждое имя искалось и по точному пути, и просто по имени')
+        out.append(u'файла — во всех папках и подпапках%s%s:'
+                   % (u' (папок: %d)' % seen.folders if seen is not None and seen.folders else u'',
+                      u', а потом в самой игре' if in_game else u''))
         out.append(u'    названных в Lua: %d из %d' % (len(report.missing_named), len(named)))
+        if check.named:
+            out.append(u'        из них: %s' % state_words(check.states(check.named), in_game))
         # (pack by pack: such files come with the content of that pack or of what it depends on)
         packs = content_report.by_pack(report.missing_named, names.pack) if names.by else []
         for label, wanted in packs[:10]:
@@ -650,17 +889,53 @@ def summary(addon, names, brought, report, job, dry, problems):
             out.append(u'        ... и ещё наборов: %d' % (len(packs) - 10))
         out.append(u'    материалов, которые ищут модели: %d из %d'
                    % (len(report.missing_materials), report.materials_wanted))
-        # (a pack of models may bring hundreds that no Lua of the addon names: what they miss is
-        # not what the clothes of the addon miss)
-        ours = sum(1 for model, _name, _group in report.missing_materials if model in named)
-        if report.missing_materials and ours != len(report.missing_materials):
-            out.append(u'        из них моделям, которые называет Lua аддона: %d; остальным (Lua аддона их не называет): %d'
-                       % (ours, len(report.missing_materials) - ours))
+        # (a pack of models may bring hundreds that nothing uses: what they miss is not what the
+        # clothes of the addon miss)
+        for who, words in ((content_report.OURS, u'моделям, которые называет Lua аддона (их %d)'),
+                           (content_report.ZCITY, u'моделям, которые называет сам Z-City (их %d)'),
+                           (content_report.OTHERS, u'прочим моделям (их %d)')):
+            rows = check.of(check.materials, who)
+            if rows:
+                out.append(u'        %s — %d: %s'
+                           % (words % len(set(row.by for row in rows)), len(rows), state_words(check.states(rows), in_game)))
+                if who == content_report.OTHERS:
+                    # (which pack they came with: its folder says it)
+                    out.append(u'            это модели из %s' % content_report.tops_of(set(row.by for row in rows)))
         out.append(u'    текстур, которые ищут материалы: %d из %d'
                    % (len(report.missing_textures), report.textures_wanted))
-        out.append(u'  Часть из них — файлы самой игры и Z-City, их и не должно быть в аддоне. Остальные нужно')
-        out.append(u'  добавить: положите их в папку materials или models аддона (в любые папки; можно целыми')
-        out.append(u'  папками materials и models других аддонов, под номерами: materials1, models2 …) и запустите ещё раз.')
+        for who, words in ((content_report.OURS, u'материалам одежды (их называет Lua или берёт названная модель)'),
+                           (content_report.OTHERS, u'прочим материалам (на одежду не влияют)')):
+            rows = check.of(check.textures, who)
+            if rows:
+                out.append(u'        %s — %d: %s' % (words, len(rows), state_words(check.states(rows), in_game)))
+        if check.of(check.materials, content_report.OTHERS):
+            out.append(u'    («прочие модели» — те, которых не называет ни Lua аддона, ни сам Z-City: набор приносит их сотнями,')
+            out.append(u'    а в игре они никому не нужны. Список — в отчёте, отдельно.)')
+        ours = [row for row in check.named + check.materials + check.textures if row.who != content_report.OTHERS]
+        if in_game:
+            left = [row for row in ours if not row.game]
+            out.append(u'  ИТОГ для одежды аддона (прочие модели не в счёт):')
+            out.append(u'    есть в самой игре — %d%s'
+                       % (len(ours) - len(left), u': ' + content_report.game_kinds(check.game_paths(ours)) if len(ours) > len(left) else u''))
+            if left:
+                out.append(u'    нет ни в аддоне, ни в игре — %d: из Lua — %d, материалов моделей — %d, текстур — %d'
+                           % (len(left), sum(1 for row in check.named if not row.game),
+                              sum(1 for row in check.materials if row.who != content_report.OTHERS and not row.game),
+                              sum(1 for row in check.textures if row.who != content_report.OTHERS and not row.game)))
+            else:
+                out.append(u'    нет ни в аддоне, ни в игре — 0: всё, чего нет в аддоне, есть в самой игре')
+            out.append(u'  То, что есть в самой игре, в аддон класть не нужно. (Если это аддон мастерской, он должен быть')
+            out.append(u'  включён — и стоять на сервере и у игроков, как и сам Z-City.)')
+            if left:
+                out.append(u'  Остальное — файлы других аддонов: какой Lua их называет, видно выше и в отчёте. Пока их нет,')
+                out.append(u'  в игре на их месте чёрно-фиолетовые клетки или ERROR.')
+        else:
+            out.append(u'  Этих файлов нет ни в одной папке аддона. Часть из них — файлы самой игры и Z-City (глаза, рот,')
+            out.append(u'  руки и перчатки моделей): в аддоне их и не должно быть. Что из этого есть в игре, покажет')
+            out.append(u'  команда zcg_content в консоли игры. Остальное — файлы других аддонов: какой Lua их называет,')
+            out.append(u'  видно выше и в отчёте.')
+        out.append(u'  Если такой аддон у вас есть папкой — положите его materials и models в папку materials аддона')
+        out.append(u'  (как есть, можно под номерами: materials9, models5 …) и запустите ещё раз.')
         if report.missing_named and len(brought) == 1:
             # (a source is copied from, not moved: what an earlier version did not take is still there)
             out.append(u'  Если папки с контентом вы раньше перетаскивали на sort_content.bat, перетащите их ещё раз:')
@@ -682,6 +957,55 @@ def summary(addon, names, brought, report, job, dry, problems):
         out.append(u'  Какие это файлы — в отчёте, «Замечания».')
     if report.notes:
         out.append(u'Замечаний: %d (файлы-тёзки, которые нечем различить, и т. п.) — см. отчёт' % len(report.notes))
+    return out
+
+
+FATE_WORDS = {
+    IN_PLACE: u'лежит на своём месте',
+    KEPT: u'оставлено как есть: про эти файлы ничего не известно',
+    LEFT: u'не взято',
+}
+NAMES_WIDTH = 150       # how long a line of file names gets in the list of all files
+
+
+def fate_lines(job, dry=False):
+    """Every file that was gone through, folder by folder: where it lay and where it lies now
+    (Job.fate) - each folder with the names of its files, so that what a folder deep down held
+    and what became of it can be looked up."""
+    groups = collections.OrderedDict()
+    def order(entry):
+        folder, name = posixpath.split(entry[0])
+        return P.by_folders(folder), posixpath.dirname(entry[1] or u''), entry[2], P.natural(name.lower())
+
+    for now, then, how in sorted(job.fate, key=order):
+        folder, name = posixpath.split(now)
+        dest = posixpath.dirname(then) if then else None
+        if how in (IN_PLACE, KEPT):
+            dest = None
+        groups.setdefault((folder, dest, how), []).append(name)
+    folders = len(set(folder for folder, _dest, _how in groups))
+    out = [u'Все файлы, папка за папкой: где лежал  ->  где %s — папок: %d, файлов: %d'
+           % (u'будет лежать' if dry else u'лежит теперь', folders, len(job.fate))]
+    for (folder, dest, how), files in groups.items():
+        if how == MOVED:
+            head = u'%s/  ->  %s/' % (folder, dest)
+        elif how == COPIED:
+            head = u'%s/  ->  %s/    (копия)' % (folder, dest)
+        elif how in FATE_WORDS:
+            head = u'%s/    — %s' % (folder, FATE_WORDS[how])
+        elif dest is not None:
+            head = u'%s/  ->  %s/    (%s)' % (folder, dest, content_report.why(how))
+        else:
+            head = u'%s/    — не взято: %s' % (folder, content_report.why(how))
+        out.append(u'    %s    файлов: %d' % (head, len(files)))
+        line = u''
+        for name in files:
+            if line and len(line) + len(name) + 2 > NAMES_WIDTH:
+                out.append(u'        ' + line)
+                line = u''
+            line += (u', ' if line else u'') + name
+        if line:
+            out.append(u'        ' + line)
     return out
 
 
@@ -723,6 +1047,25 @@ def numbered_list(job):
     return out
 
 
+NO_GAME = ('-', 'no', 'none', 'off', '0')
+
+
+def game_choice(given, off, addon):
+    """The game to look into for the files the addon does not have: ('off', None) when that is
+    not wanted (--no-game; --game or the variable ZCG_GAME set to "-"), ('given', Game) for a
+    folder that was named, else ('auto', the game found on this computer or None)."""
+    value = given if given is not None else os.environ.get('ZCG_GAME')
+    if off or (value is not None and value.strip().lower() in NO_GAME):
+        return 'off', None
+    if value:
+        game = game_files.find(given=value)
+        if game is None:
+            raise UserError(u'Это не папка игры Garry’s Mod (в ней нет папки garrysmod): %s\n'
+                            u'Укажите папку GarrysMod — ту, в которой лежит garrysmod: --game "D:\\...\\GarrysMod"' % value)
+        return 'given', game
+    return 'auto', game_files.find(addon)
+
+
 def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, 'reconfigure'):
@@ -733,17 +1076,31 @@ def main(argv=None):
                 stream.reconfigure(encoding='utf-8', errors='replace')
 
     parser = argparse.ArgumentParser(description='Sorts the materials and models of an installed addon by name.')
-    parser.add_argument('sources', nargs='*', help='folders or .zip archives with more content to take in')
+    parser.add_argument('sources', nargs='*', help='folders or .zip archives with more content to take in '
+                                                   '(the folder of the game itself is taken as --game)')
     parser.add_argument('--addon', help='the addon folder (default: the one this script lies in)')
     parser.add_argument('--lua', action='append', default=[], help='another folder with Lua that names files')
     parser.add_argument('--names-list', help='the list of the names found by running the Lua '
                                              '(default: %s beside this script)' % list_content.RUN_LIST)
     parser.add_argument('--dry-run', action='store_true', help='only tell what would be done')
+    parser.add_argument('--game', help='the folder of the game (GarrysMod, the one that holds garrysmod): the files '
+                                       'the addon does not have are looked for in it. Default: the game the addon '
+                                       'lies in, else the one Steam has; "-" to leave the game alone')
+    parser.add_argument('--no-game', action='store_true', help='do not look into the game')
     args = parser.parse_args(argv)
 
     temp = tempfile.mkdtemp(prefix='zcg_sort_')
     try:
         addon = find_addon(args.addon)
+        # The folder of the game itself among what was handed over is not content to take in: it
+        # is the game to look into (the way to name it without typing: drop it onto the .bat).
+        dropped = [source for source in args.sources if os.path.isdir(source) and game_files.sure_game(source)]
+        if dropped:
+            args.sources = [source for source in args.sources if source not in dropped]
+            if args.game is None:
+                args.game = game_files.sure_game(dropped[0])
+            say(u'Папка «%s» — это сама игра: из неё ничего не берётся, в ней ищутся недостающие файлы.' % dropped[0])
+        asked, game = game_choice(args.game, args.no_game, addon)
         if not args.dry_run:
             resumed = resume(addon)
             if resumed:
@@ -752,10 +1109,12 @@ def main(argv=None):
         say(u'Читаю Lua аддона ...')
         names = names_of([os.path.join(addon, 'lua')] + args.lua, args.names_list)
         named = names.named
-        say(u'Читаю файлы контента ...')
-        real = real_folders(set(named) | set(names.spare) | list_content.stock_names())
-        items, lower_case, extra, brought, along = collect(addon, args.sources, temp, real)
-        say(u'Ищу каждому файлу место (файлов: %d) ...' % len(items))
+        say(u'Читаю файлы контента: каждую папку и подпапку ...')
+        stock = list_content.stock_names()
+        real = real_folders(set(named) | set(names.spare) | stock)
+        seen = Seen(L.is_own_content)
+        items, lower_case, extra, brought, along = collect(addon, args.sources, temp, real, seen)
+        say(u'Ищу каждому файлу место (папок: %d, файлов: %d) ...' % (seen.folders, len(items)))
         report = P.place(items, named, L.is_own_content, set(names.spare))
         job = plan(addon, items, lower_case, extra, report, along, real)
 
@@ -763,8 +1122,25 @@ def main(argv=None):
         if not args.dry_run and (job.moves or job.aside or job.copies):
             say(u'Перекладываю ...')
             problems = apply(addon, job)
+        after = None
+        if not args.dry_run:
+            say(u'Проверяю: прохожу папки аддона ещё раз ...')
+            after = verify(addon, real)
 
-        head = summary(addon, names, brought, report, job, args.dry_run, problems)
+        # What has no file: looked for once more - by its file name alone, in every folder - and,
+        # where the game is at hand, in the game.
+        wanted = set(report.missing_named)
+        wanted.update(path for _model, _name, group in report.missing_materials for path in group)
+        wanted.update(texture for _material, _key, texture in report.missing_textures)
+        found = None
+        if game is not None and wanted:
+            say(u'Ищу недостающие файлы в самой игре (%s) ...' % game.root)
+            found = game_files.look(game, wanted, skip=[addon], own_marker='lua/autorun/%s.lua' % L.ADDON_DIRNAME)
+        check = content_report.Check(report, named, stock, found,
+                                     lambda item: (ASIDE + '/' + item.inner) if getattr(item, 'in_addon', False)
+                                     else u'%s' % (item,))
+
+        head = summary(addon, names, brought, report, job, args.dry_run, problems, seen, check, after, game, found, asked)
         say()
         for line in head:
             say(line)
@@ -775,11 +1151,19 @@ def main(argv=None):
             more += [u'', u'Папки-копии materials и models — по папкам:'] + numbered_list(job)
         if job.aside:
             more += [u'', u'Убрано в %s (причины):' % ASIDE] + [u'    %s — файлов: %d' % pair for pair in sorted(reasons.items())]
+        tail = []
+        if after is not None and after['wrong']:
+            tail += [u'', u'Файлы, которые остались не в своей папке — %d' % len(after['wrong'])]
+            tail += [u'    ' + path for path in after['wrong']]
+        if found is not None and found.unread:
+            tail += [u'', u'Архивы игры, которые не удалось прочитать — %d' % len(found.unread)]
+            tail += [u'    %s: %s' % pair for pair in found.unread[:200]]
+        tail += [u''] + fate_lines(job, args.dry_run)
         listing = os.path.join(addon, REPORT)
         content_report.write(listing, brought, report, named, 'sort_content.py', more, names.who if names.by else None,
-                             names.spare)
+                             names.spare, check, tail)
         say()
-        say(u'Подробный отчёт: %s' % listing)
+        say(u'Подробный отчёт (в нём каждая папка и каждый файл): %s' % listing)
         if not args.dry_run and not problems:
             other = [entry for entry in content_report.versions_found(report, names.instead, names.spare, names.only)
                      if content_report.of_the_other_version(entry)]
