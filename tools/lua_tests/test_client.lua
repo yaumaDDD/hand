@@ -505,6 +505,7 @@ return function(testdir, luaroot)
 		local SKIN, BOTH, NAILS = #list - 3, #list - 2, #list - 1
 		eq(fay:GetSubMaterial(SKIN), "null", "a material that lies on the hands alone is hidden, whatever its name")
 		eq(fay:GetSubMaterial(NAILS), "null", "one on the fingers as well")
+		eq(drawnHands(fay), "whole", "hands that are hidden whole by their materials are only hidden: no bone is touched")
 		eq(fay:GetSubMaterial(BOTH), dressed[BOTH], "a material that also lies on the arm is left alone")
 		eq(fay:GetSubMaterial(0), dressed[0], "and so is the rest of the model")
 		eq(fay:GetSubMaterial(HANDS_SLOT), "null", "the material Z-City names is hidden as ever")
@@ -557,7 +558,8 @@ return function(testdir, luaroot)
 		gus:SetBodygroup(0, 0)
 		frame() Z.draw(gus)
 		eq(gus:GetSubMaterial(HANDS_SLOT), "null", "long sleeves on the same model: the material lies on the hands alone and is hidden")
-		check(masks[1] == 1, "the mesh is read for the bodies that are worn: " .. table.concat(masks, " "))
+		eq(drawnHands(gus), "whole", "... and the hand is only hidden, its bones are as they were")
+		check(#masks == 2 and masks[1] == 1 and masks[2] == 0, "the mesh is read for the bodies that are worn, once each: " .. table.concat(masks, " "))
 		util.GetModelMeshes = nil
 	end
 	M.setConVar("zcg_whole_hands", 0)

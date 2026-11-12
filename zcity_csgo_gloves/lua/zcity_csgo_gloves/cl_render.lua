@@ -277,11 +277,10 @@ local function analyse(ent)
 	known = { slots = false, names = {}, shared = {}, shares = {} }
 	handSlots[key] = known
 
-	-- (It is not written down anywhere for certain which of the two numbers the game wants. The
-	-- mesh is read for each, and for the bodies a model has by default; a material counts as
-	-- "on the hands alone" only when every reading says so - an arm must never be hidden.)
+	-- (The mesh is read for the bodies that are worn and for nothing else: every piece of clothing
+	-- with sleeves is treated alike, whatever the other bodies of the model look like.)
 	local asked, least, seen = {}, {}, {}
-	for _, mask in ipairs({ packed, digits, 0 }) do
+	for _, mask in ipairs({ packed }) do
 		if not asked[mask] then
 			asked[mask] = true
 			local ok, meshes = pcall(util.GetModelMeshes, model, 0, mask)
@@ -329,7 +328,14 @@ local function analyse(ent)
 		end
 	end
 	if #slots > 0 then known.slots = slots end
+	known.read = #known.shares > 0
 	return known
+end
+
+-- was the mesh of the model read (is it known for certain which materials are the hands)?
+function ZCG.MeshRead(ent)
+	local known = analyse(ent)
+	return known ~= nil and known.read == true
 end
 
 function ZCG.HandSlots(ent)
@@ -1012,6 +1018,9 @@ function ZCG.Wearing(ent, variant)
 	local mode = boneMode()
 	local bones = mode ~= 0 and (mode ~= 3 or not slot or cvWholeHands:GetBool()) and ZCG.HandBones(ent) ~= nil
 	local more = cvWholeHands:GetBool() and ZCG.HandSlots(ent) or nil
+	-- Hands that are known for certain to be hidden whole by their materials (the mesh was read)
+	-- are hidden and nothing else: no bone of theirs is touched, they stand where they stood.
+	if bones and cvWholeHands:GetBool() and (slot or more) and ZCG.MeshRead(ent) then bones = false end
 	if not slot and not bones and not more then return nil, false, false end
 	-- (the fourth: every other material that lies on the hands alone - hidden as well)
 	return slot, variant.fingerless and true or false, bones, more
