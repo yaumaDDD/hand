@@ -429,7 +429,37 @@ return function(testdir, luaroot)
 	M.setConVar("zcg_whole_hands", 1)
 	Z.draw(erin)
 	eq(erin:GetSubMaterial(HANDS_SLOT), "null", "zcg_whole_hands 1: the hands are invisible - their material")
-	eq(drawnHands(erin), "whole", "... and keep their shape")
+	do
+		-- the bone of the hand, on which the sleeve hangs, is as it was; the fingers are gone
+		local hands, fingers, gone = 0, 0, 0
+		for name, was in pairs(erin.posed or {}) do
+			if handBone(name) then
+				local now = erin.shown[name]
+				if name:match("_[LR]_Hand$") then
+					if M.sameMatrix(was, now) then hands = hands + 1 end
+				else
+					fingers = fingers + 1
+					if math.abs(now:GetScale().x - 0.05) < 1e-6 then gone = gone + 1 end
+				end
+			end
+		end
+		eq(hands, 2, "... and the bones of the hands keep their shape: the sleeve hangs on them")
+		check(fingers > 0 and gone == fingers, "the fingers are shrunk away, whatever they are made of: " .. gone .. " of " .. fingers)
+	end
+	do
+		local keep = Z.keepBones
+		Z.keepBones = true
+		Z.draw(erin)
+		local back, all = 0, 0
+		for name, was in pairs(erin.posed or {}) do
+			if handBone(name) then
+				all = all + 1
+				if M.sameMatrix(was, erin:GetBoneMatrix(erin:LookupBone(name))) then back = back + 1 end
+			end
+		end
+		eq(back, all, "after the draw the fingers are given back as they were")
+		Z.keepBones = keep
+	end
 	dave.nw.zcg_glove = "moto_3"
 	frame() Z.draw(dave)
 	eq(drawnHands(dave), "shrunk", "a model without that material still has its hands shrunk")

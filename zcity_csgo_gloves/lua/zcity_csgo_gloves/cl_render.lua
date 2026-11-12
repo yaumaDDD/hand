@@ -54,13 +54,16 @@ local cvHideBones = CreateClientConVar("zcg_hide_bones", "1", true, false,
 -- Shrinking the hand bones takes along everything that hangs on them - the end of a jacket's
 -- sleeve as well: it is pulled into the wrist, the sleeve gets a pointed end and the cuff of the
 -- glove stands out of it, askew. Z-City's own gloves sit on a hand that keeps its shape. So does
--- a CS:GO glove now: on a model that has a material for its hands the hand stays as it is, only
--- invisible (the material), and the glove is drawn over it. The bones are still shrunk where
--- there is no such material to hide.
+-- a CS:GO glove now: on a model that has a material for its hands the bone of the hand - the one
+-- the sleeve hangs on - stays as it is, the hand is made invisible by its material, and the
+-- glove is drawn over it. Only the fingers are still shrunk away (nothing but fingers hangs on
+-- the finger bones): a hand that is made of another material than the one that is hidden would
+-- show a second set of fingers in the glove otherwise. The whole hand is shrunk where there is
+-- no such material to hide.
 local cvWholeHands = CreateClientConVar("zcg_whole_hands", "1", true, false,
 	"CS:GO gloves: 1 = under a glove the hand of the model keeps its shape and is only made invisible (its material), "
-	.. "so the sleeve of a jacket ends the way it does without a glove (default); the bones are shrunk only on a model "
-	.. "without a material for the hands. 0 = zcg_hide_bones decides (as up to version 2.11: shrunk on every model).", 0, 1)
+	.. "so the sleeve of a jacket ends the way it does without a glove (default); only the fingers are shrunk away, the whole "
+	.. "hand only on a model without a material for the hands. 0 = zcg_hide_bones decides (as up to version 2.11: shrunk on every model).", 0, 1)
 
 -- how the bones of the hands are treated: 0 never shrunk, 1 on every model, 3 only without a hands material
 local function boneMode()
@@ -271,6 +274,8 @@ local IDENTITY = Matrix()
 local function shrinkHands(ent, state)
 	local info = ZCG.HandBones(ent)
 	if not info or ent:GetBoneCount() ~= info.count then return false end
+	-- (zcg_whole_hands: the bone of the hand itself stays, the fingers go)
+	local fingersOnly = cvWholeHands:GetBool() and ZCG.HandsSlot(ent) ~= nil
 
 	local saved = state.bones
 	if not saved then
@@ -296,10 +301,18 @@ local function shrinkHands(ent, state)
 					ent:SetBoneMatrix(bone, change * matrix)
 				end
 			end
-			saved[n + 1], saved[n + 2] = hand, was
-			n = n + 2
-			ent:SetBoneMatrix(hand, small)
+			local mark, size = hand, was:GetScale().x
+			if fingersOnly then
+				-- (what tells afterwards whether the bones are still as they were written: a finger)
+				mark = n > first and saved[first] or nil
+				size = mark and saved[first + 1]:GetScale().x or size
+			else
+				saved[n + 1], saved[n + 2] = hand, was
+				n = n + 2
+				ent:SetBoneMatrix(hand, small)
+			end
 
+			if mark then
 			hands = hands + 1
 			local entry = saved.hands[hands]
 			if not entry then
@@ -307,7 +320,8 @@ local function shrinkHands(ent, state)
 				saved.hands[hands] = entry
 			end
 			-- (a hand that is smaller than this afterwards is still the one that was written here)
-			entry.bone, entry.first, entry.last, entry.limit = hand, first, n, was:GetScale().x * 0.5
+			entry.bone, entry.first, entry.last, entry.limit = mark, first, n, size * 0.5
+			end
 		end
 	end
 	saved.n, saved.count, saved.frame = n, hands, FrameNumber()
@@ -830,7 +844,7 @@ function ZCG.Wearing(ent, variant)
 
 	local slot = ZCG.HandsSlot(ent)
 	local mode = boneMode()
-	local bones = mode ~= 0 and (mode ~= 3 or not slot) and ZCG.HandBones(ent) ~= nil
+	local bones = mode ~= 0 and (mode ~= 3 or not slot or cvWholeHands:GetBool()) and ZCG.HandBones(ent) ~= nil
 	if not slot and not bones then return nil, false, false end
 	return slot, variant.fingerless and true or false, bones
 end
