@@ -4,15 +4,13 @@
 -- from the outside once its PostInit has built the window:
 --   1. the model in the middle (a DModelPanel) also shows the selected CS:GO glove;
 --   2. the "Gloves" button keeps its menu with the stock gloves and gets one more entry that
---      opens a picker with an icon for every CS:GO glove (hover = try it on, click = take it).
+--      opens a picker with an icon for every CS:GO glove (hover = try it on, click = take it);
+--   3. with the "Z-City Appearance Mod" installed the "Gloves" button opens that addon's window
+--      of previews instead: the window gets one more tile, which opens the same picker.
 --
 -- Everything is optional: if the editor changes in a future Z-City version and something cannot
 -- be found, the gloves are still listed by name in the stock "Gloves" menu, because they are
 -- regular entries of hg.Appearance.Bodygroups.HANDS.
---
--- Other addons change the editor as well. "Z-City Appearance Mod" (and its LEGACY version) puts
--- a window with a tile per glove behind the "Gloves" button and a window with a slider per body
--- group behind "BODYGROUPS"; section 3 makes both work with the CS:GO gloves.
 
 local ZCG = ZCGloves
 local Config = ZCG.Config
@@ -40,12 +38,6 @@ local function selectedVariant(main)
 end
 
 local function editorVariant(main)
-	-- a tile of another addon's glove menu was hovered when that menu went away
-	local tile = main.zcg_hoverTile
-	if tile ~= nil and not IsValid(tile) then
-		main.zcg_hoverTile = nil
-		main.zcg_preview = nil
-	end
 	return main.zcg_preview or selectedVariant(main) -- zcg_preview: hovered in the picker
 end
 
@@ -60,17 +52,40 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- 1. the preview model
 -- ---------------------------------------------------------------------------------------------
+-- The hands of the model go only while a glove really is drawn over them; the glove is drawn
+-- after the model, so they go one frame after the glove came.
+local function gloveOn(main, ent)
+	if not IsValid(ent) then return nil end
+	local variant = editorVariant(main)
+	if not variant or not ZCG.HasModel(variant.model) then return nil end
+	local state = ZCG.States[ent]
+	if not state or not state.drawn then return nil end
+	return variant, state
+end
+
 -- runs after the editor's own LayoutEntity, which resets every sub-material in every frame
 local function editorLayout(main, ent)
-	if not IsValid(ent) then return end
-	local variant = editorVariant(main)
-	if not variant or not ZCG.HasModel(variant.model) then return end
-	-- only while a glove really is drawn over the hands; it is drawn after the model, so the
-	-- hands go one frame after the glove came
-	local state = ZCG.States[ent]
-	if not state or not state.drawn then return end
+	local variant = gloveOn(main, ent)
+	if not variant then return end
 	local slot = ZCG.Wearing(ent, variant)
 	if slot then ent:SetSubMaterial(slot, ZCG.HideMaterial()) end
+end
+
+-- runs right before the model is drawn: it gets the bones of this frame with the hands shrunk
+-- into the wrists (every model, or what zcg_hide_bones says: see cl_render.lua)
+local function editorBefore(main, ent)
+	local variant, state = gloveOn(main, ent)
+	if not variant then return end
+	local _, _, bones = ZCG.Wearing(ent, variant)
+	if not bones then return end
+	ent:SetupBones()
+	state.shrunk = ZCG.ShrinkHands(ent, state)
+end
+
+-- runs before the editor's own PostDrawModel: the accessories it draws find whole hands
+local function editorAfter(main, ent)
+	local state = IsValid(ent) and ZCG.States[ent]
+	if state then ZCG.GrowHands(ent, state) end
 end
 
 -- runs after the editor's own PostDrawModel (which draws the accessories and ends with
@@ -80,6 +95,8 @@ local function editorDraw(main, ent)
 	local variant = editorVariant(main)
 	if variant then
 		local _, fingers = ZCG.Wearing(ent, variant)
+		local state = ZCG.States[ent]
+		if state then state.shrunk = false end
 		ZCG.DrawGlove(ent, variant, fingers)
 	else
 		ZCG.ClearGlove(ent)
@@ -92,7 +109,7 @@ local function isViewer(panel)
 end
 
 local function wrapViewer(main, viewer)
-	local layout, postDraw = viewer.LayoutEntity, viewer.PostDrawModel
+	local layout, preDraw, postDraw = viewer.LayoutEntity, viewer.PreDrawModel, viewer.PostDrawModel
 	local broken = false
 
 	local function guard(func, ent)
@@ -110,7 +127,15 @@ local function wrapViewer(main, viewer)
 		return result
 	end
 
+	viewer.PreDrawModel = function(self, ent, ...)
+		local result
+		if isfunction(preDraw) then result = preDraw(self, ent, ...) end
+		if result ~= false then guard(editorBefore, ent) end -- (false: the model is not drawn)
+		return result
+	end
+
 	viewer.PostDrawModel = function(self, ent, ...)
+		guard(editorAfter, ent)
 		local result = postDraw(self, ent, ...)
 		guard(editorDraw, ent)
 		return result
@@ -457,240 +482,213 @@ local function wrapGlovesButton(main, viewer)
 	local button = findGlovesButton(viewer)
 	if not button then return false end
 
-	local stock = button.DoClick
-	local function click(self, ...)
+	-- The Appearance Mod (section 3) wraps the same button. If it was quicker, the handler to
+	-- replace is the one its wrapper keeps and falls back to.
+	local slot = "DoClick"
+	if button.__AppearanceModWrapped and isfunction(button.__AppearanceOriginalDoClick) then
+		slot = "__AppearanceOriginalDoClick"
+	end
+
+	local stock = button[slot]
+	local function wrapped(self, ...)
 		local ok, err = pcall(openGlovesMenu, main)
 		if not ok then
 			-- back to the original menu for good; it lists the CS:GO gloves by name
 			report("glove menu switched off", err)
-			button.DoClick = stock
-			button.zcg_click = stock
+			main.zcg_plain = true
+			if button.DoClick == wrapped then button.DoClick = stock end
+			if button.__AppearanceOriginalDoClick == wrapped then button.__AppearanceOriginalDoClick = stock end
 			return stock(self, ...)
 		end
 	end
-	button.DoClick = click
-	-- section 3 looks at these to notice another addon taking the button over
-	button.zcg_click = click
-	viewer.zcg_button = button
+	button[slot] = wrapped
 	return true
 end
 
 -- ---------------------------------------------------------------------------------------------
--- 3. other addons in the editor
+-- 3. the Z-City Appearance Mod
 -- ---------------------------------------------------------------------------------------------
--- top-level windows: what a menu of another addon is, if it does not hand it to us
-local function worldPanels()
-	local out = {}
-	local world = vgui.GetWorldPanel and vgui.GetWorldPanel()
-	if not world or not world.GetChildren then return out end
-	for _, child in ipairs(world:GetChildren()) do out[child] = true end
-	return out
-end
+-- That addon replaces the drop-down menus of the editor with windows of 3D previews. It wraps
+-- the "Gloves" button a moment after the editor is built; a click then opens "Select Gloves"
+-- with one preview - a whole player model - per entry of hg.Appearance.Bodygroups.HANDS, three
+-- in a row. That is no place for 81 gloves which all look like bare hands there, so the button
+-- is wrapped once more, on top of the mod:
+--   * while the mod builds its window the CS:GO gloves are out of the list;
+--   * the window gets one more tile, the first one, which opens the picker.
+-- Whatever goes wrong ends in the "plain" mode (main.zcg_plain): the mod lists the gloves by
+-- name like any other entry, and they can still be chosen.
 
-local function newWorldPanels(before)
-	local out = {}
-	for panel in pairs(worldPanels()) do
-		if not before[panel] and IsValid(panel) then out[#out + 1] = panel end
-	end
-	return out
-end
+-- shown on the tile while no CS:GO glove is selected
+local MOD_TILE_ICONS = { "moto_2", "sport_5", "specialist_10", "handwrap_12" }
 
--- a glove by the text another menu shows for it
-local byLabel
-local function variantByLabel(text)
-	if not isstring(text) or text == "" then return nil end
-	if not byLabel then
-		byLabel = {}
-		for _, variant in ipairs(ZCG.Variants) do
-			byLabel[variant.name] = variant
-			if isfunction(string.NiceName) then byLabel[string.NiceName(variant.name)] = variant end
-		end
-	end
-	return byLabel[text]
-end
-
--- 3a. The glove window of Z-City Appearance Mod: a button per entry of the HANDS list with a
--- model panel (the player model with that entry's body group) and a label inside. For a CS:GO
--- glove the model would show bare hands, 81 times. Such a tile gets the icon instead, and the
--- glove under the cursor is tried on the model of the editor, as in the picker.
-local function decorateTile(main, tile)
-	if tile.zcg_tile or not isfunction(tile.DoClick) or not isfunction(tile.GetChildren) then return false end
-
-	local label, model, variant
-	for _, child in ipairs(tile:GetChildren()) do
-		if isfunction(child.LayoutEntity) and isfunction(child.SetModel) then
-			model = child
-		elseif isfunction(child.GetText) then
-			local found = variantByLabel(child:GetText())
-			if found then label, variant = child, found end
-		end
-	end
-	if not variant or not model then return false end
-	tile.zcg_tile = true
-
-	local icon = iconOf(variant)
-	if not icon then return true end -- the content is not installed: the tile stays as it is
-
-	if isfunction(model.SetVisible) then model:SetVisible(false) end -- clicks now reach the tile itself
-	label:SetText(shortName(variant))
-	if isfunction(tile.SetTooltip) then tile:SetTooltip(describe(variant)) end
-
-	local paint = tile.Paint
-	tile.Paint = function(self, w, h)
-		local result
-		if paint then result = paint(self, w, h) end
-		local room = h
-		if IsValid(label) then
-			local _, y = label:GetPos()
-			if y and y > 0 then room = y end
-		end
-		local size = math.max(math.min(w - 4, room - 4), 0)
-		surface.SetDrawColor(255, 255, 255, 255)
-		surface.SetMaterial(icon)
-		surface.DrawTexturedRect(math.floor((w - size) / 2), 2, size, size)
-		return result
-	end
-
-	local think = tile.Think
-	tile.Think = function(self, ...)
-		if think then think(self, ...) end
-		if not IsValid(main) then return end
-		if vgui.GetHoveredPanel() == self then
-			main.zcg_preview = variant
-			main.zcg_hoverTile = self
-		elseif main.zcg_hoverTile == self then
-			main.zcg_preview = nil
-			main.zcg_hoverTile = nil
-		end
-	end
-	return true
-end
-
-local function decorateMenu(main, panel, depth)
-	if not IsValid(panel) or not isfunction(panel.GetChildren) then return 0 end
-	if decorateTile(main, panel) then return 1 end
-	if depth >= 12 then return 0 end
-	local count = 0
-	for _, child in ipairs(panel:GetChildren()) do
-		count = count + decorateMenu(main, child, depth + 1)
-	end
-	return count
-end
-
--- Another addon wrapped the "Gloves" button after us (Appearance Mod does that a moment after
--- the window is built and calls our menu only when it cannot open its own). Wrap it once more:
--- its menu opens as it wants, then the CS:GO tiles in it are dressed up.
-local function watchGlovesButton(main, viewer)
-	local button = viewer.zcg_button
-	if not IsValid(button) or button.DoClick == button.zcg_click or not isfunction(button.DoClick) then return end
-
-	local inner = button.DoClick
-	local broken = false
-	local function click(self, ...)
-		if broken then return inner(self, ...) end
-		local before = worldPanels()
-		local function after(...)
-			local opened = {}
-			for i = 1, select("#", ...) do
-				local value = select(i, ...)
-				if ispanel(value) then opened[#opened + 1] = value end
-			end
-			if #opened == 0 then opened = newWorldPanels(before) end
-			local ok, err = pcall(function()
-				for _, panel in ipairs(opened) do decorateMenu(main, panel, 0) end
-			end)
-			if not ok then
-				broken = true
-				report("glove menu of another addon left as it is", err)
-			end
-			return ...
-		end
-		return after(inner(self, ...))
-	end
-	button.DoClick = click
-	button.zcg_click = click
-end
-
--- 3b. The "Bodygroups" window of Z-City Appearance Mod has a slider per body group. For the
--- value a slider is moved to it takes the first entry of the list that has this submodel - and
--- every CS:GO glove shares the bare-hands submodel with "None", so moving the hands slider to
--- "bare" would hand out some CS:GO glove. While such a window is open, a CS:GO glove that
--- appears in the appearance is therefore turned into "None": the sliders have no other way to
--- select bare hands, and the gloves are picked in the glove menu.
-local sliderWatches = {}
-
-local function handsKeys(groups)
-	local out = {}
-	for key in pairs(groups) do
-		if isstring(key) and string.upper(key) == "HANDS" then out[#out + 1] = key end
-	end
-	return out
-end
-
--- name of Z-City's entry for bare hands; without one the selection is simply dropped
-local function bareHands()
-	local AP = hg and hg.Appearance
-	local hands = istable(AP) and istable(AP.Bodygroups) and AP.Bodygroups.HANDS
-	if not istable(hands) then return nil end
+-- calls fn(...) while the CS:GO gloves are not in the list of hand bodygroups;
+-- returns true and the first result of fn, or false and the error
+local function withoutGloves(fn, ...)
+	local groups = istable(hg) and istable(hg.Appearance) and hg.Appearance.Bodygroups
+	local hands = istable(groups) and groups.HANDS
+	local taken = {}
 	for sex = 1, 2 do
-		if istable(hands[sex]) and hands[sex]["None"] ~= nil then return "None" end
+		local list = istable(hands) and hands[sex]
+		if istable(list) then
+			for name, data in pairs(list) do
+				if istable(data) and data.ZCG then taken[#taken + 1] = { list, name, data } end
+			end
+		end
+	end
+	for _, entry in ipairs(taken) do entry[1][entry[2]] = nil end
+
+	local count, args = select("#", ...), { ... }
+	local ok, result = xpcall(function() return fn(unpack(args, 1, count)) end, debug.traceback)
+
+	for _, entry in ipairs(taken) do
+		if entry[1][entry[2]] == nil then entry[1][entry[2]] = entry[3] end
+	end
+	return ok, result
+end
+
+-- the grid of tiles in a window of the mod (a DGrid on the canvas of a scroll panel)
+local function findGrid(panel, depth)
+	for _, child in ipairs(panel:GetChildren()) do
+		if isfunction(child.AddItem) and isfunction(child.GetItems) and isfunction(child.SetCols) then
+			return child
+		end
+		if depth < 5 then
+			local grid = findGrid(child, depth + 1)
+			if grid then return grid end
+		end
 	end
 	return nil
 end
 
-local function checkSliders()
-	for index = #sliderWatches, 1, -1 do
-		local watch = sliderWatches[index]
-		local open = false
-		for _, frame in ipairs(watch.frames) do
-			if IsValid(frame) then open = true break end
-		end
-		local groups = watch.appearance.ABodygroups
-		if not open or not istable(groups) then
-			table.remove(sliderWatches, index)
+local function closeModWindow(frame)
+	if not IsValid(frame) then return end
+	-- DFrame:Close() also runs the mod's OnClose, which puts the camera back
+	if isfunction(frame.Close) then frame:Close() else frame:Remove() end
+end
+
+-- returns true when the window has the tile
+local function addModTile(main, frame)
+	if IsValid(frame.zcg_tile) then return true end
+	local grid = findGrid(frame, 0)
+	if not grid then return false end
+	setupFonts()
+
+	-- as large as the tiles of the mod
+	local w, h = math.floor(ScreenScale(66)), math.floor(ScreenScale(62))
+	local items = grid:GetItems()
+	local first = istable(items) and items[1]
+	if ispanel(first) and IsValid(first) and first:GetWide() > 0 and first:GetTall() > 0 then
+		w, h = first:GetWide(), first:GetTall()
+	end
+
+	local title = Config.MenuText or "CS:GO gloves..."
+	local tile = vgui.Create("DButton")
+	tile:SetText("")
+	tile:SetSize(w, h)
+
+	function tile:Paint(tw, th)
+		local current = selectedVariant(main)
+		draw.RoundedBox(4, 0, 0, tw, th, self:IsHovered() and clrTileHover or clrTile)
+
+		local line = math.max(11, math.floor(ScreenScale(7)))
+		local lines = current and 2 or 1
+		local size = math.max(8, math.min(tw - 8, th - line * lines - 8))
+		local x, y = math.floor((tw - size) / 2), 4
+
+		surface.SetDrawColor(255, 255, 255, 255)
+		if current then
+			-- the glove that is selected
+			local icon = iconOf(current)
+			if icon then
+				surface.SetMaterial(icon)
+				surface.DrawTexturedRect(x, y, size, size)
+			end
 		else
-			for _, key in ipairs(handsKeys(groups)) do
-				local value = groups[key]
-				if value ~= watch.last[key] then
-					if ZCG.ByName[value] then
-						value = bareHands()
-						groups[key] = value
-					end
-					watch.last[key] = value
+			-- four gloves out of the collection
+			local half = math.floor(size / 2)
+			for i, id in ipairs(MOD_TILE_ICONS) do
+				local variant = ZCG.ByID[id]
+				local icon = variant and iconOf(variant)
+				if icon then
+					surface.SetMaterial(icon)
+					surface.DrawTexturedRect(x + ((i - 1) % 2) * half, y + math.floor((i - 1) / 2) * half, half, half)
 				end
 			end
 		end
-	end
-	if #sliderWatches == 0 then hook.Remove("Think", "zcg_sliders") end
-end
 
-local function watchSliders(appearance, frames)
-	if not istable(appearance) or #frames == 0 then return end
-	appearance.ABodygroups = appearance.ABodygroups or {}
-	local last = {}
-	for _, key in ipairs(handsKeys(appearance.ABodygroups)) do last[key] = appearance.ABodygroups[key] end
-	sliderWatches[#sliderWatches + 1] = { appearance = appearance, frames = frames, last = last }
-	hook.Add("Think", "zcg_sliders", checkSliders)
-end
-
-local sliderWrappers = setmetatable({}, { __mode = "k" })
-
-local function hookSliderWindow()
-	local AP = hg and hg.Appearance
-	local open = istable(AP) and AP.OpenBodygroupsShowcaseMenu
-	if not isfunction(open) or sliderWrappers[open] then return end
-
-	local function wrapped(appearance, ...)
-		local before = worldPanels()
-		local function after(...)
-			local ok, err = pcall(watchSliders, appearance or AP.CurrentEditTable, newWorldPanels(before))
-			if not ok then report("body group sliders", err) end
-			return ...
+		local ty = th - line * lines - 2
+		draw.SimpleText(title, "ZCG_Label", tw / 2, ty, clrText, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+		if current then
+			draw.SimpleText(shortName(current), "ZCG_Label", tw / 2, ty + line, clrDim, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+			surface.SetDrawColor(clrSelected)
+			surface.DrawOutlinedRect(0, 0, tw, th, 2)
 		end
-		return after(open(appearance, ...))
 	end
-	sliderWrappers[wrapped] = true
-	AP.OpenBodygroupsShowcaseMenu = wrapped
+
+	function tile:DoClick()
+		-- the window of the mod goes, the picker comes
+		closeModWindow(frame)
+		local ok, err = pcall(openPicker, main)
+		if not ok then
+			report("glove picker failed", err)
+			closePicker(main)
+			main.zcg_plain = true
+		end
+	end
+
+	grid:AddItem(tile)
+	-- the first tile: the window shows fewer than three rows without scrolling
+	items = grid:GetItems()
+	if istable(items) and #items > 1 and items[#items] == tile then
+		table.remove(items)
+		table.insert(items, 1, tile)
+		grid:InvalidateLayout()
+	end
+
+	frame.zcg_tile = tile
+	return true
+end
+
+local function wrapModButton(main, button)
+	local inner = button.DoClick -- the wrapper of the mod
+
+	local function wrapped(self, ...)
+		if main.zcg_plain then return inner(self, ...) end
+		closePicker(main)
+
+		local ok, menu = withoutGloves(inner, self, ...)
+		if not ok then
+			report("gloves window of the Appearance Mod", menu)
+			return nil
+		end
+		-- no window: the mod fell back to the menu below it (openGlovesMenu)
+		if not (ispanel(menu) and IsValid(menu)) then return menu end
+
+		local done, added = pcall(addModTile, main, menu)
+		if done and added then return menu end
+
+		-- no tile: the window once more, this time with every glove listed by name
+		if not done then
+			report("tile in the gloves window of the Appearance Mod", added)
+		else
+			ZCG.Print("the gloves window of the Appearance Mod is not the one this addon knows - "
+				.. "the CS:GO gloves are listed there by name.")
+		end
+		main.zcg_plain = true
+		pcall(closeModWindow, menu)
+		return inner(self, ...)
+	end
+
+	button.zcg_mod = wrapped
+	button.DoClick = wrapped
+end
+
+-- gets on top of the mod's wrapper as soon as there is one
+local function attachMod(main, viewer)
+	local button = findGlovesButton(viewer)
+	if not button or not button.__AppearanceModWrapped then return end
+	if button.zcg_mod ~= nil and button.DoClick == button.zcg_mod then return end
+	wrapModButton(main, button)
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -715,8 +713,14 @@ function ZCG.AttachEditor(main)
 				if not ok then report("appearance editor menu", err) end
 			end
 
-			local ok, err = pcall(watchGlovesButton, main, child)
-			if not ok then report("appearance editor menu of another addon", err) end
+			-- the Appearance Mod wraps the button later than this addon does
+			if not child.zcg_mod_failed then
+				local ok, err = pcall(attachMod, main, child)
+				if not ok then
+					child.zcg_mod_failed = true
+					report("appearance editor, Appearance Mod", err)
+				end
+			end
 		end
 	end
 	return found
@@ -740,15 +744,11 @@ local function hookEditorClass()
 end
 
 hookEditorClass()
-hookSliderWindow()
-hook.Add("InitPostEntity", "zcg_editor", function()
-	hookEditorClass()
-	hookSliderWindow()
-end)
+hook.Add("InitPostEntity", "zcg_editor", hookEditorClass)
 
--- Z-City Appearance Mod runs this when it has put its own menus on the buttons of the editor
+-- the Appearance Mod runs this hook right after it has wrapped the buttons of a window
 hook.Add("HG_AppearanceMenuReady", "zcg_editor", function(panel)
-	if not ispanel(panel) then return end
+	if not (ispanel(panel) and IsValid(panel)) then return end
 	local ok, err = pcall(ZCG.AttachEditor, panel)
 	if not ok then report("appearance editor", err) end
 end)
@@ -757,7 +757,6 @@ end)
 -- already be open; "zpan" is the global Z-City keeps the open editor in.
 timer.Create("zcg_editor", 0.5, 0, function()
 	hookEditorClass()
-	hookSliderWindow()
 	local open = rawget(_G, "zpan")
 	if ispanel(open) and IsValid(open) then
 		local ok, err = pcall(ZCG.AttachEditor, open)

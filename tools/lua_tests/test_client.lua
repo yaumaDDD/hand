@@ -76,19 +76,66 @@ return function(testdir, luaroot)
 	end
 	local function lastModel() return M.csmodels[#M.csmodels] end
 
+	local function handBone(name) return name:find("_Hand", 1, true) ~= nil or name:find("_Finger", 1, true) ~= nil end
+
 	-- Is the glove where its wearer was drawn? nil = every bone the two have in common is at the
-	-- same place, otherwise the name of a bone that is not.
+	-- same place, otherwise the name of a bone that is not. The wearer's pose is the one it had
+	-- when the glove was put on (wearer.posed), and the wearer must have been drawn in that very
+	-- pose - but for hands that are hidden by shrinking their bones (see shrunkHands).
 	local function offBone(glove, wearer)
 		if not glove.shown or not wearer.shown then return "nothing was drawn" end
+		local posed = wearer.posed or wearer.shown -- (the model of the editor is drawn as it is)
 		local common = 0
 		for name, m in pairs(glove.shown) do
-			if wearer.shown[name] then
+			if posed[name] then
 				common = common + 1
-				if not M.sameMatrix(m, wearer.shown[name]) then return name end
+				if not M.sameMatrix(m, posed[name]) then return name end
+			end
+		end
+		if common == 0 then return "no bones in common" end
+		for name, m in pairs(posed) do
+			if not handBone(name) and not M.sameMatrix(m, wearer.shown[name]) then return "the wearer was drawn elsewhere: " .. name end
+		end
+		return nil
+	end
+
+	-- The same for the model of the editor, which nobody poses: the glove is compared with the
+	-- bones the model has once it has been drawn (whole again, if they were shrunk for the draw).
+	local function offEditorBone(glove, wearer)
+		if not glove.shown then return "nothing was drawn" end
+		local common = 0
+		for name, m in pairs(glove.shown) do
+			local index = wearer:LookupBone(name)
+			if index then
+				common = common + 1
+				if not M.sameMatrix(m, wearer:GetBoneMatrix(index)) then return name end
 			end
 		end
 		if common == 0 then return "no bones in common" end
 		return nil
+	end
+
+	-- How were the hands of an entity drawn? "whole": as they were posed; "shrunk": every hand
+	-- and finger bone twenty times smaller and (but for a twentieth of the way) in the wrist.
+	local function drawnHands(wearer)
+		local whole, shrunk, count = true, true, 0
+		for name, was in pairs(wearer.posed or {}) do
+			if handBone(name) then
+				count = count + 1
+				local now = wearer.shown[name]
+				if not M.sameMatrix(was, now) then whole = false end
+				local side = name:match("_([LR])_")
+				local wrist = wearer.posed["ValveBiped.Bip01_" .. side .. "_Hand"]:GetTranslation()
+				local scale = now:GetScale()
+				local want = wrist + (was:GetTranslation() - wrist) * 0.05
+				if math.abs(scale.x - 0.05) > 1e-6 or math.abs(scale.y - 0.05) > 1e-6 or math.abs(scale.z - 0.05) > 1e-6
+					or now:GetTranslation():Distance(want) > 1e-6 then
+					shrunk = false
+				end
+			end
+		end
+		if count == 0 then return "no hands" end
+		return whole and "whole" or shrunk and "shrunk" or "something else"
 	end
 
 	-- the server applied the appearance: clothes on every slot, hands included
@@ -138,7 +185,42 @@ return function(testdir, luaroot)
 	eq(glove.setups, 12, "the bones are set up once per draw")
 	eq(glove.boneWrites, (boneWrites or 0) * 11, "and written again after every set up")
 	eq(offBone(glove, alice), nil, "still on the hands")
-	eq(hook.list.PostDrawAppearance and hook.list.PostDrawAppearance.zcg_gloves, nil, "nothing is drawn after the wearer any more")
+	-- Both ways at once: the material of the hands draws nothing, and the hands are shrunk into
+	-- the wrists while the model is drawn - whatever else sits on those bones goes with them.
+	eq(drawnHands(alice), "shrunk", "her hands are shrunk into the wrists as well, although their material is hidden")
+	eq(ZCG.States[alice].shrunk, true, "the state says so")
+	-- What is left of it once she is drawn? By the time of the second hook the engine may have
+	-- set the bones up again (the imitation does that) or not - it is not known which. Either
+	-- way whoever looks at the hands next finds them whole, and only what was written is undone.
+	do
+		local function handsNow(ent)
+			local posed, whole = true, true
+			for name, was in pairs(ent.posed) do
+				if handBone(name) then
+					local now = ent:GetBoneMatrix(ent:LookupBone(name))
+					if not M.sameMatrix(now, was) then posed = false end
+					if math.abs(now:GetScale().x - 1) > 1e-6 then whole = false end
+				end
+			end
+			return posed and "as they were posed" or whole and "whole" or "shrunk"
+		end
+		eq(handsNow(alice), "whole", "the engine set the bones up again after the draw: the hands are whole")
+		local before = alice.boneWrites
+		frame() Z.draw(alice)
+		local perDraw = alice.boneWrites - before -- (the arm placement of Z-City and the shrinking)
+		eq(perDraw, 12 + 6, "and nothing is written to them any more: they are where the engine put them")
+
+		Z.keepBones = true
+		before = alice.boneWrites
+		frame() Z.draw(alice)
+		Z.keepBones = nil
+		eq(drawnHands(alice), "shrunk", "an engine that keeps the bones after the draw: drawn with the hands shrunk all the same")
+		eq(alice.boneWrites - before, perDraw + 6, "the six bones of the hands are written back")
+		eq(handsNow(alice), "as they were posed", "exactly as they were before: on the weapon, where Z-City put them")
+	end
+	local drawnSoFar = #M.drawn
+	hook.list.PostDrawAppearance.zcg_gloves(alice, alice)
+	eq(#M.drawn, drawnSoFar, "nothing is drawn after the wearer any more")
 
 	-- the wearer moves: the glove follows
 	alice:SetPos(Vector(-300, 40, 64))
@@ -254,7 +336,8 @@ return function(testdir, luaroot)
 	frame() Z.draw(alice)
 	eq(alice:GetSubMaterial(HANDS_SLOT_F), CLOTHES, "restored on the new model")
 
-	-- a model without the hands material (zcg_any_model 1 on a class model): glove drawn, nothing hidden
+	-- a model without the hands material (zcg_any_model 1 on a class model): there is no material
+	-- to hide, so the hands are shrunk into the wrists while the model is drawn
 	local dave = M.newPlayer("dave", Z.COMBINE)
 	dave:SetPos(Vector(-50, 10, 0))
 	dave.tpik = Z.tpik
@@ -264,13 +347,20 @@ return function(testdir, luaroot)
 	local daveGlove = lastModel()
 	eq(ZCG.States[dave].mdl, daveGlove, "glove on a foreign model")
 	eq(daveGlove.draws, 1, "drawn on a foreign model")
-	eq(dave:GetSubMaterial(0), CLOTHES, "nothing hidden on a foreign model")
+	eq(dave:GetSubMaterial(0), CLOTHES, "no material is hidden on a foreign model")
 	eq(dave.submatWrites, nil, "no sub-material written on a foreign model")
+	eq(ZCG.HandsSlot(dave), nil, "(it has no material for the hands)")
+	eq(drawnHands(dave), "shrunk", "its hands are drawn shrunk into the wrists instead")
+	eq(M.drawn[#M.drawn], dave, "the wearer is drawn after the glove, with those bones")
+	local daveHand = dave:LookupBone(bone("R", "Hand"))
+	eq(dave:GetBoneMatrix(daveHand):GetScale().x, 1,
+		"and has them back once it is drawn: what looks at the hand afterwards finds it whole")
+	eq(ZCG.States[dave].shrunk, true, "the state says so")
 
 	-- this model has neither the wrist helpers nor finger bones
-	eq(offBone(daveGlove, dave), nil, "the bones the model has are taken from it")
+	eq(offBone(daveGlove, dave), nil, "the bones the model has are taken from it - as they were before they were shrunk")
 	for _, side in ipairs({ "L", "R" }) do
-		local forearm, hand = dave.shown[bone(side, "Forearm")], dave.shown[bone(side, "Hand")]
+		local forearm, hand = dave.posed[bone(side, "Forearm")], dave.posed[bone(side, "Hand")]
 		local wrist = M.copyMatrix(forearm)
 		wrist:SetTranslation(hand:GetTranslation())
 		check(M.sameMatrix(daveGlove.shown[bone(side, "Wrist")], wrist),
@@ -283,17 +373,208 @@ return function(testdir, luaroot)
 	end
 	frame() Z.draw(dave)
 	eq(offBone(daveGlove, dave), nil, "the same in the next frame")
-	check(M.sameMatrix(daveGlove.shown[bone("R", "Finger1")], dave.shown[bone("R", "Hand")] * M.matrix(3.7, -0.2, -1.4)),
+	eq(drawnHands(dave), "shrunk", "and the hands are shrunk again: it only lasts for one draw")
+	check(M.sameMatrix(daveGlove.shown[bone("R", "Finger1")], dave.posed[bone("R", "Hand")] * M.matrix(3.7, -0.2, -1.4)),
 		"the pose of the glove model is remembered, not read from bones that were written")
 
-	-- its hands cannot be hidden, so a fingerless glove must not add a second set of fingers
+	-- a hook that fails between the two of ours: the bones of an earlier frame are not put back
+	local stale = dave.boneWrites
+	frame()
+	dave:SetupBones()
+	hook.list.PostDrawAppearance.zcg_gloves(dave, dave)
+	eq(dave.boneWrites, stale, "bones noted in another frame are not written back")
+
+	-- hands that can be hidden: a fingerless glove brings its own fingers on this model too
 	dave.nw.zcg_glove = "bloodhound_1"
 	frame() Z.draw(dave)
 	daveGlove = lastModel()
 	eq(daveGlove.model, BLOODHOUND, "a fingerless glove on a foreign model")
 	eq(daveGlove.draws, 1, "is drawn")
-	eq(daveGlove:GetSubMaterial(0), "null", "without its own fingers: the model's hands cannot be hidden")
+	eq(daveGlove:GetSubMaterial(0), SKIN, "with its own fingers, now that the model's hands can be hidden")
+	eq(drawnHands(dave), "shrunk", "which they are")
 	eq(dave.submatWrites, nil, "still nothing written on the foreign model")
+
+	-- zcg_hide_bones 0: as up to version 2.1.0 - what has no material stays
+	M.setConVar("zcg_hide_bones", 0)
+	frame() Z.draw(dave)
+	eq(drawnHands(dave), "whole", "zcg_hide_bones 0: the hands of a foreign model stay")
+	eq(daveGlove:GetSubMaterial(0), "null", "and a fingerless glove is drawn without its own fingers: one pair is enough")
+	eq(ZCG.States[dave].shrunk, false, "the state says so")
+	eq(offBone(daveGlove, dave), nil, "the glove is on the hands all the same")
+	dave.nw.zcg_glove = "none"
+	frame() Z.draw(dave)
+	eq(drawnHands(dave), "whole", "no glove, no shrinking")
+
+	-- zcg_hide_bones 3: as up to version 2.2 - the bones only where there is no material to hide
+	M.setConVar("zcg_hide_bones", 3)
+	local erin = M.newPlayer("erin", Z.MALE)
+	erin:SetPos(Vector(10, -70, 0))
+	erin.tpik = Z.tpik
+	dress(erin)
+	erin.nw.zcg_glove = "moto_1"
+	Z.draw(erin)
+	eq(erin:GetSubMaterial(HANDS_SLOT), "null", "zcg_hide_bones 3: the material of the hands is hidden")
+	eq(drawnHands(erin), "whole", "and a model with that material keeps its bones")
+	eq(ZCG.States[erin].shrunk, false, "the state says so")
+	dave.nw.zcg_glove = "moto_3"
+	frame() Z.draw(dave)
+	eq(drawnHands(dave), "shrunk", "zcg_hide_bones 3: a model without the material has its hands shrunk")
+	dave.nw.zcg_glove = "none"
+	frame() Z.draw(dave)
+
+	-- zcg_hide_bones 2 (what version 2.2 called "on every model"): the same as 1
+	M.setConVar("zcg_hide_bones", 2)
+	frame() Z.draw(erin)
+	eq(erin:GetSubMaterial(HANDS_SLOT), "null", "zcg_hide_bones 2: the material of the hands is hidden as before")
+	eq(drawnHands(erin), "shrunk", "and the hands are shrunk as well")
+	eq(offBone(ZCG.States[erin].mdl, erin), nil, "the glove has the pose the hands had: fingers and all")
+	eq(erin:GetBoneMatrix(erin:LookupBone(bone("L", "Finger11"))):GetScale().x, 1, "the fingers are whole afterwards too")
+	-- an arm that Z-City scaled to nothing (amputated): nothing to turn back, it is left alone
+	erin.tpik = function(ent)
+		Z.tpik(ent)
+		for _, part in ipairs({ "Hand", "Finger1", "Finger11" }) do
+			local index = ent:LookupBone(bone("L", part))
+			local gone = ent:GetBoneMatrix(index)
+			gone:SetScale(Vector(0, 0, 0))
+			ent:SetBoneMatrix(index, gone)
+		end
+	end
+	frame() Z.draw(erin)
+	eq(erin.shown[bone("L", "Hand")]:GetScale(), Vector(0, 0, 0), "a hand without any size stays as it is")
+	check(math.abs(erin.shown[bone("R", "Hand")]:GetScale().x - 0.05) < 1e-6, "the other one is shrunk")
+	erin.tpik = Z.tpik
+	M.setConVar("zcg_hide_bones", 1)
+	frame() Z.draw(erin)
+	eq(drawnHands(erin), "shrunk", "zcg_hide_bones 1, the default: on every model")
+	eq(erin:GetSubMaterial(HANDS_SLOT), "null", "together with the material")
+	erin.nw.zcg_glove = "none"
+	frame() Z.draw(erin)
+	eq(drawnHands(erin), "whole", "no glove: the hands are whole")
+	eq(erin:GetSubMaterial(HANDS_SLOT), CLOTHES, "and have their material")
+
+	-- A model that is still loading: a bone below one hand has no name yet, and a bone without a
+	-- name must not be written. The other hand goes at once, this one as soon as it is known.
+	do
+		local LOADING = "models/player/still_loading.mdl"
+		M.models[LOADING] = { bones = Z.skeleton({ wrist = true, fingers = true }), materials = { "models/whatever/sheet" },
+			unnamed = { [bone("R", "Finger11")] = true } }
+		local fred = M.newPlayer("fred", LOADING)
+		fred.tpik = Z.tpik
+		dress(fred)
+		fred.nw.zcg_glove = "moto_5"
+		local function size(side, part) return fred.shown[bone(side, part)]:GetScale().x end
+		Z.draw(fred)
+		check(math.abs(size("L", "Hand") - 0.05) < 1e-6 and math.abs(size("L", "Finger11") - 0.05) < 1e-6,
+			"a model that is still loading: the hand that is known is shrunk")
+		eq(size("R", "Hand"), 1, "the hand with a bone that has no name yet is left alone")
+		eq(size("R", "Finger11"), 1, "with its fingers")
+		M.models[LOADING].unnamed = nil
+		frame() Z.draw(fred)
+		eq(size("R", "Hand"), 1, "(the model is not asked again in every frame)")
+		M.advance(1.5)
+		frame() Z.draw(fred)
+		eq(drawnHands(fred), "shrunk", "a second later the bone has its name: both hands are shrunk")
+		fred.nw.zcg_glove = "none"
+		frame() Z.draw(fred)
+	end
+
+	-- ---------------------------------------------------------------- a material is not installed
+	-- The game leaves it out of Entity:GetMaterials(), and everything after it moves up one place.
+	-- Z-City counts in that list (so do the editor and every clothing addon), and so did this
+	-- addon: the clothes sat on the wrong parts, and the hands under a glove stayed.
+	do
+		local SLAV = "models/slav/m/male_10.mdl"
+		local names = { "players_sheet", "hair", "eyeball_l", "pants", "cross", "hands", "teeth" }
+		local dirs = { "models\\Humans\\Slav\\", "models/humans/male/group01/", "distac/gloves/" }
+		M.installModel(SLAV, names, dirs, Z.skeleton({ wrist = true, fingers = true }))
+		local there = {
+			"models/humans/male/group01/players_sheet", "models/humans/slav/eyeball_l", "distac/gloves/pants",
+			"distac/gloves/cross", "distac/gloves/hands",
+		}
+		for _, name in ipairs(there) do M.files["materials/" .. name .. ".vmt"] = true end
+		hg.Appearance.PlayerModels[1]["Male 10"] = {
+			mdl = SLAV, sex = false,
+			submatSlots = { main = "models/humans/male/group01/players_sheet", pants = "distac/gloves/pants",
+				boots = "distac/gloves/cross", hands = "distac/gloves/hands" },
+		}
+
+		local slav = M.newPlayer("slav", SLAV)
+		slav:SetPos(Vector(40, 40, 0))
+		slav.tpik = Z.tpik
+		local engine = ZCG.EngineGetMaterials(slav)
+		eq(#engine, 5, "(the imitation: the game names five of the seven materials)")
+		eq(engine[2], "models/humans/slav/eyeball_l", "(and what comes after a gap has moved up)")
+
+		local list = slav:GetMaterials()
+		eq(#list, 7, "Entity:GetMaterials names every material of the model")
+		eq(list[1], "models/humans/male/group01/players_sheet", "the ones the game knows keep their names")
+		eq(list[2], "models/humans/slav/hair", "one that is not installed is named by the path it would have")
+		eq(list[3], "models/humans/slav/eyeball_l", "and what follows is back in its place")
+		eq(list[6], "distac/gloves/hands", "the hands are the sixth material again")
+		eq(list[7], "models/humans/slav/teeth", "a missing one at the end is there as well")
+		list[1] = "changed"
+		eq(slav:GetMaterials()[1], "models/humans/male/group01/players_sheet", "every call gives a list of its own")
+		local a, b = ZCG.MaterialCounts(slav)
+		eq(a .. " of " .. b, "5 of 7", "ZCG.MaterialCounts tells how many are installed")
+
+		-- Z-City dresses the model: the clothes are where they belong
+		Z.applyAppearance(slav, { AModel = "Male 10" })
+		eq(slav:GetSubMaterial(0), CLOTHES, "the jacket is on the jacket")
+		eq(slav:GetSubMaterial(3), CLOTHES, "the trousers on the trousers")
+		eq(slav:GetSubMaterial(4), CLOTHES, "the boots on the boots")
+		eq(slav:GetSubMaterial(5), CLOTHES, "the hands on the hands")
+		eq(slav:GetSubMaterial(2), "", "and nothing on the eyes, where the trousers went before")
+
+		-- and a glove hides the hands, not the boots
+		eq(ZCG.HandsSlot(slav), 5, "the slot of the hands is the one of the model file")
+		slav.nw.zcg_glove = "moto_4"
+		Z.draw(slav)
+		eq(slav:GetSubMaterial(5), "null", "the hands are hidden under the glove")
+		eq(slav:GetSubMaterial(4), CLOTHES, "the boots are not")
+		eq(drawnHands(slav), "shrunk", "and shrunk into the wrists: two ways that do not depend on each other")
+
+		-- the material of a slot itself is missing: its name is the one Z-City looks for
+		M.files["materials/distac/gloves/pants.vmt"] = nil
+		M.advance(6)
+		list = slav:GetMaterials()
+		eq(#ZCG.EngineGetMaterials(slav), 4, "(one more is gone)")
+		eq(list[4], "distac/gloves/pants", "a missing material gets the path the appearance tables name")
+		Z.applyAppearance(slav, { AModel = "Male 10" })
+		eq(slav:GetSubMaterial(3), CLOTHES, "so the trousers still find their slot")
+		M.files["materials/distac/gloves/pants.vmt"] = true
+		M.advance(6)
+
+		-- zcg_debug shows both lists
+		slav.nw.zcg_glove = "moto_4"
+		frame() Z.draw(slav)
+		me.lookat = slav
+		M.log = {}
+		M.command("zcg_debug", me)
+		local text = table.concat(M.log, "\n")
+		check(text:find("the game names 5, the model file 7 - 2 are NOT INSTALLED", 1, true) ~= nil, "zcg_debug counts the missing materials")
+		check(text:find("[ 1] models/humans/slav/hair   <- not installed", 1, true) ~= nil, "and marks them in the list")
+		check(text:find("[ 5] distac/gloves/hands", 1, true) ~= nil and text:find("[ 5] distac/gloves/hands   <-", 1, true) == nil,
+			"the installed ones are listed with their real index")
+		check(text:find("hides the hands of this model: yes, by their material", 1, true) ~= nil, "it says how the hands are hidden")
+		check(text:find("hand bones           : 2 hands, 6 bones with the fingers", 1, true) ~= nil, "and which bones it could shrink")
+		me.lookat = nil
+		frame() Z.draw(slav)
+
+		-- a model file that cannot be read: the list of the game, as before
+		local OTHER = "models/slav/m/male_11.mdl"
+		M.installModel(OTHER, names, dirs, Z.skeleton({ wrist = true, fingers = true }))
+		M.filedata[OTHER] = "IDST" .. string.rep("\0", 100)
+		local other = M.newPlayer("other", OTHER)
+		eq(#other:GetMaterials(), 5, "a broken model file: the list of the game is left as it is")
+		eq(M.openNow, 0, "and the file is closed")
+		M.filedata[OTHER] = nil
+		eq(#other:GetMaterials(), 5, "a model file that cannot be opened: the same")
+		-- a model with all its materials: nothing is touched (the list is the very answer of the game)
+		eq(#alice:GetMaterials(), #ZCG.EngineGetMaterials(alice), "a model with all its materials keeps its list")
+		slav.nw.zcg_glove = "none"
+		frame() Z.draw(slav)
+		hg.Appearance.PlayerModels[1]["Male 10"] = nil
+	end
 
 	-- ---------------------------------------------------------------- convars
 	alice:SetModel(Z.MALE)
@@ -538,10 +819,91 @@ return function(testdir, luaroot)
 	check(report:find("zcg_fingers 1", 1, true) ~= nil, "and the finger setting")
 	check(report:find("finger material      : " .. SKIN, 1, true) ~= nil and report:find("NOT installed", 1, true) == nil,
 		"the report names the skin of the fingers")
-	check(report:find("full-finger, hides the hands of this model: true, drawn with its own fingers: false", 1, true) ~= nil,
+	check(report:find("full-finger, hides the hands of this model: yes, by their material and their bones, drawn with its own fingers: false", 1, true) ~= nil,
 		"the report says what the glove does to the hands")
+	check(report:find("zcg_hide_bones 1", 1, true) ~= nil, "and how hands without a material are hidden")
 	check(report:find('bare arm material "null"', 1, true) ~= nil, "and what is on the rest of the bare arm")
 	check(report:find("15 of 15 bones taken from the wearer", 1, true) ~= nil, "the report says how many bones were copied")
+	check(report:find("under a glove they are shrunk on every model (zcg_hide_bones 1;", 1, true) ~= nil,
+		"what zcg_hide_bones does is spelled out")
+	check(report:find("hand bones shrunk true (set up again by the engine by the end of the draw)", 1, true) ~= nil,
+		"and what became of the shrunk hands once the wearer was drawn")
+	-- what else could draw hands on the wearer: nothing here
+	check(report:find("bodies of the model  : nothing to choose from", 1, true) ~= nil, "a model with one body of each kind")
+	check(report:find("attached to it       : nothing", 1, true) ~= nil, "nothing hangs on her (the glove itself is not listed)")
+	check(report:find("equipment of Z-City  : none", 1, true) ~= nil, "no equipment of Z-City")
+	check(report:find("hooks of CoolPostDrawAppearance: zcg_gloves", 1, true) ~= nil, "nobody else draws before the wearer")
+	check(report:find("hooks of PostDrawAppearance: zcg_gloves", 1, true) ~= nil, "nor after it")
+	check(report:find("order of these hooks : the hook library has none to ask for", 1, true) ~= nil, "the order of the hooks is named")
+
+	-- ... and a wearer with a second pair of arms in the model, a coat of Z-City and a hook of another addon
+	do
+		local bodies = M.models[Z.MALE].bodygroups
+		M.models[Z.MALE].bodygroups = {
+			{ "studio", { "male_01.smd" } },
+			{ "HANDS", { "hands", "reggloves_FIN_M", "handsfortshirt" } },
+			{ "TORSO", { "male_standart_top.smd", "male_standart_tshirt.smd" } },
+		}
+		alice:SetBodygroup(2, 1)
+		local coat = M.newEntity("ent_zcity_clothes_wintercoat1", "models/props_junk/cardboard_box003a.mdl")
+		coat.renderModel = ClientsideModel("models/tnb/newcitizen/halflife2/male_torso_wintercoat.mdl")
+		coat.renderModel:SetParent(alice)
+		coat.renderModel:AddEffects(EF_BONEMERGE)
+		alice.netvars = { zc_equipment = { coat:EntIndex() } }
+		local watch = M.newEntity("prop_dynamic", "models/props/watch.mdl")
+		watch:SetParent(alice)
+		hook.Add("CoolPostDrawAppearance", "zc_equipmentDraw", function() end)
+		Z.keepBones = true
+		frame() Z.draw(alice)
+		Z.keepBones = nil
+
+		M.log = {}
+		M.command("zcg_debug", me)
+		report = table.concat(M.log, "\n")
+		check(report:find('bodies of the model  : HANDS = 0 "hands", TORSO = 1 "male_standart_tshirt.smd"', 1, true) ~= nil,
+			"the report names the bodies of the model that are switched on")
+		check(report:find("class C_BaseFlex models/tnb/newcitizen/halflife2/male_torso_wintercoat.mdl (bone-merged)", 1, true) ~= nil
+			and report:find("prop_dynamic models/props/watch.mdl", 1, true) ~= nil
+			and report:find("prop_dynamic models/props/watch.mdl (bone-merged)", 1, true) == nil,
+			"what is attached to the wearer, and what of it follows the bones")
+		check(report:find("equipment of Z-City  : ent_zcity_clothes_wintercoat1 models/tnb/newcitizen/halflife2/male_torso_wintercoat.mdl", 1, true) ~= nil,
+			"the equipment of Z-City with the model it is drawn as")
+		local line = report:match("hooks of CoolPostDrawAppearance: ([^\n]*)") or ""
+		check(line:find("zc_equipmentDraw", 1, true) ~= nil and line:find("zcg_gloves", 1, true) ~= nil,
+			"and who else draws before the wearer: " .. line)
+		check(report:find("hand bones shrunk true (still shrunk after the draw)", 1, true) ~= nil,
+			"an engine that keeps the bones: the report says the hands were still shrunk after the draw")
+
+		-- (her ragdoll: Z-City keeps the list with the player while she lives)
+		local body = M.newEntity("prop_ragdoll", Z.MALE)
+		dress(body)
+		body.nw.ply = alice
+		me.lookat = body
+		M.log = {}
+		M.command("zcg_debug", me)
+		local bodyReport = table.concat(M.log, "\n")
+		check(bodyReport:find("equipment of Z-City  : ent_zcity_clothes_wintercoat1 models/tnb/newcitizen/halflife2/male_torso_wintercoat.mdl", 1, true) ~= nil,
+			"the equipment of the player is named for her ragdoll too")
+		body.netvars = { zc_equipment = { coat:EntIndex() } }
+		M.log = {}
+		M.command("zcg_debug", me)
+		bodyReport = table.concat(M.log, "\n")
+		local _, times = bodyReport:gsub("ent_zcity_clothes_wintercoat1", "")
+		eq(times, 1, "and only once when both have it listed")
+		me.lookat = alice
+		body:Remove()
+
+		hook.Remove("CoolPostDrawAppearance", "zc_equipmentDraw")
+		watch:Remove()
+		coat.renderModel:Remove()
+		coat:Remove()
+		alice.netvars = nil
+		alice:SetBodygroup(2, 0)
+		M.models[Z.MALE].bodygroups = bodies
+		frame() Z.draw(alice)
+	end
+	M.log = {}
+	M.command("zcg_debug", me)
 	check(report:find("R_Wrist 15", 1, true) ~= nil, "the report lists the bones of the wearer that matter")
 	M.log = {}
 	frame() Z.draw(alice)
@@ -669,7 +1031,7 @@ return function(testdir, luaroot)
 		M.log = {}
 		M.command("zcg_debug", me)
 		eq(logged("OLDER version"), 1, "zcg_debug names the old model")
-		eq(logged("fingerless, hides the hands of this model: false, drawn with its own fingers: false"), 1,
+		eq(logged("fingerless, hides the hands of this model: no, drawn with its own fingers: false"), 1,
 			"and what follows from it")
 		me.lookat = nil
 		frame() Z.draw(ivy) -- (the bone report zcg_debug asked for)
@@ -739,7 +1101,7 @@ return function(testdir, luaroot)
 		M.log = {}
 		M.command("zcg_debug", me)
 		eq(logged("tint 4.00 0.00 1.00"), 1, "zcg_debug shows the tint")
-		eq(logged("fingerless, hides the hands of this model: true, drawn with its own fingers: true"), 1,
+		eq(logged("fingerless, hides the hands of this model: yes, by their material and their bones, drawn with its own fingers: true"), 1,
 			"and that the glove is drawn with its fingers")
 		eq(logged('bare arm material "' .. SKIN .. '"'), 1, "and their material")
 		me.lookat = nil
@@ -817,12 +1179,34 @@ return function(testdir, luaroot)
 	eq(main.accessoriesDrawn, 1, "the original PostDrawModel still runs")
 	eq(M.drawn[#M.drawn], glove, "glove drawn after the editor model")
 	eq(preview:GetSubMaterial(HANDS_SLOT), CLOTHES, "the hands stay until the glove has been drawn")
+	eq(preview.shown[bone("R", "Finger11")]:GetScale().x, 1, "and are whole")
 	frame() Z.paintViewer(viewer)
 	eq(preview:GetSubMaterial(HANDS_SLOT), "null", "hands hidden in the editor")
+	-- (both ways at once here too: the model of the editor is drawn with its hands in the wrists)
+	local function previewHands()
+		local small, whole = 0, 0
+		for name, m in pairs(viewer.Entity.shown) do
+			if handBone(name) then
+				local size = m:GetScale().x
+				if math.abs(size - 0.05) < 1e-6 then small = small + 1 elseif size == 1 then whole = whole + 1 end
+			end
+		end
+		return small .. " shrunk, " .. whole .. " whole"
+	end
+	eq(previewHands(), "6 shrunk, 0 whole", "and shrunk into the wrists while the model of the editor is drawn")
+	eq(offEditorBone(glove, preview), nil, "the glove took its pose from whole hands")
 	count = #M.csmodels
 	for _ = 1, 5 do frame() Z.paintViewer(viewer) end
 	eq(#M.csmodels, count, "no new models while the editor repaints")
 	eq(preview:GetSubMaterial(HANDS_SLOT), "null", "hidden in every frame although the editor resets the materials")
+	eq(previewHands(), "6 shrunk, 0 whole", "and shrunk in every frame")
+	M.setConVar("zcg_hide_bones", 3)
+	frame() Z.paintViewer(viewer)
+	eq(previewHands(), "0 shrunk, 6 whole", "zcg_hide_bones 3 in the editor: a model with a hands material keeps its bones")
+	eq(preview:GetSubMaterial(HANDS_SLOT), "null", "(the material is hidden as before)")
+	M.setConVar("zcg_hide_bones", 1)
+	frame() Z.paintViewer(viewer)
+	eq(previewHands(), "6 shrunk, 0 whole", "and back")
 
 	-- a fingerless one: its own fingers instead of the hands of the editor model
 	main.AppearanceTable.ABodygroups.HANDS = "CS:GO Bloodhound 03"
@@ -865,8 +1249,43 @@ return function(testdir, luaroot)
 	check(viewer.Entity ~= preview, "the editor created a new entity")
 	preview = viewer.Entity
 	eq(ZCG.States[preview].mdl, lastModel(), "glove moved to the new editor entity")
-	eq(offBone(lastModel(), preview), nil, "and sits on its hands")
+	eq(offEditorBone(lastModel(), preview), nil, "and sits on its hands")
 	eq(preview:GetSubMaterial(HANDS_SLOT_F), "null", "hands hidden on the female model")
+	-- a model without a material for its hands: in the editor they are shrunk as well
+	do
+		hg.Appearance.PlayerModels[1]["Soldier"] = { mdl = Z.COMBINE, sex = false, submatSlots = {} }
+		main.AppearanceTable.AModel = "Soldier"
+		local seen
+		main.onAccessories = function(ent) seen = ent:GetBoneMatrix(ent:LookupBone(bone("R", "Hand"))):GetScale().x end
+		local function handSize() return viewer.Entity.shown[bone("R", "Hand")]:GetScale().x end
+		frame() Z.paintViewer(viewer)
+		eq(viewer.Entity.model, Z.COMBINE, "(the editor shows the model without a hands material)")
+		eq(handSize(), 1, "its hands stay until the glove has been drawn")
+		frame() Z.paintViewer(viewer)
+		check(math.abs(handSize() - 0.05) < 1e-6, "then the model is drawn with its hands shrunk")
+		eq(seen, 1, "the accessories of the editor find whole hands all the same")
+		local soldier, soldierGlove, off = viewer.Entity, lastModel(), nil
+		for name, m in pairs(soldierGlove.shown) do
+			local index = soldier:LookupBone(name)
+			if index and not M.sameMatrix(m, soldier:GetBoneMatrix(index)) then off = name end
+		end
+		eq(off, nil, "and the glove takes its pose from whole hands")
+		eq(M.drawn[#M.drawn], soldierGlove, "it is still drawn after the model")
+		for _ = 1, 3 do frame() Z.paintViewer(viewer) end
+		check(math.abs(handSize() - 0.05) < 1e-6, "shrunk in every frame")
+		M.setConVar("zcg_hide_bones", 0)
+		frame() Z.paintViewer(viewer)
+		eq(handSize(), 1, "zcg_hide_bones 0 in the editor: the hands stay")
+		M.setConVar("zcg_hide_bones", 1)
+		main.AppearanceTable.ABodygroups.HANDS = "Gloves"
+		frame() Z.paintViewer(viewer)
+		frame() Z.paintViewer(viewer)
+		eq(handSize(), 1, "a stock glove: the hands are whole again")
+		main.AppearanceTable.ABodygroups.HANDS = "CS:GO Leather"
+		main.onAccessories = nil
+		hg.Appearance.PlayerModels[1]["Soldier"] = nil
+	end
+
 	main.AppearanceTable.AModel = "Male 01"
 	frame() Z.paintViewer(viewer)
 	frame() Z.paintViewer(viewer)
@@ -1162,173 +1581,6 @@ return function(testdir, luaroot)
 		M.errors = {}
 	end
 
-	-- ---------------------------------------------------------------- Z-City Appearance Mod
-	-- That addon takes the buttons of the stock editor over a moment after the window is built:
-	-- "Gloves" then opens a window of its own with a tile (button + model panel + label) per
-	-- entry of the HANDS list, and "BODYGROUPS" opens a window with a slider per body group.
-	do
-		eq(string.NiceName("CS:GO Moto 05"), "CS:GO Moto 05", "(mock) NiceName keeps the glove names")
-		eq(string.NiceName("Gloves fingerless"), "Gloves fingerless", "(mock) NiceName")
-
-		Z.registerEditor()
-		M.advance(1)
-		local win = Z.openEditor(1920, 1080)
-		M.advance(0.05)
-		local btn
-		for _, child in ipairs(win.viewer:GetChildren()) do
-			if child:GetText() == "Gloves" then btn = child end
-		end
-		local ours = btn.DoClick
-
-		-- what the mod does to the button (ModifyAppearanceMenu / CreateGlovesIconMenu)
-		local modWindow, modTiles, modFails
-		local layouts = 0
-		local old = btn.DoClick
-		btn.DoClick = function(self)
-			if modFails then return old(self) end
-			win.modelPosID = "Hands"
-			local frame = vgui.Create("DFrame")
-			local scroll = vgui.Create("DScrollPanel", frame)
-			local grid = vgui.Create("Panel", scroll)
-			modTiles = {}
-			for name in SortedPairs(hg.Appearance.Bodygroups.HANDS[1]) do
-				local icon = vgui.Create("DButton", grid)
-				icon:SetSize(198, 186)
-				local mdl = vgui.Create("DModelPanel", icon)
-				mdl:SetModel(Z.MALE)
-				function mdl:LayoutEntity() layouts = layouts + 1 end
-				function mdl:Paint() self:LayoutEntity(self.Entity) end
-				local lbl = vgui.Create("DLabel", icon)
-				lbl:SetPos(0, 150)
-				lbl:SetText(string.NiceName(name))
-				function icon:DoClick()
-					win.AppearanceTable.ABodygroups.HANDS = name
-					frame:Remove()
-				end
-				function icon:Think() self.bIsHovered = vgui.GetHoveredPanel() == self or vgui.GetHoveredPanel() == mdl end
-				function icon:Paint() self.painted = (self.painted or 0) + 1 end
-				icon.mdl, icon.lbl = mdl, lbl
-				modTiles[name] = icon
-			end
-			modWindow = frame
-			return frame
-		end
-		local mods = btn.DoClick
-
-		hook.Run("HG_AppearanceMenuReady", win) -- the mod announces that it is done
-		check(btn.DoClick ~= mods and btn.DoClick ~= ours, "the button is wrapped again once another addon took it")
-		local outer = btn.DoClick
-		M.advance(2)
-		eq(btn.DoClick, outer, "and only once")
-
-		local menus = #M.menus
-		local returned = btn:DoClick()
-		eq(returned, modWindow, "the other addon's menu opens and its result is passed on")
-		eq(#M.menus, menus, "our own menu stays closed")
-		local count = 0
-		for _ in pairs(modTiles) do count = count + 1 end
-		eq(count, 81 + 3, "(mock) a tile per stock and per CS:GO glove")
-
-		local moto, blood, stock = modTiles["CS:GO Moto 05"], modTiles["CS:GO Bloodhound 01"], modTiles["Gloves"]
-		eq(moto.mdl:IsVisible(), false, "CS:GO tile: the model with bare hands is hidden")
-		eq(moto.lbl:GetText(), "Moto 05", "CS:GO tile: short label")
-		eq(moto.tooltip, "Moto 05 - Finish Line", "CS:GO tile: the colour is in the tooltip")
-		eq(stock.mdl:IsVisible(), true, "stock tile: untouched")
-		eq(stock.lbl:GetText(), "Gloves", "stock tile: label untouched")
-		check(stock.zcg_tile == nil, "stock tile: not marked")
-		eq(blood.mdl:IsVisible(), true, "CS:GO tile without an icon file: left as it is")
-		eq(blood.lbl:GetText(), "CS:GO Bloodhound 01", "CS:GO tile without an icon file: label left")
-
-		layouts = 0
-		M.hovered = nil
-		M.paint(modWindow)
-		eq(moto.painted, 1, "the tile's own Paint still runs")
-		eq(layouts, 84 - 1, "the hidden model panel is not laid out any more")
-		check(win.zcg_preview == nil, "nothing previewed while nothing is hovered")
-
-		-- hover = try on, on the model of the editor
-		local selectedBefore = win.AppearanceTable.ABodygroups.HANDS
-		M.hovered = moto
-		M.paint(modWindow)
-		eq(moto.bIsHovered, true, "the tile's own Think still runs")
-		eq(win.zcg_preview and win.zcg_preview.id, "moto_5", "hovering a CS:GO tile previews the glove")
-		frame() Z.paintViewer(win.viewer)
-		eq(lastModel().model, MOTO, "the hovered glove is on the editor model")
-		eq(lastModel():GetBodygroup(0), 4, "hovered variant")
-		eq(win.AppearanceTable.ABodygroups.HANDS, selectedBefore, "hovering does not select")
-		M.hovered = stock
-		M.paint(modWindow)
-		check(win.zcg_preview == nil, "the preview ends when the cursor leaves the tile")
-
-		-- click = the mod selects; the window goes away with the cursor still on the tile
-		M.hovered = moto
-		M.paint(modWindow)
-		moto:DoClick() M.flushPanels()
-		eq(win.AppearanceTable.ABodygroups.HANDS, "CS:GO Moto 05", "the mod's own click selects the glove")
-		win.AppearanceTable.ABodygroups.HANDS = "None"
-		frame() Z.paintViewer(win.viewer)
-		check(win.zcg_preview == nil, "a preview does not outlive the menu it came from")
-		check(ZCG.States[win.viewer.Entity] == nil, "and no glove stays on the editor model")
-		M.hovered = nil
-
-		-- a menu that is not returned is found as a new top-level window
-		local realMods = mods
-		local inner = old
-		modFails = false
-		local hidden
-		win.viewer.zcg_button.zcg_click = nil -- as if yet another addon wrapped the button
-		btn.DoClick = function(self) hidden = { realMods(self) } end
-		ZCG.AttachEditor(win)
-		eq(btn:DoClick(), nil, "nothing returned by this one")
-		eq(modTiles["CS:GO Moto 05"].mdl:IsVisible(), false, "the window is found although it was not returned")
-		modWindow:Remove() M.flushPanels()
-
-		-- the mod cannot open its menu and falls back to what was on the button before: ours
-		modFails = true
-		menus = #M.menus
-		btn:DoClick()
-		eq(#M.menus, menus + 1, "our menu opens when the other addon falls back to it")
-		M.menus[#M.menus]:Remove() M.flushPanels()
-		eq(#M.errors, 0, "no errors with the other addon's menu: " .. table.concat(M.errors, " | "))
-
-		-- the slider window: for the value a slider is moved to, the mod takes the first entry
-		-- of the list with that submodel - any of "None" and the 81 CS:GO gloves
-		local sliderFrame
-		function hg.Appearance.OpenBodygroupsShowcaseMenu(tbl)
-			sliderFrame = vgui.Create("DFrame")
-		end
-		M.advance(1)
-		local wrappedOpen = hg.Appearance.OpenBodygroupsShowcaseMenu
-		M.advance(2)
-		eq(hg.Appearance.OpenBodygroupsShowcaseMenu, wrappedOpen, "the slider window is wrapped once")
-
-		local groups = win.AppearanceTable.ABodygroups
-		groups.HANDS = "CS:GO Moto 05"
-		hg.Appearance.OpenBodygroupsShowcaseMenu(win.AppearanceTable)
-		check(IsValid(sliderFrame), "the slider window opens")
-		hook.Run("Think")
-		eq(groups.HANDS, "CS:GO Moto 05", "sliders: a glove chosen before stays while the hands slider is not touched")
-		groups.HANDS = "Gloves" groups.hands = "Gloves" -- slider moved to a stock glove
-		hook.Run("Think")
-		eq(groups.HANDS, "Gloves", "sliders: stock gloves are selected as usual")
-		groups.HANDS = "CS:GO Hydra 03" groups.hands = "CS:GO Hydra 03" -- slider back to bare hands
-		hook.Run("Think")
-		eq(groups.HANDS, "None", "sliders: bare hands never turn into a CS:GO glove")
-		eq(groups.hands, "None", "sliders: the same for the lower-case key the mod writes as well")
-		sliderFrame:Remove() M.flushPanels()
-		hook.Run("Think")
-		check(hook.list.Think.zcg_sliders == nil, "sliders: the check stops with the window")
-		groups.HANDS = "CS:GO Hydra 03"
-		hook.Run("Think")
-		eq(groups.HANDS, "CS:GO Hydra 03", "sliders: nothing is changed once the window is closed")
-		groups.hands = nil
-
-		hg.Appearance.OpenBodygroupsShowcaseMenu = nil
-		win:Remove() M.flushPanels()
-		zpan = nil
-		eq(#M.errors, 0, "no errors with the slider window: " .. table.concat(M.errors, " | "))
-	end
-
 	-- ---------------------------------------------------------------- a glove that brings its own materials
 	-- The Specialist model names only ten pairs of materials for its eleven gloves: the fifth
 	-- one gets its materials from sh_data.lua ("mats").
@@ -1501,6 +1753,120 @@ return function(testdir, luaroot)
 		zoe.nw.zcg_glove = "none"
 		frame() Z.draw(zoe)
 		eq(zoe:GetSubMaterial(HANDS_SLOT), CLOTHES, "Sport: hands back when the glove is taken off")
+	end
+
+	-- ---------------------------------------------------------------- the hands are whole for everybody else
+	-- The hands are shrunk from the end of CoolPostDrawAppearance to the start of
+	-- PostDrawAppearance. What other addons draw in these two hooks (a coat, a watch) should find
+	-- them whole: where the hook library knows an order (ULib, Srlion's), this addon runs last in
+	-- the first hook and first in the second one. The library of the game has no order.
+	do
+		local function reload()
+			-- (as if this addon was loaded after the first of the other two)
+			hook.Remove("CoolPostDrawAppearance", "zcg_gloves")
+			hook.Remove("PostDrawAppearance", "zcg_gloves")
+			ZCGloves = nil
+			include("autorun/zcity_csgo_gloves.lua")
+			ZCG = ZCGloves
+		end
+		local RIGHT = bone("R", "Hand")
+		local seen
+		local function look(where)
+			return function(ent)
+				seen[where] = ent:GetBoneMatrix(ent:LookupBone(RIGHT)):GetScale().x
+			end
+		end
+		local function others(when)
+			hook.Add("CoolPostDrawAppearance", "other_" .. when, look(when .. ", before the wearer is drawn"))
+			hook.Add("PostDrawAppearance", "other_" .. when, look(when .. ", after it"))
+		end
+		local nina = M.newPlayer("nina", Z.MALE)
+		nina.tpik = Z.tpik
+		dress(nina)
+		nina.nw.zcg_glove = "moto_7"
+		-- what the others saw of the right hand: its size, 1 = whole
+		local function sizes()
+			seen = {}
+			frame() Z.draw(nina)
+			local out = {}
+			for _, where in ipairs({ "added first, before the wearer is drawn", "added last, before the wearer is drawn",
+				"added first, after it", "added last, after it" }) do
+				out[#out + 1] = string.format("%.2f", seen[where] or -1)
+			end
+			return table.concat(out, " ")
+		end
+		local function load(names)
+			for name, value in pairs(names) do _G[name] = value end
+			hook.Remove("CoolPostDrawAppearance", "other_added last")
+			hook.Remove("PostDrawAppearance", "other_added last")
+			reload()
+			others("added last")
+			for name in pairs(names) do _G[name] = nil end
+		end
+		local ULIB = { HOOK_MONITOR_HIGH = -2, HOOK_HIGH = -1, HOOK_NORMAL = 0, HOOK_LOW = 1, HOOK_MONITOR_LOW = 2 }
+		-- Srlion's library has the names of ULib, and tables of its own: its "post" hooks are
+		-- called with other arguments, so those must not be asked for
+		local SRLION = { PRE_HOOK = { -4 }, PRE_HOOK_RETURN = { -3 }, NORMAL_HOOK = { 0 }, POST_HOOK_RETURN = { 3 }, POST_HOOK = { 4 } }
+		for name, value in pairs(ULIB) do SRLION[name] = value end
+
+		eq(ZCG.HookOrder.draw, nil, "no order is asked for where the hook library has none")
+		eq(hook.order.CoolPostDrawAppearance.zcg_gloves, nil, "(the hooks are added the plain way)")
+		others("added first")
+
+		-- the library of the game: hooks run as they come
+		load({})
+		eq(ZCG.HookOrder.draw, nil, "no order: none asked for")
+		eq(ZCG.HookOrder.after, nil, "neither after the draw")
+		-- (after the wearer is drawn the imitation of the engine works the bones out again, so
+		-- nobody sees them shrunk there; the game may or may not)
+		eq(sizes(), "1.00 0.05 1.00 1.00", "no order: who comes after this addon in the first hook sees the hands shrunk")
+		eq(drawnHands(nina), "shrunk", "(the wearer is drawn with them shrunk)")
+		Z.keepBones = true
+		eq(sizes(), "1.00 0.05 0.05 1.00", "no order, an engine that keeps the bones: so does who comes before it in the second one")
+		Z.keepBones = nil
+
+		for _, library in ipairs({ { "ULib", ULIB }, { "Srlion's library", SRLION } }) do
+			local name = library[1]
+			load(library[2])
+			eq(hook.order.CoolPostDrawAppearance.zcg_gloves, 1, name .. ": after the others before the wearer is drawn")
+			eq(hook.order.PostDrawAppearance.zcg_gloves, -1, name .. ": and ahead of them after it")
+			eq(ZCG.HookOrder.draw, 1, name .. ": the addon knows it")
+			eq(ZCG.HookOrder.after, -1, name .. ": both ways")
+			eq(sizes(), "1.00 1.00 1.00 1.00", name .. ": everybody else finds the hands whole")
+			eq(drawnHands(nina), "shrunk", name .. ": and the wearer is still drawn with them shrunk")
+			eq(offBone(ZCG.States[nina].mdl, nina), nil, name .. ": the glove on the hands, as ever")
+			Z.keepBones = true
+			eq(sizes(), "1.00 1.00 1.00 1.00", name .. ": the same with an engine that keeps the bones after the draw")
+			eq(drawnHands(nina), "shrunk", name .. ": (shrunk for the draw)")
+			Z.keepBones = nil
+		end
+
+		-- the names are there, and a library that will not have a fourth argument
+		for _, refusal in ipairs({ false, "silent" }) do
+			M.hookOrder = refusal
+			load(ULIB)
+			M.hookOrder = nil
+			local how = refusal and "drops such a hook" or "refuses such a call"
+			check(hook.list.CoolPostDrawAppearance.zcg_gloves ~= nil and hook.list.PostDrawAppearance.zcg_gloves ~= nil,
+				"a library that " .. how .. ": the hooks are added the plain way")
+			eq(ZCG.HookOrder.draw, nil, "a library that " .. how .. ": no order")
+			eq(sizes(), "1.00 0.05 1.00 1.00", "a library that " .. how .. ": the gloves are drawn all the same")
+			eq(drawnHands(nina), "shrunk", "a library that " .. how .. ": and the hands taken away")
+		end
+
+		-- names of that kind that are no numbers are not passed on
+		load({ HOOK_HIGH = { -1 }, HOOK_LOW = "low" })
+		eq(ZCG.HookOrder.draw, nil, "an order that is no number is not asked for")
+		eq(hook.order.CoolPostDrawAppearance.zcg_gloves, nil, "(nothing is passed to the library)")
+
+		for _, when in ipairs({ "added first", "added last" }) do
+			hook.Remove("CoolPostDrawAppearance", "other_" .. when)
+			hook.Remove("PostDrawAppearance", "other_" .. when)
+		end
+		nina.nw.zcg_glove = "none"
+		load({})
+		frame() Z.draw(nina)
+		eq(drawnHands(nina), "whole", "no glove: nothing is shrunk")
 	end
 
 	eq(#M.errors, 0, "no errors at the end: " .. table.concat(M.errors, " | "))

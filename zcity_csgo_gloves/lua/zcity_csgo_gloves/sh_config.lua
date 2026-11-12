@@ -45,6 +45,14 @@ ZCGloves.Config = {
 	-- shipped with this addon.
 	HideMaterial = nil,
 
+	-- The game leaves materials whose files are missing out of Entity:GetMaterials(), and Z-City
+	-- finds the place of the jacket, the trousers, the boots and the hands by counting in that
+	-- list: one material of a player model that is not installed, and all the clothes sit on the
+	-- wrong parts. true: the list is completed from the model file, so the clothes stay where they
+	-- belong (the part whose material is missing is still purple and black). false: the list of
+	-- the game as it is.
+	CompleteMaterialList = true,
+
 	-- text of the extra entry in the "Gloves" menu of the appearance editor
 	MenuText = "CS:GO gloves...",
 	-- title of the picker window
