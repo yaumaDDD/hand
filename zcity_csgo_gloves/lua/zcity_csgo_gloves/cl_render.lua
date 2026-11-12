@@ -256,79 +256,138 @@ local function bodiesOf(ent)
 	return packed, tonumber(digits) or 0
 end
 
+-- Short sleeves by the name of a body that is worn ("sheet_tshirt_m"): the surest sign there is,
+-- it does not depend on the mesh being read. With such a body the arms are bare, nothing of
+-- them is hidden by a material.
+local SHORT = { "tshirt", "t_shirt", "t%-shirt", "shortsleeve", "short_sleeve", "sleeveless", "tanktop", "tank_top", "topless", "shirtless", "naked" }
+local function shortSleeves(ent)
+	for _, group in ipairs(ent.GetBodyGroups and ent:GetBodyGroups() or {}) do
+		local value = ent:GetBodygroup(group.id) or 0
+		local name = istable(group.submodels) and group.submodels[value]
+		if isstring(name) then
+			name = string.lower(name)
+			for _, word in ipairs(SHORT) do
+				if string.find(name, word) then return true end
+			end
+		end
+	end
+	return false
+end
+
+-- A hand under a sleeve is the hand and a short piece of the wrist. A bare arm goes on up the
+-- forearm: vertices far from the hand (further than REACH times the size of the hand) or on bones
+-- above the forearm. The number of vertices alone does not tell them apart - the fingers have
+-- many, the whole arm has few.
+local REACH, STRAY = 1.6, 0.02
+
 local function analyse(ent)
 	local model = ent:GetModel()
 	if not model then return nil end
 	model = string.lower(model)
-	local packed, digits = bodiesOf(ent)
+	local packed = bodiesOf(ent)
 	local key = model .. "#" .. packed
 	local known = handSlots[key]
 	if known then return known end
-	if not (util and util.GetModelMeshes) then return nil end
 
 	local info = ZCG.HandBones(ent)
 	local materials = ZCG.MaterialList(ent)
 	if not info or not materials or #materials == 0 then return nil end -- (asked again at the next draw)
-	local onHand = {}
-	for _, tree in ipairs(info.trees) do
-		for _, bone in ipairs(tree) do onHand[bone] = true end
-	end
 
-	known = { slots = false, names = {}, shared = {}, shares = {} }
+	known = { slots = false, names = {}, shared = {}, shares = {}, short = shortSleeves(ent), read = false }
 	handSlots[key] = known
+	if not (util and util.GetModelMeshes) then return known end
 
-	-- (The mesh is read for the bodies that are worn and for nothing else: every piece of clothing
-	-- with sleeves is treated alike, whatever the other bodies of the model look like.)
-	local asked, least, seen = {}, {}, {}
-	for _, mask in ipairs({ packed }) do
-		if not asked[mask] then
-			asked[mask] = true
-			local ok, meshes = pcall(util.GetModelMeshes, model, 0, mask)
-			if ok and istable(meshes) then
-				local total, hand = {}, {}
-				for _, mesh in ipairs(meshes) do
-					local name = isstring(mesh.material) and string.lower((string.gsub(mesh.material, "\\", "/"))) or nil
-					local vertices = mesh.verticies or mesh.vertices or mesh.triangles
-					if name and istable(vertices) then
-						local all, count = 0, 0
-						for _, vertex in ipairs(vertices) do
-							all = all + 1
-							local weight = 0
-							for _, w in ipairs(vertex.weights or {}) do
-								if onHand[w.bone] then weight = weight + (w.weight or 0) end
-							end
-							if weight >= HAND_WEIGHT then count = count + 1 end
-						end
-						total[name], hand[name] = (total[name] or 0) + all, (hand[name] or 0) + count
-					end
-				end
-				for name, all in pairs(total) do
-					if all > 0 then
-						local share = hand[name] / all
-						if not least[name] or share < least[name] then least[name] = share end
-						if mask == packed then seen[name] = true end
-					end
-				end
+	local side, near = {}, {}
+	for index, tree in ipairs(info.trees) do
+		for _, bone in ipairs(tree) do side[bone] = index end
+		local forearm = ent:GetBoneParent(tree[1])
+		if forearm and forearm >= 0 then
+			near[forearm] = true
+			for bone = forearm + 1, (ent:GetBoneCount() or 0) - 1 do
+				if ent:GetBoneParent(bone) == forearm then near[bone] = true end
 			end
 		end
 	end
 
+	local ok, meshes = pcall(util.GetModelMeshes, model, 0, packed)
+	if not ok or not istable(meshes) then return known end
+
+	-- first the hands themselves: where each is and how large
+	local sums, per = {}, {}
+	for _, mesh in ipairs(meshes) do
+		local name = isstring(mesh.material) and string.lower((string.gsub(mesh.material, "\\", "/"))) or nil
+		local vertices = mesh.verticies or mesh.vertices or mesh.triangles
+		if name and istable(vertices) then
+			local data = per[name] or { all = 0, hand = 0, other = 0, list = {} }
+			per[name] = data
+			for _, vertex in ipairs(vertices) do
+				local hand, arm, which, best = 0, 0, nil, 0
+				for _, w in ipairs(vertex.weights or {}) do
+					local weight = w.weight or 0
+					if side[w.bone] then
+						hand = hand + weight
+						if weight > best then which, best = side[w.bone], weight end
+					elseif near[w.bone] then
+						arm = arm + weight
+					end
+				end
+				data.all = data.all + 1
+				local onHand = hand >= HAND_WEIGHT
+				if onHand then
+					data.hand = data.hand + 1
+					if vertex.pos and which then
+						local sum = sums[which] or { pos = Vector(0, 0, 0), n = 0, list = {} }
+						sums[which] = sum
+						sum.pos = sum.pos + vertex.pos
+						sum.n = sum.n + 1
+						sum.list[#sum.list + 1] = vertex.pos
+					end
+				else
+					if hand + arm < HAND_WEIGHT then data.other = data.other + 1 end
+					data.list[#data.list + 1] = vertex
+				end
+			end
+		end
+	end
+	local hands = {}
+	for _, sum in pairs(sums) do
+		local centre, radius = sum.pos * (1 / sum.n), 0
+		for _, pos in ipairs(sum.list) do radius = math.max(radius, centre:Distance(pos)) end
+		hands[#hands + 1] = { centre = centre, reach = radius * REACH }
+	end
+
 	local slots = {}
 	for i = 1, math.min(#materials, 32) do
-		local name = string.lower(materials[i])
-		local share = least[name]
-		if share then
-			known.shares[#known.shares + 1] = materials[i] .. " " .. math.floor(share * 100 + 0.5) .. "%"
-			if share >= HAND_SHARE and seen[name] then
+		local data = per[string.lower(materials[i])]
+		if data and data.all > 0 then
+			local far, wrist = 0, 0
+			for _, vertex in ipairs(data.list) do
+				if vertex.pos and #hands > 0 then
+					local away = true
+					for _, hand in ipairs(hands) do
+						if hand.centre:Distance(vertex.pos) <= hand.reach then away = false break end
+					end
+					if away then far = far + 1 else wrist = wrist + 1 end
+				end
+			end
+			local share = data.hand / data.all
+			local text = materials[i] .. " " .. math.floor(share * 100 + 0.5) .. "%"
+			if far > 0 or data.other > 0 then
+				text = text .. " (far from the hand " .. far .. ", on other bones " .. data.other .. " of " .. data.all .. ")"
+			end
+			known.shares[#known.shares + 1] = text
+			known.read = true
+			local alone = (data.hand + wrist) / data.all >= HAND_SHARE and share >= 0.5
+				and far <= data.all * STRAY and data.other <= data.all * STRAY
+			if alone and not known.short then
 				slots[#slots + 1] = i - 1
 				known.names[#known.names + 1] = materials[i]
-			elseif share > 0 then
+			elseif data.hand > 0 then
 				known.shared[i - 1] = true -- on the hands and on something else
 			end
 		end
 	end
 	if #slots > 0 then known.slots = slots end
-	known.read = #known.shares > 0
 	return known
 end
 
@@ -347,7 +406,13 @@ end
 -- Hiding it would take the arm away. false when it does not, or when the mesh cannot be read.
 function ZCG.SlotShared(ent, slot)
 	local known = analyse(ent)
-	return known ~= nil and known.shared[slot] == true
+	return known ~= nil and (known.short or known.shared[slot] == true)
+end
+
+-- are the arms bare with the bodies that are worn (by the name of a body)?
+function ZCG.ShortSleeves(ent)
+	local known = analyse(ent)
+	return known ~= nil and known.short == true
 end
 
 function ZCG.HandBones(ent)
@@ -1233,6 +1298,9 @@ concommand.Add("zcg_debug", function()
 			.. " -> slots " .. table.concat(found, ", ")) or "none found") .. "; hidden under a glove with zcg_whole_hands 1")
 		print("  share of each material that lies on the hand bones: " .. (known and #known.shares > 0 and table.concat(known.shares, ", ")
 			or "the mesh could not be read") .. " (bodies " .. table.concat({ bodiesOf(ent) }, " / ") .. ")")
+		if ZCG.ShortSleeves(ent) then
+			print("  short sleeves (by the name of a body that is worn): the arms are bare, no material of them is hidden")
+		end
 		if slot and ZCG.SlotShared(ent, slot) then
 			print("  the hands material also lies on the arm with these bodies: it is NOT hidden, the hand goes by its bones")
 		end

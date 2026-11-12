@@ -562,6 +562,58 @@ return function(testdir, luaroot)
 		check(#masks == 2 and masks[1] == 1 and masks[2] == 0, "the mesh is read for the bodies that are worn, once each: " .. table.concat(masks, " "))
 		util.GetModelMeshes = nil
 	end
+	do
+		-- The body is called a T-shirt: the arms stay whatever the mesh says, and without a mesh.
+		local NAMED = "models/pack/named.mdl"
+		M.models[NAMED] = { materials = M.models[Z.MALE].materials, bones = M.models[Z.MALE].bones,
+			bodygroups = { { "sheet", { "sheet_m", "sheet_tshirt_m" } } } }
+		local hal = M.newPlayer("hal", NAMED)
+		hal.tpik = Z.tpik
+		dress(hal)
+		local dressed = hal:GetSubMaterial(HANDS_SLOT)
+		hal.nw.zcg_glove = "moto_1"
+		M.setConVar("zcg_whole_hands", 1)
+		hal:SetBodygroup(0, 1)
+		frame() Z.draw(hal)
+		eq(hal:GetSubMaterial(HANDS_SLOT), dressed, "a body named a T-shirt, no mesh to read: the hands material is not hidden")
+		eq(drawnHands(hal), "shrunk", "... the hand goes by its bones")
+		hal:SetBodygroup(0, 0)
+		frame() Z.draw(hal)
+		eq(hal:GetSubMaterial(HANDS_SLOT), "null", "the usual body of the same model: hidden")
+
+		-- An arm has few vertices and the fingers many: nearly all of the material is on the hand
+		-- bones, and still it is an arm - some of it lies far from the hand.
+		local LONG = "models/pack/long.mdl"
+		M.models[LONG] = { materials = M.models[Z.MALE].materials, bones = M.models[Z.MALE].bones }
+		local ian = M.newPlayer("ian", LONG)
+		ian.tpik = Z.tpik
+		dress(ian)
+		local before = ian:GetSubMaterial(HANDS_SLOT)
+		ian.nw.zcg_glove = "moto_1"
+		local hand, forearm = ian:LookupBone(bone("R", "Hand")), ian:LookupBone(bone("R", "Forearm"))
+		local farAway = 20
+		util.GetModelMeshes = function()
+			local out = {}
+			for i = 1, 95 do out[i] = { pos = Vector(i % 5, 0, 0), weights = { { bone = hand, weight = 1 } } } end
+			for i = 1, 5 do out[#out + 1] = { pos = Vector(farAway + i * 0.2, 0, 0), weights = { { bone = forearm, weight = 1 } } } end
+			return { { material = M.models[Z.MALE].materials[HANDS_SLOT + 1], verticies = out } }
+		end
+		frame() Z.draw(ian)
+		eq(ian:GetSubMaterial(HANDS_SLOT), before, "95% of the vertices on the hand, the rest far up the arm: it is an arm, not hidden")
+		eq(drawnHands(ian), "shrunk", "... the hand goes by its bones")
+		-- the same with the rest right at the wrist: a hand under a sleeve
+		local LONG2 = "models/pack/long2.mdl"
+		M.models[LONG2] = M.models[LONG]
+		local jon = M.newPlayer("jon", LONG2)
+		jon.tpik = Z.tpik
+		dress(jon)
+		jon.nw.zcg_glove = "moto_1"
+		farAway = 2
+		frame() Z.draw(jon)
+		eq(jon:GetSubMaterial(HANDS_SLOT), "null", "the rest at the wrist: a hand under a sleeve, hidden")
+		eq(drawnHands(jon), "whole", "... and no bone is touched")
+		util.GetModelMeshes = nil
+	end
 	M.setConVar("zcg_whole_hands", 0)
 
 	-- zcg_hide_bones 2 (what version 2.2 called "on every model"): the same as 1
