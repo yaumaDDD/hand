@@ -4152,6 +4152,9 @@ def test_every_folder(tmp):
           u'    есть в самой игре — 4: в архивах самой игры — 2, в аддонах из папки addons — 1, в аддонах мастерской — 1\n'
           u'    нет ни в аддоне, ни в игре — 1: из Lua — 1, материалов моделей — 0, текстур — 0\n' in text,
           'and the bottom line: what the clothes of the addon lack for real: %r' % text[-2500:])
+    check(u'    нет ни в аддоне, ни в игре — 1: из Lua — 1, материалов моделей — 0, текстур — 0\n'
+          u'    (но не прочитано архивов игры: 3 — часть этих файлов может лежать в них)\n' in text,
+          '... with a word that "nowhere" is not sure when archives of the game could not be read: %r' % text[-2500:])
     report = io.open(os.path.join(root, sort_content.REPORT), encoding='utf-8-sig').read().replace(u'\r\n', u'\n')
     check(u'    materials/models/eli/eli_tex4z.vmt    — в аддоне нет; В ИГРЕ ЕСТЬ: архив игры sourceengine/hl2_textures_dir.vpk\n' in report
           and u'      hands.vmt — моделей: 1 — В ИГРЕ ЕСТЬ: папка addons/zcity_content игры\n' in report
@@ -4187,6 +4190,17 @@ def test_every_folder(tmp):
           and u'        из них: нет ни в одной папке — 2\n' in text
           and u'  Этих файлов нет ни в одной папке аддона.' in text and u'ИТОГ' not in text,
           'told to leave the game alone, it does, and says what it knows: %r' % text[-1800:])
+    # a game that takes too long to look through: the search stops, and nothing is called sure
+    os.environ['ZCG_GAME_SECONDS'] = '-1'
+    try:
+        code, text = sort('--addon', root, '--game', game)
+    finally:
+        del os.environ['ZCG_GAME_SECONDS']
+    check(code == 0 and u'  поиск в игре остановлен: слишком долго — просмотрено не всё. Запустите ещё раз: второй раз диск отвечает быстрее.\n' in text
+          and u'    есть в самой игре — 0\n    нет ни в аддоне, ни в игре — 5: из Lua — 2, материалов моделей — 3, текстур — 0\n'
+              u'    (но игра просмотрена не вся — поиск остановлен, см. выше: часть этих файлов может лежать там, куда он не дошёл)\n' in text,
+          'a search that was given up is told as one, at the game and at the bottom line: %r' % text[-2500:])
+    check(sort_content.game_seconds() == sort_content.GAME_SECONDS == 120, 'left alone, the game is given two minutes')
     check(u'    models/zcity/m/    — лежит на своём месте    файлов: 3\n        male_10.dx90.vtx, male_10.mdl, male_10.vvd\n' in report,
           'a file that lies right is listed as that')
 

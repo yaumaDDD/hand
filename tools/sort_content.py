@@ -755,7 +755,7 @@ def game_lines(game, found, asked):
         out.append(u'  не прочитано архивов: %d (%s%s) — что в них, не известно'
                    % (len(found.unread), os.path.basename(found.unread[0][0]), u' …' if len(found.unread) > 1 else u''))
     if found.cut:
-        out.append(u'  поиск в игре остановлен: слишком долго — просмотрено не всё')
+        out.append(u'  поиск в игре остановлен: слишком долго — просмотрено не всё. Запустите ещё раз: второй раз диск отвечает быстрее.')
     return out
 
 
@@ -925,6 +925,11 @@ def summary(addon, names, brought, report, job, dry, problems, seen=None, check=
                            % (len(left), sum(1 for row in check.named if not row.game),
                               sum(1 for row in check.materials if row.who != content_report.OTHERS and not row.game),
                               sum(1 for row in check.textures if row.who != content_report.OTHERS and not row.game)))
+                # (a game that was not looked through to the end: "nowhere" is not sure then)
+                if found.cut:
+                    out.append(u'    (но игра просмотрена не вся — поиск остановлен, см. выше: часть этих файлов может лежать там, куда он не дошёл)')
+                elif found.unread:
+                    out.append(u'    (но не прочитано архивов игры: %d — часть этих файлов может лежать в них)' % len(found.unread))
             else:
                 out.append(u'    нет ни в аддоне, ни в игре — 0: всё, чего нет в аддоне, есть в самой игре')
             out.append(u'  То, что есть в самой игре, в аддон класть не нужно. (Если это аддон мастерской, он должен быть')
@@ -1051,6 +1056,15 @@ def numbered_list(job):
 
 
 NO_GAME = ('-', 'no', 'none', 'off', '0')
+GAME_SECONDS = 120      # how long the game is looked through before the search is given up
+
+
+def game_seconds():
+    """... or as long as the variable ZCG_GAME_SECONDS says (a slow disk with a thousand addons)"""
+    try:
+        return float(os.environ.get('ZCG_GAME_SECONDS') or GAME_SECONDS)
+    except ValueError:
+        return GAME_SECONDS
 
 
 def game_choice(given, off, addon):
@@ -1138,7 +1152,8 @@ def main(argv=None):
         found = None
         if game is not None and wanted:
             say(u'Ищу недостающие файлы в самой игре (%s) ...' % game.root)
-            found = game_files.look(game, wanted, skip=[addon], own_marker='lua/autorun/%s.lua' % L.ADDON_DIRNAME)
+            found = game_files.look(game, wanted, skip=[addon], own_marker='lua/autorun/%s.lua' % L.ADDON_DIRNAME,
+                                    seconds=game_seconds())
         check = content_report.Check(report, named, stock, found,
                                      lambda item: (ASIDE + '/' + item.inner) if getattr(item, 'in_addon', False)
                                      else u'%s' % (item,))

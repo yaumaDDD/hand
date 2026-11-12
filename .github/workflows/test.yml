@@ -74,6 +74,14 @@ jobs:
             !/sport*.zip
             !/hands*.zip
 
+      # (Windows as it is installed opens no path of 260 characters and more; this computer is set
+      # up to. Turned off - a program reads the setting when it starts - so that the tools have to
+      # get to such a path themselves, as on the computer of the addon's owner: test_content.py
+      # says in one line whether the computer opens such a path as it is written.)
+      - name: Long paths as Windows has them at home
+        shell: cmd
+        run: reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 0 /f
+
       - name: Test the placing of drop-in content
         shell: cmd
         run: |
