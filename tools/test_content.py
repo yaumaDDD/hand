@@ -1125,11 +1125,13 @@ def tree(folder):
     return found
 
 
-def sort(*args):
-    """runs sort_content.py; returns (exit code, what it printed)"""
+def sort(*args, **kw):
+    """runs sort_content.py; returns (exit code, what it printed)
+    fill=True: with the names that stay without a file filled by files under other names
+    (fill_content.py, test_filling) - the other tests are about where sorting itself puts a file"""
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
-        code = sort_content.main(list(args))
+        code = sort_content.main(list(args) + ([] if kw.get('fill') else ['--no-fill']))
     return code, out.getvalue()
 
 
@@ -2670,6 +2672,116 @@ def test_switching_versions(tmp):
     shutil.rmtree(os.path.join(root, 'sort_content', sort_content.VERSIONS))
     code, text = sort('--addon', root, '--no-game', '--names-list', os.path.join(root, 'sort_content', list_content.RUN_LIST))
     check(code == 0 and u'возьмите' in text and u'переключён' not in text, 'an addon that does not carry the other version says where to get it')
+
+
+def test_filling(tmp):
+    """Names that still have no file are filled with what lies in the addon under another name:
+    copies, never moves (fill_content.py)."""
+    import fill_content as F
+    check(F.plain_stem(u'face (1)') == 'face' and F.plain_stem(u'Face - Copy (2)') == 'face' and F.plain_stem(u'face — копия') == 'face'
+          and F.plain_stem(u'Копия face') == 'face' and F.plain_stem('face_2') == 'face_2' and F.plain_stem('(1)') == '(1)',
+          'what a copy gets added to its name is taken off; a name that is a number of its own stays')
+    check(F.split('Male_10.DX90.vtx') == ('male_10', '.dx90.vtx') and F.split('a.b.vmt') == ('a.b', '.vmt'), 'names are split at their kind')
+    check(F.model_name(model([], [], 'slav\\m\\Male_10.mdl')) == 'models/slav/m/male_10.mdl' and F.model_name(b'junk') is None,
+          'a model says the path it was compiled for')
+    check(F.base_texture(material('Models\\X\\Face.vtf').encode()) == 'models/x/face' and F.base_texture(b'{{{') is None,
+          'a material says its texture')
+
+    def addon(label, files):
+        root = os.path.join(tmp, 'filling ' + label)
+        for rel, data in files.items():
+            write(os.path.join(root, rel), data)
+        return root, [(rel, os.path.join(root, rel)) for rel in sorted(files)]
+
+    a_model = model(['models/x/'], ['a'], 'pack/m/joe.mdl')
+    files = {
+        'materials/5/face (1).vmt': material('models/p/face'),
+        'materials/5/hat - копия.vtf': texture('hat'),
+        'models/6/whatever.mdl': a_model, 'models/6/whatever.vvd': b'vvd', 'models/6/whatever.dx90.vtx': b'vtx', 'models/6/other.vvd': b'no',
+        'materials/8/renamed.vmt': material('models/p/vance'),
+        'materials/7/skin.vtf': texture('skin'),
+        'materials/a/twin.vmt': material('one'), 'materials/b/twin.vmt': material('two'),
+        'materials/a/same.vmt': material('same'), 'materials/b/same.vmt': material('same'),
+        'materials/a/lone.vtf': texture('lone'),
+        'materials/models/p/there.vmt': material('there'),
+        '_not_used/materials/z/aside (2).vmt': material('aside'),
+    }
+    wanted = ['materials/models/p/face.vmt', 'models/pack/m/joe.mdl', 'materials/models/p/vance.vmt', 'materials/models/p/skin.vmt',
+              'materials/models/p/twin.vmt', 'materials/models/p/same.vmt', 'materials/models/p/lone.vtf', 'materials/models/p/there.vmt',
+              'materials/models/p/nothing.vmt', 'materials/models/p/aside.vmt']
+    asked = [['materials/models/q/hat.vtf'], ['materials/models/q/same.vmt', 'materials/models/r/same.vmt'], ['materials/models/q/lone.vtf'],
+             ['materials/models/q/twin.vmt']]
+    root, at_hand = addon('one', files)
+    before = tree(root)
+    got = F.fill(root, at_hand, wanted, asked, dry=True)
+    check(tree(root) == before and len(got.done) == 8, 'a dry run writes nothing and tells the same: %d' % len(got.done))
+    got = F.fill(root, at_hand, wanted, asked)
+    after = tree(root)
+    done = dict((one.dest, (one.how, one.source)) for one in got.done)
+    check(all(after.get(rel) == data for rel, data in before.items()), 'filling moves and changes nothing: every file is where it was')
+    check(done.get('materials/models/p/face.vmt') == (F.RENAMED, 'materials/5/face (1).vmt')
+          and after['materials/models/p/face.vmt'] == before['materials/5/face (1).vmt']
+          and done.get('materials/models/p/aside.vmt') == (F.RENAMED, '_not_used/materials/z/aside (2).vmt'),
+          'a copy called "face (1)" fills the name face - from _not_used too')
+    check(done.get('models/pack/m/joe.mdl') == (F.MODEL, 'models/6/whatever.mdl') and after.get('models/pack/m/joe.vvd') == b'vvd'
+          and after.get('models/pack/m/joe.dx90.vtx') == b'vtx' and after['models/pack/m/joe.mdl'] == a_model
+          and sorted(name for name in after if name.startswith('models/pack/')) == ['models/pack/m/joe.dx90.vtx', 'models/pack/m/joe.mdl', 'models/pack/m/joe.vvd'],
+          'a model that says it was compiled for the missing path fills it under any name, its files renamed with it')
+    check(done.get('materials/models/p/vance.vmt') == (F.MATERIAL, 'materials/8/renamed.vmt'),
+          'a material made of a texture called as the missing material fills it')
+    check(done.get('materials/models/p/skin.vmt') == (F.MADE, 'materials/7/skin.vtf')
+          and after.get('materials/models/p/skin.vtf') == texture('skin')
+          and F.base_texture(after['materials/models/p/skin.vmt']) == 'models/p/skin',
+          'a texture without a material gets one written, and lies beside it')
+    check('materials/models/p/twin.vmt' not in after and 'materials/models/p/same.vmt' not in after and 'materials/models/p/lone.vtf' not in after,
+          'a name the Lua gives is not filled with a namesake from another folder')
+    check(done.get('materials/models/q/hat.vtf') == (F.RENAMED, 'materials/5/hat - копия.vtf')
+          and done.get('materials/models/q/same.vmt', ('',))[0] == F.NAMESAKE and 'materials/models/r/same.vmt' not in after
+          and done.get('materials/models/q/lone.vtf') == (F.NAMESAKE, 'materials/a/lone.vtf'),
+          'a file another file asks for is: by the only file of that name, at the first of the places it is looked for')
+    check('materials/models/q/twin.vmt' not in after and ('materials/models/q/twin.vmt', ['materials/a/twin.vmt', 'materials/b/twin.vmt']) in got.unsure,
+          'two different files of one name fill nothing and are listed: %s' % got.unsure)
+    check(after['materials/models/p/there.vmt'] == before['materials/models/p/there.vmt'] and 'materials/models/p/nothing.vmt' not in after,
+          'a file that is there is never written over; a name nothing fits stays empty')
+    text = u'\n'.join(F.lines(got))
+    check(all(one.dest in text and one.source in text for one in got.done) and 'materials/a/twin.vmt' in text and len(F.short(got)) >= 2,
+          'every copy is in the report, with the file it was copied from')
+    root, at_hand = addon('namesakes', files)
+    got = F.fill(root, at_hand, wanted, asked, namesakes=True)
+    check('materials/models/p/same.vmt' in tree(root) and 'materials/models/p/lone.vtf' in tree(root) and 'materials/models/p/twin.vmt' not in tree(root),
+          'asked to, names of the Lua are filled with namesakes as well - still not with one of two different files')
+
+    # the whole tool: sorted, filled, gone through again; a second run changes nothing
+    models = ['models/pack/m/joe.mdl']
+    faces = ['materials/models/p/face.vmt', 'materials/models/p/skin.vmt']
+    root = os.path.join(tmp, 'filling sorted', 'zcity_csgo_gloves')
+    text = '\n'.join(['hg.Appearance.PlayerModels[1]["joe"] = { mdl = "%s" }' % models[0]]
+                     + ['hg.Appearance.FacemapsSlots["a"]["%d"] = "%s"' % (i, name[len('materials/'):-4]) for i, name in enumerate(faces)])
+    write(os.path.join(root, 'lua', TABLE_LUA), text)
+    path = os.path.join(tmp, 'filling sorted', 'names.txt')
+    list_content.write_run_list(path, models + faces, {TABLE_LUA: text}, titles={TABLE_LUA: 'Mod'})
+    for rel, data in {'materials/3/face (1).vmt': material('models/p/face'), 'materials/3/face (1).vtf': texture('face'),
+                      'materials/4/skin.vtf': texture('skin'),
+                      'materials/6/whatever.mdl': model([], [], 'pack/m/joe.mdl'), 'materials/6/whatever.vvd': b'vvd'}.items():
+        write(os.path.join(root, rel), data)
+    code, said = sort('--addon', root, '--names-list', path, '--no-game', fill=True)
+    got = tree(root)
+    report = got.pop(sort_content.REPORT, b'').decode('utf-8-sig')
+    check(code == 0 and all(name in got for name in models + faces) and 'models/pack/m/joe.vvd' in got
+          and 'materials/models/p/face.vtf' in got and 'materials/models/p/skin.vtf' in got,
+          'sort_content.py fills what sorting left without a file, and what the copies ask for in the next round: %s' % sorted(got))
+    check(u'Подставлено под недостающие имена' in said and u'Подставлено под недостающие имена' in report
+          and 'materials/models/p/face.vmt' in report and said.rstrip().splitlines()[-1].startswith(u'Готово'),
+          'and says so, on the screen and in the report')
+    code, said = sort('--addon', root, '--names-list', path, '--no-game', fill=True)
+    again = tree(root)
+    again.pop(sort_content.REPORT, None)
+    check(code == 0 and again == got and u'Подставлено' not in said, 'a second run changes nothing')
+    root2 = os.path.join(tmp, 'filling off', 'zcity_csgo_gloves')
+    write(os.path.join(root2, 'lua', TABLE_LUA), text)
+    write(os.path.join(root2, 'materials/3/face (1).vmt'), material('models/p/face'))
+    code, said = sort('--addon', root2, '--names-list', path, '--no-game')
+    check(code == 0 and 'materials/models/p/face.vmt' not in tree(root2), '--no-fill leaves the names empty')
 
 
 def test_missing_by_pack(tmp):
@@ -4465,6 +4577,7 @@ def main():
         test_the_build_takes_lua(tmp)
         test_versions_of_a_pack(tmp)
         test_switching_versions(tmp)
+        test_filling(tmp)
         test_numbered_folders_of_the_owner(tmp)
         test_thrown_in_folders(tmp)
         test_game_files(tmp)

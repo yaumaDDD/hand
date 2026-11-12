@@ -53,6 +53,7 @@ import list_content  # noqa: E402
 import place_content as P  # noqa: E402
 import content_report  # noqa: E402
 import game_files  # noqa: E402
+import fill_content  # noqa: E402
 
 STAGE = '_sorting'        # files on their way (with a journal, so that a run that was cut off is finished)
 ASIDE = '_not_used'       # files of the addon that have no place in it
@@ -1180,6 +1181,11 @@ def main(argv=None):
                                        'the addon does not have are looked for in it. Default: the game the addon '
                                        'lies in, else the one Steam has; "-" to leave the game alone')
     parser.add_argument('--no-game', action='store_true', help='do not look into the game')
+    parser.add_argument('--no-fill', action='store_true',
+                        help='do not fill the names that have no file with files that lie under another name '
+                             '(copies of renamed files, see fill_content.py)')
+    parser.add_argument('--fill-namesakes', action='store_true',
+                        help='also fill a name the Lua gives with the only file of that name from ANOTHER folder')
     parser.add_argument('--no-switch', action='store_true',
                         help='keep the version of Appearance Mod the addon has, whatever the content turns out to be '
                              '(by default the Lua of the version the content belongs to is put in place)')
@@ -1190,7 +1196,12 @@ def main(argv=None):
     return run(args)
 
 
-def run(args, switched=None):
+# how many times in a row the names without a file are filled: a material that was copied asks
+# for its texture only in the next round
+FILL_ROUNDS = 3
+
+
+def run(args, switched=None, filled=None):
     """switched: the title of the version this very run has put in place before it started over"""
     temp = tempfile.mkdtemp(prefix='zcg_sort_')
     try:
@@ -1280,6 +1291,8 @@ def run(args, switched=None):
         if found is not None and found.unread:
             tail += [u'', u'Архивы игры, которые не удалось прочитать — %d' % len(found.unread)]
             tail += [u'    %s: %s' % pair for pair in found.unread[:200]]
+        if filled:
+            tail += [u''] + filled[1]
         tail += [u''] + fate_lines(job, args.dry_run)
         listing = os.path.join(addon, REPORT)
         content_report.write(listing, brought, report, named, 'sort_content.py', more, names.who if names.by else None,
@@ -1306,6 +1319,45 @@ def run(args, switched=None):
                 args.sources = []       # (they are in the addon by now)
                 shutil.rmtree(temp, ignore_errors=True)
                 return run(args, switched=title)
+            if (filled[2] if filled else 0) < FILL_ROUNDS and not args.no_fill:
+                # What still has no file is filled with what lies in the addon under another name
+                # (copies; fill_content.py) - and everything is gone through again with them.
+                at_hand = []
+                for top in ROOTS + (ASIDE,):
+                    for rel, full in walk_files(os.path.join(addon, top)):
+                        rel = top + '/' + rel
+                        inner = rel[len(ASIDE) + 1:] if top == ASIDE else rel
+                        if not L.is_own_content(inner):
+                            at_hand.append((rel, full))
+                in_game = found.where if found is not None else ()
+                # (files that other files ask for: only for what is used - a model the Lua or Z-City
+                # names, a material that is named or worn by such a model. A pack brings hundreds
+                # of models nothing uses, and their materials are not worth guessing.)
+                used = (content_report.OURS, content_report.ZCITY)
+                asked_for = [list(row.paths) for row in check.materials + check.textures
+                             if row.who in used and not row.game and not any(path in in_game for path in row.paths)]
+                got = fill_content.fill(addon, at_hand, [path for path in report.missing_named if path not in in_game],
+                                        asked_for, namesakes=args.fill_namesakes)
+                before = filled or ([], [], 0)
+                now = fill_content.lines(got)
+                if got.done:
+                    filled = (before[0] + fill_content.short(got), before[1] + ([u''] if before[1] else []) + now, before[2] + 1)
+                    say()
+                    say(u'=' * 78)
+                    for line in fill_content.short(got):
+                        say(line)
+                    say(u'Теперь всё проверяется заново — уже с этими файлами. Итог — тот, что ниже.')
+                    say(u'=' * 78)
+                    say()
+                    args.sources = []
+                    shutil.rmtree(temp, ignore_errors=True)
+                    return run(args, switched=switched, filled=filled)
+                if now:
+                    # (nothing was copied, but there is something to tell: it goes into the report as well)
+                    with io.open(long_path(listing), 'a', encoding='utf-8') as f:
+                        f.write(u'\r\n' + u'\r\n'.join(now) + u'\r\n')
+                    for line in fill_content.short(got):
+                        say(line)
             if other and other[0]['title'] in names.held:
                 say(u'Файлы разложены. Но контент — от «%s», а в аддоне стоит Lua «%s» (см. «ВНИМАНИЕ» выше) — так вы просили.'
                     % (other[0]['title'], other[0]['instead']))
@@ -1318,6 +1370,9 @@ def run(args, switched=None):
                 say(u'возьмите %s, скопируйте его папку поверх этой и запустите sort_content.bat ещё раз.'
                     % (u'архив %s' % archive if archive else u'сборку с «%s»' % other[0]['title']))
             else:
+                if filled:
+                    for line in filled[0]:
+                        say(line)
                 if switched and not args.use_version:
                     say(u'Аддон переключён на «%s» — по контенту (см. выше).' % switched)
                 say(u'Готово. Запустите игру и наберите в консоли zcg_content — он покажет, чего ещё не хватает.')
