@@ -49,6 +49,27 @@ return function(realm)
 	function ErrorNoHalt(text) M.errors[#M.errors + 1] = text end
 
 	function string.Trim(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
+	-- as in the game: "_" becomes a space and words are split before a capital letter
+	-- (digits and punctuation count as capitals; a run of them stays together)
+	function string.NiceName(name)
+		name = name:gsub("_", " ")
+		local parts = {}
+		for str in (name .. " "):gmatch("(.-) ") do
+			local wordStart = 1
+			for i = 2, #str do
+				local c = str:sub(i, i)
+				if c:upper() == c then
+					local toAdd = str:sub(wordStart, i - 1)
+					if toAdd:upper() ~= toAdd then
+						parts[#parts + 1] = toAdd
+						wordStart = i
+					end
+				end
+			end
+			parts[#parts + 1] = str:sub(wordStart)
+		end
+		return table.concat(parts, " ")
+	end
 	function math.Clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 	function table.Count(t) local n = 0 for _ in pairs(t) do n = n + 1 end return n end
 
@@ -609,6 +630,8 @@ return function(realm)
 	function PANEL:SetTextColor(c) self.textColor = c end
 	function PANEL:SetTooltip(text) self.tooltip = text end
 	function PANEL:IsHovered() return M.hovered == self end
+	function PANEL:SetVisible(visible) self.hidden = not visible end
+	function PANEL:IsVisible() return not self.hidden end
 	function PANEL:Dock() end
 	function PANEL:Remove()
 		-- like the game: invalid at once, OnRemove a frame later (M.flushPanels)
@@ -687,6 +710,15 @@ return function(realm)
 		return panel
 	end
 	function vgui.GetHoveredPanel() return M.hovered end
+	-- the root of everything: panels created without a parent are its children
+	local world = { GetChildren = function()
+		local out = {}
+		for _, panel in ipairs(M.panels) do
+			if not panel.removed and panel.parent == nil then out[#out + 1] = panel end
+		end
+		return out
+	end }
+	function vgui.GetWorldPanel() return world end
 
 	input = {}
 	function input.IsMouseDown(code) return M.mouse[code] == true end
@@ -721,6 +753,7 @@ return function(realm)
 		if panel.removed then return end
 		if panel.Think then panel:Think() end
 		if panel.removed then return end
+		if panel.hidden then return end -- an invisible panel is not painted, nor are its children
 		if panel.Paint then panel:Paint(panel:GetWide(), panel:GetTall()) end
 		for _, child in ipairs(panel:GetChildren()) do M.paint(child) end
 	end

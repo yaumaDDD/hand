@@ -1162,6 +1162,173 @@ return function(testdir, luaroot)
 		M.errors = {}
 	end
 
+	-- ---------------------------------------------------------------- Z-City Appearance Mod
+	-- That addon takes the buttons of the stock editor over a moment after the window is built:
+	-- "Gloves" then opens a window of its own with a tile (button + model panel + label) per
+	-- entry of the HANDS list, and "BODYGROUPS" opens a window with a slider per body group.
+	do
+		eq(string.NiceName("CS:GO Moto 05"), "CS:GO Moto 05", "(mock) NiceName keeps the glove names")
+		eq(string.NiceName("Gloves fingerless"), "Gloves fingerless", "(mock) NiceName")
+
+		Z.registerEditor()
+		M.advance(1)
+		local win = Z.openEditor(1920, 1080)
+		M.advance(0.05)
+		local btn
+		for _, child in ipairs(win.viewer:GetChildren()) do
+			if child:GetText() == "Gloves" then btn = child end
+		end
+		local ours = btn.DoClick
+
+		-- what the mod does to the button (ModifyAppearanceMenu / CreateGlovesIconMenu)
+		local modWindow, modTiles, modFails
+		local layouts = 0
+		local old = btn.DoClick
+		btn.DoClick = function(self)
+			if modFails then return old(self) end
+			win.modelPosID = "Hands"
+			local frame = vgui.Create("DFrame")
+			local scroll = vgui.Create("DScrollPanel", frame)
+			local grid = vgui.Create("Panel", scroll)
+			modTiles = {}
+			for name in SortedPairs(hg.Appearance.Bodygroups.HANDS[1]) do
+				local icon = vgui.Create("DButton", grid)
+				icon:SetSize(198, 186)
+				local mdl = vgui.Create("DModelPanel", icon)
+				mdl:SetModel(Z.MALE)
+				function mdl:LayoutEntity() layouts = layouts + 1 end
+				function mdl:Paint() self:LayoutEntity(self.Entity) end
+				local lbl = vgui.Create("DLabel", icon)
+				lbl:SetPos(0, 150)
+				lbl:SetText(string.NiceName(name))
+				function icon:DoClick()
+					win.AppearanceTable.ABodygroups.HANDS = name
+					frame:Remove()
+				end
+				function icon:Think() self.bIsHovered = vgui.GetHoveredPanel() == self or vgui.GetHoveredPanel() == mdl end
+				function icon:Paint() self.painted = (self.painted or 0) + 1 end
+				icon.mdl, icon.lbl = mdl, lbl
+				modTiles[name] = icon
+			end
+			modWindow = frame
+			return frame
+		end
+		local mods = btn.DoClick
+
+		hook.Run("HG_AppearanceMenuReady", win) -- the mod announces that it is done
+		check(btn.DoClick ~= mods and btn.DoClick ~= ours, "the button is wrapped again once another addon took it")
+		local outer = btn.DoClick
+		M.advance(2)
+		eq(btn.DoClick, outer, "and only once")
+
+		local menus = #M.menus
+		local returned = btn:DoClick()
+		eq(returned, modWindow, "the other addon's menu opens and its result is passed on")
+		eq(#M.menus, menus, "our own menu stays closed")
+		local count = 0
+		for _ in pairs(modTiles) do count = count + 1 end
+		eq(count, 81 + 3, "(mock) a tile per stock and per CS:GO glove")
+
+		local moto, blood, stock = modTiles["CS:GO Moto 05"], modTiles["CS:GO Bloodhound 01"], modTiles["Gloves"]
+		eq(moto.mdl:IsVisible(), false, "CS:GO tile: the model with bare hands is hidden")
+		eq(moto.lbl:GetText(), "Moto 05", "CS:GO tile: short label")
+		eq(moto.tooltip, "Moto 05 - Finish Line", "CS:GO tile: the colour is in the tooltip")
+		eq(stock.mdl:IsVisible(), true, "stock tile: untouched")
+		eq(stock.lbl:GetText(), "Gloves", "stock tile: label untouched")
+		check(stock.zcg_tile == nil, "stock tile: not marked")
+		eq(blood.mdl:IsVisible(), true, "CS:GO tile without an icon file: left as it is")
+		eq(blood.lbl:GetText(), "CS:GO Bloodhound 01", "CS:GO tile without an icon file: label left")
+
+		layouts = 0
+		M.hovered = nil
+		M.paint(modWindow)
+		eq(moto.painted, 1, "the tile's own Paint still runs")
+		eq(layouts, 84 - 1, "the hidden model panel is not laid out any more")
+		check(win.zcg_preview == nil, "nothing previewed while nothing is hovered")
+
+		-- hover = try on, on the model of the editor
+		local selectedBefore = win.AppearanceTable.ABodygroups.HANDS
+		M.hovered = moto
+		M.paint(modWindow)
+		eq(moto.bIsHovered, true, "the tile's own Think still runs")
+		eq(win.zcg_preview and win.zcg_preview.id, "moto_5", "hovering a CS:GO tile previews the glove")
+		frame() Z.paintViewer(win.viewer)
+		eq(lastModel().model, MOTO, "the hovered glove is on the editor model")
+		eq(lastModel():GetBodygroup(0), 4, "hovered variant")
+		eq(win.AppearanceTable.ABodygroups.HANDS, selectedBefore, "hovering does not select")
+		M.hovered = stock
+		M.paint(modWindow)
+		check(win.zcg_preview == nil, "the preview ends when the cursor leaves the tile")
+
+		-- click = the mod selects; the window goes away with the cursor still on the tile
+		M.hovered = moto
+		M.paint(modWindow)
+		moto:DoClick() M.flushPanels()
+		eq(win.AppearanceTable.ABodygroups.HANDS, "CS:GO Moto 05", "the mod's own click selects the glove")
+		win.AppearanceTable.ABodygroups.HANDS = "None"
+		frame() Z.paintViewer(win.viewer)
+		check(win.zcg_preview == nil, "a preview does not outlive the menu it came from")
+		check(ZCG.States[win.viewer.Entity] == nil, "and no glove stays on the editor model")
+		M.hovered = nil
+
+		-- a menu that is not returned is found as a new top-level window
+		local realMods = mods
+		local inner = old
+		modFails = false
+		local hidden
+		win.viewer.zcg_button.zcg_click = nil -- as if yet another addon wrapped the button
+		btn.DoClick = function(self) hidden = { realMods(self) } end
+		ZCG.AttachEditor(win)
+		eq(btn:DoClick(), nil, "nothing returned by this one")
+		eq(modTiles["CS:GO Moto 05"].mdl:IsVisible(), false, "the window is found although it was not returned")
+		modWindow:Remove() M.flushPanels()
+
+		-- the mod cannot open its menu and falls back to what was on the button before: ours
+		modFails = true
+		menus = #M.menus
+		btn:DoClick()
+		eq(#M.menus, menus + 1, "our menu opens when the other addon falls back to it")
+		M.menus[#M.menus]:Remove() M.flushPanels()
+		eq(#M.errors, 0, "no errors with the other addon's menu: " .. table.concat(M.errors, " | "))
+
+		-- the slider window: for the value a slider is moved to, the mod takes the first entry
+		-- of the list with that submodel - any of "None" and the 81 CS:GO gloves
+		local sliderFrame
+		function hg.Appearance.OpenBodygroupsShowcaseMenu(tbl)
+			sliderFrame = vgui.Create("DFrame")
+		end
+		M.advance(1)
+		local wrappedOpen = hg.Appearance.OpenBodygroupsShowcaseMenu
+		M.advance(2)
+		eq(hg.Appearance.OpenBodygroupsShowcaseMenu, wrappedOpen, "the slider window is wrapped once")
+
+		local groups = win.AppearanceTable.ABodygroups
+		groups.HANDS = "CS:GO Moto 05"
+		hg.Appearance.OpenBodygroupsShowcaseMenu(win.AppearanceTable)
+		check(IsValid(sliderFrame), "the slider window opens")
+		hook.Run("Think")
+		eq(groups.HANDS, "CS:GO Moto 05", "sliders: a glove chosen before stays while the hands slider is not touched")
+		groups.HANDS = "Gloves" groups.hands = "Gloves" -- slider moved to a stock glove
+		hook.Run("Think")
+		eq(groups.HANDS, "Gloves", "sliders: stock gloves are selected as usual")
+		groups.HANDS = "CS:GO Hydra 03" groups.hands = "CS:GO Hydra 03" -- slider back to bare hands
+		hook.Run("Think")
+		eq(groups.HANDS, "None", "sliders: bare hands never turn into a CS:GO glove")
+		eq(groups.hands, "None", "sliders: the same for the lower-case key the mod writes as well")
+		sliderFrame:Remove() M.flushPanels()
+		hook.Run("Think")
+		check(hook.list.Think.zcg_sliders == nil, "sliders: the check stops with the window")
+		groups.HANDS = "CS:GO Hydra 03"
+		hook.Run("Think")
+		eq(groups.HANDS, "CS:GO Hydra 03", "sliders: nothing is changed once the window is closed")
+		groups.hands = nil
+
+		hg.Appearance.OpenBodygroupsShowcaseMenu = nil
+		win:Remove() M.flushPanels()
+		zpan = nil
+		eq(#M.errors, 0, "no errors with the slider window: " .. table.concat(M.errors, " | "))
+	end
+
 	-- ---------------------------------------------------------------- a glove that brings its own materials
 	-- The Specialist model names only ten pairs of materials for its eleven gloves: the fifth
 	-- one gets its materials from sh_data.lua ("mats").
