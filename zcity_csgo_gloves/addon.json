@@ -6,6 +6,10 @@
 		"*.psd",
 		"*.md",
 		"*.txt",
-		".git*"
+		".git*",
+		"*.bat",
+		"sort_content/*",
+		"_not_used/*",
+		"_sorting/*"
 	]
 }

@@ -1,0 +1,117 @@
+# Runs the tests when the code changes: all of them on Linux, and on Windows the part that has to
+# work on the computer of the addon's owner - sort_content.bat with an installed Python and with
+# the portable one it fetches itself.
+# (The heavy archives of the repository are not checked out: the tests make their own files.)
+name: Tests
+
+on:
+  push:
+    paths:
+      - 'tools/**'
+      - 'build_addon.py'
+      - 'zcity_csgo_gloves/lua/**'
+      - 'zcity_csgo_gloves/sort_content.bat'
+      - '.github/workflows/test.yml'
+      - '.github/workflows/release.yml'    # (tools/test_content.py reads it)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/*.7z
+            !/sport*.zip
+            !/hands*.zip
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      # (vpk and sourcepp are not needed by anything that is shipped: test_content.py checks its
+      # reading of the game's archives against them, and passes over that when they are missing)
+      - name: Install the test tools
+        run: |
+          python -m pip install lupa==2.8
+          python -m pip install vpk==1.4.0 sourcepp==2026.11.1 || echo "::warning::vpk / sourcepp could not be installed - the archives are not checked against them"
+
+      - name: Test the Lua code
+        run: python tools/test_lua.py
+
+      # (the repository holds two versions of the Appearance Mod: everything once more with the other one)
+      - name: Test the Lua code with the other version of the Appearance Mod
+        run: python tools/test_lua.py --pack "Z-City Appearance Mod LEGACY"
+
+      - name: Test the placing of drop-in content
+        run: python tools/test_content.py
+
+      - name: Test sort_content as it is shipped
+        run: python tools/test_sort_tool.py
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      PYTHONIOENCODING: utf-8
+      ZCG_TEST_PORTABLE: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/*.7z
+            !/sport*.zip
+            !/hands*.zip
+
+      # (Windows as it is installed opens no path of 260 characters and more; this computer is set
+      # up to. Turned off - a program reads the setting when it starts - so that the tools have to
+      # get to such a path themselves, as on the computer of the addon's owner: test_content.py
+      # says in one line whether the computer opens such a path as it is written.)
+      - name: Long paths as Windows has them at home
+        shell: cmd
+        run: reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 0 /f
+
+      - name: Test the placing of drop-in content
+        shell: cmd
+        run: |
+          python --version
+          python tools\test_content.py > content.log 2>&1
+          set CODE=%ERRORLEVEL%
+          type content.log
+          exit /b %CODE%
+
+      - name: Test sort_content.bat
+        shell: cmd
+        run: |
+          python tools\test_sort_tool.py > tool.log 2>&1
+          set CODE=%ERRORLEVEL%
+          type tool.log
+          exit /b %CODE%
+
+      # (the logs of a run cannot always be fetched: the ends of them are kept as notices)
+      - name: Keep the results
+        if: always()
+        shell: python
+        run: |
+          import os
+          for name in ('content', 'tool'):
+              path = name + '.log'
+              if not os.path.isfile(path):
+                  continue
+              with open(path, encoding='utf-8', errors='replace') as f:
+                  text = f.read()
+              failed = [line for line in text.splitlines() if 'FAILED' in line or 'Traceback' in line]
+              text = '\n'.join(failed)[:2500] + '\n...\n' + text[-2500:]
+              text = text.replace('%', '%25').replace('\r', '').replace('\n', '%0A')
+              print('::notice title=%s::%s' % (name, text))

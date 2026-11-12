@@ -1,6 +1,8 @@
 @echo off
 rem Builds the Garry's Mod addon into build\zcity_csgo_gloves - see README.md.
 rem Arguments are passed on to build_addon.py, for example:  build_addon.bat --zip
+rem The repository holds two versions of the Appearance Mod, and an addon can only have one.
+rem To build with the other one:  build_addon.bat --pack "Z-City Appearance Mod LEGACY"
 setlocal
 cd /d "%~dp0"
 
@@ -18,6 +20,16 @@ echo "Add python.exe to PATH" ticked, then start this file again.
 goto fail
 
 :build
+rem The build runs the Lua of the clothing packs to learn which files it asks for
+rem (tools\lua_names.py). That needs the lupa module; without it the addon is built all the
+rem same, but sort_content.bat then knows fewer names - the build says "NOT RUN".
+%PY% -c "import lupa" >nul 2>nul
+if not errorlevel 1 goto run
+echo Installing the lupa module to run the Lua of the clothing packs...
+%PY% -m pip install --user lupa
+echo.
+
+:run
 %PY% build_addon.py %*
 if not errorlevel 3 goto finish
 if errorlevel 4 goto finish

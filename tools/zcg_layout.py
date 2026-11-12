@@ -3,6 +3,10 @@
 
 Used by build_addon.py (repo root) and by the helper scripts in tools/.
 """
+import json
+import os
+import re
+import zipfile
 
 ADDON_DIRNAME = "zcity_csgo_gloves"
 
@@ -66,6 +70,420 @@ for _n, _bump in SPECIALIST_BUMP.items():
         _name = 'glove_specialist_%s%s' % (_side, '' if _n == 1 else '_%d' % _n)
         VMT_FIXES['%s/glove_specialist/%s.vmt' % (ARMS_MAT_DIR, _name)] = {
             '$bumpmap': 'models/weapons/v_models/arms/glove_specialist/right/%d/glove_specialist_normal_right' % _bump}
+
+# ---------------------------------------------------------------------------------------------
+# Drop-in sources
+# ---------------------------------------------------------------------------------------------
+# Whatever lies in the repository root and is not listed above is taken as a part of some other
+# addon - Lua that adds clothes to the appearance menu, materials, models:
+#     an archive               anything.zip, anything.7z
+#     a split archive          anything.7z.001, .002 ...  (7-Zip "split to volumes"; .zip alike)
+#     a folder                 any folder but the ones of the project (PROJECT_DIRS)
+# and so are the materials and models somebody put into the folders of the addon skeleton.
+#
+# Lua and everything else but content goes into the build under the path its folders give it:
+#     <anything>/lua/...                       -> lua/...
+#     <anything>/materials/...                 -> materials/...        (models, sound ... alike)
+#     <anything>/homigrad/...  (no lua folder) -> lua/homigrad/...     (autorun ... alike)
+# Whatever has no such folder above it (the addon.json of that addon, notes) is left out.
+#
+# Materials, textures and models (.vmt .vtf .mdl and the files of a model) are not trusted to
+# lie in the right folders. Each of them is put where the Lua, a model or a material that
+# names it looks for it: see tools/place_content.py.
+
+# read by the tools only, never shipped
+REFERENCE_ARCHIVES = ("z_city.zip", "hands.zip", "hands2.zip")
+OPTIMIZED_PREFIX = "optimized_textures"
+
+CONTENT_ROOTS = ("lua", "materials", "models", "sound", "particles", "resource", "scripts")
+LUA_ROOTS = ("homigrad", "autorun", "initpost", "entities", "weapons", "effects")
+MATERIAL_TYPES = (".vmt", ".vtf", ".png", ".jpg", ".jpeg")
+MODEL_TYPES = (".mdl", ".vvd", ".vtx", ".phy", ".ani")
+
+# A folder that is a materials (models) folder under a name of its own, one of several:
+# "materials3", "models 2", "materials (4)", "materials_5", "2 models", "material 1". That is
+# how content gets collected - the materials folder of one addon, of the next one ... - and
+# thrown into the addon. What lies below such a folder lies below materials/ (models/).
+# (Only names nobody gives a folder of a game: a number is a must, and "model1" or "materials_old"
+# are not taken for one.)
+_NUMBERED_ROOT = re.compile(r'^(?:(materials|models)\s*[-_.]?\s*\(?\d+\)?'
+                            r'|\(?\d+\)?\s*[-_.]?\s*(materials|models)'
+                            r'|(material|model)(?:\s+\(?|\s*\()\d+\)?)$')
+
+
+def numbered_root(name):
+    """'materials' / 'models' for the name of a folder that is a numbered copy of that folder
+    ("materials3"), else None"""
+    match = _NUMBERED_ROOT.match(name.strip().lower())
+    if not match:
+        return None
+    return match.group(1) or match.group(2) or match.group(3) + 's'
+
+
+def dropin_archives(root):
+    """full paths of the drop-in archives in the repository root, in name order"""
+    found = []
+    for name in sorted(os.listdir(root)):
+        stem, ext = os.path.splitext(name)
+        if ext.lower() not in (".zip", ".7z"):
+            continue
+        if stem in ARCHIVES or name in REFERENCE_ARCHIVES or name.startswith(OPTIMIZED_PREFIX):
+            continue
+        found.append(os.path.join(root, name))
+    return found
+
+
+# a split archive: content.7z.001, content.7z.002 ... (7-Zip "split to volumes")
+VOLUME = re.compile(r'^(.+\.(?:7z|zip))\.(\d{3})$', re.I)
+# folders of the repository root that belong to the project; any other one is taken as content
+PROJECT_DIRS = (ADDON_DIRNAME, 'tools', 'docs', 'build')
+
+
+# Content the addon itself owns. Anything else that lies in the materials / models folders of
+# its skeleton was put there by hand and is treated like the content of a drop-in archive.
+OWN_CONTENT = ("materials/" + ADDON_DIRNAME + "/", ARMS_MAT_DIR + "/", MODELS_DIR + "/")
+
+
+# the Lua of the gloves themselves, as paths below lua/ (any other Lua in the addon came with a pack)
+OWN_LUA = ('autorun/%s.lua' % ADDON_DIRNAME, ADDON_DIRNAME + '/')
+
+
+def is_own_lua(path):
+    return path.lower().startswith(OWN_LUA)
+
+
+def is_own_content(path):
+    return path.replace("\\", "/").lower().startswith(OWN_CONTENT)
+
+
+def _reserved(name):
+    """an archive name the glove build or the tools use for something else"""
+    stem = os.path.splitext(name)[0]
+    return stem in ARCHIVES or name in REFERENCE_ARCHIVES or name.startswith(OPTIMIZED_PREFIX)
+
+
+def dropin_sources(root):
+    """Everything in the repository root that brings files of other addons, in name order:
+    [(name, kind, paths)] with kind 'archive' (one .zip / .7z), 'volumes' (the parts of a split
+    archive, in order; name is the archive without its number) or 'folder'."""
+    found, volumes = [], {}
+    for name in sorted(os.listdir(root)):
+        full = os.path.join(root, name)
+        if os.path.isdir(full):
+            if not name.startswith(('.', '_')) and name not in PROJECT_DIRS:
+                found.append((name, 'folder', [full]))
+            continue
+        part = VOLUME.match(name)
+        if part:
+            if not _reserved(part.group(1)):
+                volumes.setdefault(part.group(1), []).append(full)
+            continue
+        if os.path.splitext(name)[1].lower() in ('.zip', '.7z') and not _reserved(name):
+            found.append((name, 'archive', [full]))
+    for name, parts in volumes.items():
+        found.append((name, 'volumes', sorted(parts)))
+    found.sort(key=lambda source: source[0])
+    return found
+
+
+# archives of other kinds: nothing here can read them, and saying nothing about one that was
+# uploaded would look as if its files were simply missing
+_OTHER_ARCHIVE = re.compile(r'\.(rar|r\d\d|z\d\d|tar|gz|tgz|bz2|xz|zst|cab|iso|gma|vpk)$', re.I)
+
+
+# any archive at all, by its name
+ARCHIVE = re.compile(r'\.(zip|7z|(?:zip|7z)\.\d{3}|rar|r\d\d|z\d\d|tar|gz|tgz|bz2|xz|zst|cab|iso|gma|vpk)$', re.I)
+
+
+def unread_archives(root):
+    """files in the repository root that look like archives and are read by nobody"""
+    return sorted(name for name in os.listdir(root)
+                  if os.path.isfile(os.path.join(root, name)) and _OTHER_ARCHIVE.search(name))
+
+
+def dropin_destination(path):
+    """path in the addon for a file of a drop-in archive, None when it has no place there"""
+    parts = [p for p in path.replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts or ".." in parts:
+        return None
+    lower = [p.lower() for p in parts]
+    dest = None
+    for i, name in enumerate(lower[:-1]):
+        if name in CONTENT_ROOTS:
+            dest = lower[i:]
+            break
+        if name in LUA_ROOTS:
+            dest = ["lua"] + lower[i:]
+            break
+    if dest is None:
+        return None
+    # packed from inside the materials folder: models/humans/.../shirt.vmt is a material
+    if dest[0] == "models" and os.path.splitext(dest[-1])[1] in MATERIAL_TYPES:
+        dest = ["materials"] + dest
+    return "/".join(dest)
+
+
+def numbered_folder(path, real=()):
+    """the outermost folder a file lies in that is a copy of materials/ or models/ by its name -
+    a numbered one ("materials/materials3"), or a second one inside the first
+    ("materials/materials", "models/my pack/models") - as a lower-case path, or None.
+    real: the folders the game is known to have, as paths: none of them is such a copy"""
+    parts = path.replace("\\", "/").lower().split("/")[:-1]
+    for cut, part in enumerate(parts):
+        if (numbered_root(part) or (cut and (part == "materials" or part == parts[0] == "models"))) \
+                and "/".join(parts[:cut + 1]) not in real:
+            return "/".join(parts[:cut + 1])
+    return None
+
+
+def tree_roots(paths, real=()):
+    """The numbered folders among these paths that hold a tree: a file below a folder of their
+    own that is not numbered itself (materials7/models/..., not materials0000/materials 1/x).
+    A file that lies right in such a folder is a file of the top of that tree
+    (materials7/x.vtf is materials/x.vtf) - see merged_destination, trees. In a numbered folder
+    with nothing but files in it nothing says so: that is somebody's heap."""
+    found = set()
+    for path in paths:
+        dirs = [p for p in path.replace("\\", "/").lower().split("/") if p not in ("", ".")][:-1]
+        for i in range(len(dirs) - 1):
+            if numbered_root(dirs[i]) and not numbered_root(dirs[i + 1]) and "/".join(dirs[:i + 1]) not in real:
+                found.add("/".join(dirs[:i + 1]))
+    return found
+
+
+def merged_destination(path, real=None, mirror=False, trees=()):
+    """Where a file lies when the folders above it are read as an owner of the addon means them:
+    he collects the materials and models folders of the addons he needs, each under a name of
+    its own, and throws them into the materials / models folder of this addon - or anywhere.
+    Its path in the addon, None when the folders give it none.
+
+    A folder called materials is the materials folder wherever it stands - the last one of the
+    path counts, so materials/materials/x and materials/my pack/materials/x are materials/x -
+    and so is a numbered one (numbered_root): materials/materials3/models/x.vmt is
+    materials/models/x.vmt, models/models 2/a/b.mdl is models/a/b.mdl. The innermost numbered
+    folder counts. A file that lies right in a numbered folder, with no folder of its own, is a
+    file of the top of that tree when the folder holds a tree beside it (trees: tree_roots() of
+    the paths at hand; materials7/x.vtf is materials/x.vtf then). Else it is a file of
+    somebody's heap: its folders say nothing, and it is read like dropin_destination.
+
+    Materials and textures belong below materials/, the files of a model below models/,
+    whichever of the two they were put into:
+        models/humans/x.vmt                   -> materials/models/humans/x.vmt   (packed from inside materials/)
+        materials/models/humans/x.mdl         -> models/humans/x.mdl
+        materials/models3/humans/x.mdl        -> models/humans/x.mdl
+    A file of a model with no models folder above it, only a materials folder, has nothing to
+    go by but the folders it lies in: with mirror=True it gets the same path below models/
+    (materials/humans/x.mdl -> models/humans/x.mdl), else None.
+
+    This is a reading, not a fact: tools/place_content.py follows the names first, and puts a
+    file here only when nothing names it and nothing is known of its folder - the mirrored
+    place last of all.
+
+    real: folders the game is known to have, as paths (the folders of the names the Lua gives).
+    A folder that is one of them is what its path says, whatever it is called: no numbered
+    folder and no second materials / models folder is seen in it. Only for a path that starts
+    at the top of the addon."""
+    parts = [p for p in path.replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts or ".." in parts:
+        return None
+    lower = [p.lower() for p in parts]
+    dirs, name = lower[:-1], lower[-1]
+    is_material = os.path.splitext(name)[1] in MATERIAL_TYPES
+    is_model = name.endswith(MODEL_TYPES)
+
+    def known(count):
+        """the first `count` folders of the path are a folder of the game, for a file like this"""
+        if not real or "/".join(dirs[:count]) not in real:
+            return False
+        return dirs[0] == ("models" if is_model else "materials") or not (is_model or is_material)
+
+    # a numbered copy of materials/ or models/, with folders below it
+    loose = bool(dirs) and numbered_root(dirs[-1]) is not None
+    if dirs and (not loose or "/".join(dirs) in trees):
+        for i in range(len(dirs) - (1 if loose else 2), -1, -1):
+            top = numbered_root(dirs[i])
+            if top and not known(i + 1):
+                tail = dirs[i + 1:]
+                # (it may hold a whole addon, or a materials folder: materials3/materials/...)
+                holds = bool(tail) and (
+                    tail[0] in ("materials", "lua") or (tail[0] == "models" and top == "models")
+                    or (tail[0] in CONTENT_ROOTS and tail[0] != "models" and not (is_material or is_model)))
+                dirs = tail if holds else [top] + tail
+                real = None
+                break
+
+    first = None
+    for i, folder in enumerate(dirs):
+        if folder in CONTENT_ROOTS or folder in LUA_ROOTS:
+            first = i
+            break
+    if first is None:
+        return None
+    if dirs[first] not in ("materials", "models"):
+        dest = dirs[first:] if dirs[first] in CONTENT_ROOTS else ["lua"] + dirs[first:]
+        return "/".join(dest + [name])
+
+    def last(folder):
+        for i in range(len(dirs) - 1, first - 1, -1):
+            if dirs[i] == folder and (i == first or not known(i + 1)):
+                return i
+        return None
+
+    materials, models = last("materials"), last("models")
+    if is_model:
+        # the innermost of the two is where the tree of the file starts
+        if models is not None and (materials is None or models > materials):
+            dest = dirs[models:]
+        elif mirror:
+            dest = ["models"] + dirs[materials + 1:]
+        else:
+            return None
+    elif materials is not None:
+        dest = dirs[materials:]
+    elif is_material:
+        # packed from inside the materials folder: models/humans/.../shirt.vmt is a material
+        # (models/models/... - a materials folder thrown into models/ - is the same)
+        start = first
+        while start + 1 < len(dirs) and dirs[start + 1] == "models" and not known(start + 2):
+            start += 1
+        dest = ["materials"] + dirs[start:]
+    else:
+        dest = dirs[models:]
+    return "/".join(dest + [name])
+
+
+def zip_name(info):
+    """name of a zip entry; Windows tools store non-ASCII names in the OEM code page"""
+    name = info.filename
+    if not info.flag_bits & 0x800:
+        try:
+            name = name.encode("cp437").decode("cp866")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+    return name
+
+
+# ---------------------------------------------------------------------------------------
+# Packs, and versions of one pack
+# ---------------------------------------------------------------------------------------
+# A drop-in source may hold several addons, each with its addon.json; the title written there
+# is the name of the pack ("Z-City Appearance Mod").
+#
+# Some packs are versions of one addon: they bring the same Lua files, changed. The game can
+# only have one of them - a Lua file has one path - and a version is a whole: the menu of one
+# with the tables of the other is how things break. So of the packs of one tuple below the first
+# one that is there is taken, whole, and the others are left out, whole - their Lua and whatever
+# else they bring but materials and models, which are sorted by name anyway and never replace a
+# file of the version that was taken. The build says so; nothing is dropped without a word:
+# two packs that bring different Lua for one path and are not listed here stop the build.
+#
+# To take another version: python build_addon.py --pack "<title>", or put it first here.
+PACK_VERSIONS = (
+    ("Z-City Appearance Mod", "Z-City Appearance Mod LEGACY"),
+)
+# titles the build was told to take (--pack): they come before the order above
+CHOSEN_PACKS = []
+# A release carries one archive for each version (.github/workflows/release.yml builds them; the
+# folder inside is the same): title -> the name of the archive. The tools name it where the
+# content of the owner turns out to be that of the other version.
+VERSION_ZIPS = {
+    "Z-City Appearance Mod": ADDON_DIRNAME + ".zip",
+    "Z-City Appearance Mod LEGACY": ADDON_DIRNAME + "_legacy.zip",
+}
+
+
+def build_zip_name(chosen=None):
+    """the name of the archive of a build that was told to take these versions (titles; by default
+    the ones --pack named): that of the first of them that has one, else <addon>.zip"""
+    for title in (CHOSEN_PACKS if chosen is None else chosen):
+        if title in VERSION_ZIPS:
+            return VERSION_ZIPS[title]
+    return ADDON_DIRNAME + ".zip"
+
+
+def lower_names(paths):
+    """{path in lower case: the path} - for pack_title"""
+    return dict((path.replace("\\", "/").lower(), path) for path in paths)
+
+
+def pack_title(names, read, inner):
+    """Title of the pack a file of a drop-in source belongs to: the one in the addon.json of the
+    nearest folder above it ("x/addon.json", or "x.json" beside the folder x).
+    names: lower_names() of the paths of the source; read(path) -> the bytes of a file of it.
+    Returns the title; the path of the json when that has no title; None when there is none."""
+    parts = [p for p in inner.replace("\\", "/").split("/") if p]
+    for k in range(len(parts) - 1, 0, -1):
+        for candidate in ("/".join(parts[:k]) + ".json", "/".join(parts[:k]) + "/addon.json"):
+            real = names.get(candidate.lower())
+            if real is None:
+                continue
+            try:
+                title = json.loads(read(real).decode("utf-8-sig", "replace")).get("title")
+            except (ValueError, AttributeError):
+                title = None
+            if isinstance(title, str) and title.strip():
+                return title.strip()
+            return candidate
+    return None
+
+
+def versions_left_out(titles, chosen=None):
+    """titles: the packs that are there. Returns {title of a pack that is left out: title of the
+    version of it that is taken}."""
+    chosen = CHOSEN_PACKS if chosen is None else chosen
+    titles = set(titles)
+    left = {}
+    for group in PACK_VERSIONS:
+        there = [title for title in group if title in titles]
+        if len(there) < 2:
+            continue
+        told = [title for title in there if title in chosen]
+        taken = told[0] if told else there[0]
+        for title in there:
+            if title != taken:
+                left[title] = taken
+    return left
+
+
+def version_titles():
+    """every title that is a version of something (for a message)"""
+    return [title for group in PACK_VERSIONS for title in group]
+
+
+def dropin_lua(root, chosen=None):
+    """The Lua the .zip drop-in archives of a repository root bring - for the tools that read
+    the archives themselves. (The build unpacks every kind of source and asks the same questions:
+    build_addon.step_dropins.) Returns (taken, left_out):
+        taken      [(path in the addon "lua/...", bytes, archive, title of its pack or None)],
+                   archive by archive; one path may come twice
+        left_out   [(title, the title taken instead, archive, [(path, bytes)])] - the packs that
+                   are versions of a pack that was taken (PACK_VERSIONS)"""
+    found = []
+    for archive in dropin_archives(root):
+        if not archive.lower().endswith(".zip"):
+            continue
+        with zipfile.ZipFile(archive) as z:
+            infos = dict((zip_name(info), info) for info in z.infolist())
+            names = lower_names(infos)
+            titles = {}
+            for inner, info in sorted(infos.items()):
+                dest = None if info.is_dir() else dropin_destination(inner)
+                if not dest or not dest.startswith("lua/") or not dest.endswith(".lua"):
+                    continue
+                folder = inner.rsplit("/", 1)[0] if "/" in inner else ""
+                if folder not in titles:
+                    titles[folder] = pack_title(names, lambda path: z.read(infos[path]), inner)
+                found.append((dest, z.read(info), os.path.basename(archive), titles[folder]))
+    left = versions_left_out(set(title for _dest, _data, _archive, title in found), chosen)
+    taken, out = [], {}
+    for dest, data, archive, title in found:
+        if title in left:
+            out.setdefault((title, archive), []).append((dest, data))
+        else:
+            taken.append((dest, data, archive, title))
+    left_out = [(title, left[title], archive, files) for (title, archive), files in sorted(out.items())]
+    return taken, left_out
+
 
 # ---------------------------------------------------------------------------------------
 # Glove families. One entry = one group in the in-game picker.
