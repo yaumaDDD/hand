@@ -1131,7 +1131,8 @@ def sort(*args, **kw):
     (fill_content.py, test_filling) - the other tests are about where sorting itself puts a file"""
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
-        code = sort_content.main(list(args) + ([] if kw.get('fill') else ['--no-fill']) + ([] if kw.get('found') else ['--no-found']))
+        code = sort_content.main(list(args) + ([] if kw.get('fill') else ['--no-fill']) + ([] if kw.get('found') else ['--no-found'])
+                                 + ([] if kw.get('take') else ['--no-take']))
     return code, out.getvalue()
 
 
@@ -3773,6 +3774,85 @@ def a_vpk(names, version=1, preload=0):
     return head + body + data
 
 
+def a_gma_with(title, files, packed=False):
+    """an addon archive with these files: {name: bytes}"""
+    out = b'GMAD' + bytes(bytearray([3])) + struct.pack('<QQ', 76561198000000000, 1700000000) + b'\x00'
+    out += title.encode('utf-8') + b'\x00' + b'{}\x00' + b'Author Name\x00' + struct.pack('<i', 1)
+    names = list(files)
+    for number, name in enumerate(names, 1):
+        out += struct.pack('<I', number) + name.encode('utf-8') + b'\x00' + struct.pack('<qI', len(files[name]), 0x1234)
+    out += struct.pack('<I', 0) + b''.join(files[name] for name in names) + struct.pack('<I', 0)
+    if packed:
+        import lzma
+        out = lzma.compress(out, format=lzma.FORMAT_ALONE)
+    return out
+
+
+def test_take(tmp):
+    """What the clothes need and an addon archive of the game holds is copied into the addon: the
+    game shows such an addon only while it is switched on, a server does not have it at all."""
+    game = os.path.join(tmp, 'take', 'Steam', 'steamapps', 'common', 'GarrysMod')
+    write(os.path.join(game, 'garrysmod', 'garrysmod.ver'), 'x')
+    write(os.path.join(game, 'garrysmod', 'gameinfo.txt'), '"GameInfo" {}')
+    write(os.path.join(game, 'hl2.exe'), 'x')
+    root = os.path.join(game, 'garrysmod', 'addons', 'zcity_csgo_gloves')
+    lua = ('hg.Appearance.FacemapsSlots["models/humans/male/group01/ted_facemap"]["Face 11"] = "models/humans/modern/male/male_02/Facemap_01"\n'
+           'hg.Appearance.Clothes[1].coat = "models/packed/coat"\n'
+           'hg.Appearance.Clothes[1].here = "models/gate/here"\n'
+           'hg.Appearance.PlayerModels[1]["Guy"] = {mdl = "models/packed/guy.mdl"}\n')
+    here = material('models/gate/here')
+    for rel, data in {'lua/autorun/clothes.lua': lua, 'lua/autorun/zcity_csgo_gloves.lua': '-- own',
+                      'materials/models/gate/here.vmt': here, 'materials/models/gate/here.vtf': texture('here')}.items():
+        write(os.path.join(root, rel), data)
+    face, face_tex = material('models/humans/modern/male/male_02/facemap_01'), texture('face')
+    coat, coat_tex = material('models/packed/coat'), texture('coat')
+    guy = model(['models/packed/guy/'], ['skin'], 'packed/guy.mdl')
+    skin, skin_tex = material('models/packed/guy/skin'), texture('skin')
+    workshop = os.path.join(tmp, 'take', 'Steam', 'steamapps', 'workshop', 'content', '4000')
+    write(os.path.join(workshop, '111', 'faces.gma'), a_gma_with('Faces Pack', {
+        'lua/autorun/x.lua': b'-- lua',
+        'materials/models/humans/modern/male/male_02/facemap_01.vmt': to_bytes(face),
+        'materials/models/humans/modern/male/male_02/facemap_01.vtf': to_bytes(face_tex),
+        'materials/models/humans/modern/male/male_02/unused.vmt': b'unused',
+        'materials/models/gate/here.vmt': b'another one'}))
+    write(os.path.join(workshop, '222', 'old.bin'), a_gma_with('Old Pack', {
+        'materials/models/packed/coat.vmt': to_bytes(coat), 'materials/models/packed/coat.vtf': to_bytes(coat_tex),
+        'models/packed/guy.mdl': to_bytes(guy), 'models/packed/guy.vvd': b'vvd', 'models/packed/guy.dx90.vtx': b'vtx',
+        'models/packed/guyother.vvd': b'no', 'models/packed/other.mdl': b'no',
+        'materials/models/packed/guy/skin.vmt': to_bytes(skin), 'materials/models/packed/guy/skin.vtf': to_bytes(skin_tex)}, packed=True))
+
+    def there(rel):
+        return os.path.isfile(os.path.join(root, rel))
+
+    code, said = sort('--addon', root, '--game', game)
+    check(code == 0 and not there('materials/models/packed/coat.vmt'), '--no-take: nothing is copied out of the game')
+    code, said = sort('--addon', root, '--game', game, '--dry-run', take=True)
+    check(code == 0 and not there('materials/models/packed/coat.vmt'), '--dry-run: nothing either')
+    code, said = sort('--addon', root, '--game', game, take=True)
+    check(code == 0, 'taking: the run ends well: %s' % said[-600:])
+    for rel in ('materials/models/humans/modern/male/male_02/facemap_01.vmt', 'materials/models/packed/coat.vmt', 'models/packed/guy.mdl'):
+        check(there(rel), 'a file the Lua names is copied out of the archive: %s' % rel)
+    for rel in ('materials/models/humans/modern/male/male_02/facemap_01.vtf', 'materials/models/packed/coat.vtf'):
+        check(there(rel), '... and, a round later, the texture of that material: %s' % rel)
+    check(there('models/packed/guy.vvd') and there('models/packed/guy.dx90.vtx'), 'a model comes with its files')
+    check(there('materials/models/packed/guy/skin.vmt') and there('materials/models/packed/guy/skin.vtf'), '... then its material, then the texture of that')
+    check(not there('models/packed/guyother.vvd') and not there('models/packed/other.mdl')
+          and not there('materials/models/humans/modern/male/male_02/unused.vmt') and not there('lua/autorun/x.lua'),
+          'nothing that nobody asked for')
+    check(build_addon.read_bytes(os.path.join(root, 'materials/models/gate/here.vmt')) == to_bytes(here), 'a file that is there is not replaced')
+    check(build_addon.read_bytes(os.path.join(root, 'models/packed/guy.mdl')) == to_bytes(guy)
+          and build_addon.read_bytes(os.path.join(root, 'materials/models/packed/coat.vtf')) == to_bytes(coat_tex), 'the bytes are those of the archive')
+    check(u'скопировано файлов' in said and u'Faces Pack' in said and u'Old Pack' in said, 'and it is told: %s' % said[-300:])
+    text = build_addon.read_bytes(os.path.join(root, sort_content.REPORT)).decode('utf-8-sig')
+    check(u'Скопировано из аддонов мастерской' in text and 'materials/models/packed/coat.vmt' in text, 'in the report as well')
+    code, said = sort('--addon', root, '--game', game, take=True)
+    check(code == 0 and u'скопировано файлов' not in said, 'a second run copies nothing')
+
+
+def to_bytes(data):
+    return data if isinstance(data, bytes) else data.encode('utf-8')
+
+
 def a_gma(title, names, version=3, needs=(), packed=False):
     """an addon archive (.gma) with these files, the way gmad writes one; packed: the way Steam
     keeps an old one"""
@@ -4621,6 +4701,7 @@ def main():
         test_switching_versions(tmp)
         test_filling(tmp)
         test_found(tmp)
+        test_take(tmp)
         test_numbered_folders_of_the_owner(tmp)
         test_thrown_in_folders(tmp)
         test_game_files(tmp)

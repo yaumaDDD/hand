@@ -1186,6 +1186,8 @@ def main(argv=None):
                              '(copies of renamed files, see fill_content.py)')
     parser.add_argument('--fill-namesakes', action='store_true',
                         help='also fill a name the Lua gives with the only file of that name from ANOTHER folder')
+    parser.add_argument('--no-take', action='store_true',
+                        help='do not copy the files the clothes need out of the addon archives (.gma) of the game')
     parser.add_argument('--no-found', action='store_true',
                         help='do not write the list of the materials nobody names (content without Lua) for the game')
     parser.add_argument('--no-switch', action='store_true',
@@ -1270,6 +1272,57 @@ def write_found(addon, found):
 # how many times in a row the names without a file are filled: a material that was copied asks
 # for its texture only in the next round
 FILL_ROUNDS = 3
+
+
+# how many times in a row files are taken out of the archives of the game: a model asks for its
+# materials, a material for its textures - each only once the file before it is there
+TAKE_ROUNDS = 4
+MODEL_FILES = ('.mdl', '.vvd', '.phy', '.ani', '.vtx')
+
+
+def take_from_game(addon, found, needed):
+    """copies the needed files that addon archives of the game hold into the addon, each to its
+    own path (a model with its .vvd/.vtx/.phy); nothing is overwritten.
+    Returns (files written, lines for the report)."""
+    by_archive = {}
+    for name in sorted(needed):
+        archive = found.archive.get(name)
+        if archive and not os.path.exists(long_path(os.path.join(addon, name.replace('/', os.sep)))):
+            by_archive.setdefault(archive, set()).add(name)
+    count, lines = 0, []
+    for archive in sorted(by_archive):
+        names = by_archive[archive]
+        stems = set(name[:-len('.mdl')] for name in names if name.endswith('.mdl'))
+
+        def take(name, names=names, stems=stems):
+            if name in names:
+                return True
+            return bool(stems) and name.endswith(MODEL_FILES) and name.split('.')[0] in stems
+        try:
+            title, _all, data = game_files.gma_names(archive, take)
+        except (ValueError, OSError, MemoryError) as err:
+            lines.append(u'  ВНИМАНИЕ: не удалось прочитать %s: %s' % (archive, err))
+            continue
+        written = []
+        for name in sorted(data):
+            target = os.path.join(addon, name.replace('/', os.sep))
+            if os.path.exists(long_path(target)):
+                continue
+            try:
+                if not os.path.isdir(long_path(os.path.dirname(target))):
+                    os.makedirs(long_path(os.path.dirname(target)))
+                with open(long_path(target + '.zcg_new'), 'wb') as f:
+                    f.write(data[name])
+                os.replace(long_path(target + '.zcg_new'), long_path(target))
+            except (OSError, IOError) as err:
+                lines.append(u'  ВНИМАНИЕ: не удалось записать %s: %s' % (name, err))
+                continue
+            written.append(name)
+        if written:
+            count += len(written)
+            lines.append(u'  «%s» (%s) — файлов: %d' % (title or os.path.basename(archive), os.path.basename(archive), len(written)))
+            lines += [u'      ' + name for name in written]
+    return count, lines
 
 
 def run(args, switched=None, filled=None):
@@ -1390,6 +1443,38 @@ def run(args, switched=None, filled=None):
                 args.sources = []       # (they are in the addon by now)
                 shutil.rmtree(temp, ignore_errors=True)
                 return run(args, switched=title)
+            took = getattr(args, 'took', None) or [0, [], 0]
+            if found is not None and found.archive and not args.no_take and took[2] < TAKE_ROUNDS:
+                # What the clothes need and an addon of the workshop holds is copied out of it: the
+                # game shows the files of such an addon only while it is switched on - and a server
+                # does not have it at all. With the file in this addon it is there for everybody.
+                used = (content_report.OURS, content_report.ZCITY)
+                needed = set(report.missing_named)
+                for row in check.materials + check.textures:
+                    if row.who in used:
+                        needed.update(row.paths)
+                count, lines_taken = take_from_game(addon, found, needed)
+                if count:
+                    args.took = [took[0] + count, took[1] + lines_taken, took[2] + 1]
+                    say()
+                    say(u'=' * 78)
+                    say(u'Из аддонов мастерской (их .gma на этом компьютере) в аддон скопировано файлов: %d' % count)
+                    for line in lines_taken:
+                        say(line)
+                    say(u'Теперь всё проверяется заново — уже с этими файлами. Итог — тот, что ниже.')
+                    say(u'=' * 78)
+                    say()
+                    args.sources = []
+                    shutil.rmtree(temp, ignore_errors=True)
+                    return run(args, switched=switched, filled=filled)
+                elif lines_taken:
+                    for line in lines_taken:
+                        say(line)
+            if took[0]:
+                text = [u'', u'Скопировано из аддонов мастерской (из их .gma) — файлов: %d' % took[0]] + took[1]
+                with io.open(long_path(listing), 'a', encoding='utf-8') as f:
+                    f.write(u'\r\n' + u'\r\n'.join(text) + u'\r\n')
+                say(u'Из аддонов мастерской в аддон скопировано файлов: %d (список — в отчёте).' % took[0])
             if (filled[2] if filled else 0) < FILL_ROUNDS and not args.no_fill:
                 # What still has no file is filled with what lies in the addon under another name
                 # (copies; fill_content.py) - and everything is gone through again with them.

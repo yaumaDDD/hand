@@ -292,10 +292,12 @@ class _Stream(object):
         return out
 
 
-def gma_names(path):
+def gma_names(path, take=None):
     """(title, the files) of an addon archive - a .gma, also one that Steam keeps compressed;
     ValueError when the file is none. The files are named the way the game sees them:
-    "materials/x.vmt", lower case."""
+    "materials/x.vmt", lower case.
+    take: a function(name) -> bool; with it the answer is (title, files, {name: bytes}) - the
+    content of the files it says yes to."""
     with open(path, 'rb') as f:
         head = f.read(4)
         f.seek(0)
@@ -330,12 +332,41 @@ def gma_names(path):
             stream.word()                       # description
             stream.word()                       # author
             stream.read(4)                      # version of the addon
-            names = []
+            names, sizes = [], []
             while struct.unpack('<I', stream.read(4))[0]:
                 names.append(_text(stream.word()))
-                stream.read(12)                 # size, checksum
+                sizes.append(struct.unpack('<q', stream.read(8))[0])
+                stream.read(4)                  # checksum
                 if len(names) > 500000:
                     raise ValueError('the list of files does not end')
+            if take is not None:
+                # the files themselves follow the list, one after another
+                data = {}
+                rest = bytes(stream.data[stream.pos:])
+                stream.data = bytearray()
+
+                def get(count, keep):
+                    nonlocal rest
+                    parts = []
+                    while count > 0:
+                        if not rest:
+                            rest = stream.fill()
+                            if not rest:
+                                raise ValueError('the file ends inside its content')
+                        piece, rest = rest[:count], rest[count:]
+                        count -= len(piece)
+                        if keep:
+                            parts.append(piece)
+                    return b''.join(parts)
+                last = max([i for i, name in enumerate(names) if take(name)] or [-1])
+                for i, name in enumerate(names[:last + 1]):
+                    if sizes[i] < 0:
+                        raise ValueError('a file of a size below zero')
+                    wanted = take(name)
+                    content = get(sizes[i], wanted)
+                    if wanted:
+                        data.setdefault(name, content)
+                return title, names, data
         except ValueError:
             raise
         except Exception as err:                # (lzma.LZMAError, struct.error ...)
@@ -348,6 +379,7 @@ class Found(object):
     def __init__(self, game):
         self.game = game
         self.where = {}                         # path -> (kind, label): the first place it was seen at
+        self.archive = {}                       # path -> the addon archive (.gma) it was seen in first
         self.looked = collections.Counter()     # kind -> archives or folders looked through
         self.unread = []                        # (file, why): archives that could not be read
         self.cut = False                        # stopped: it took too long
@@ -449,6 +481,10 @@ def look(game, wanted, skip=(), own_marker=None, seconds=40):
             return
         found.looked[kind] += 1
         label = label or title or os.path.basename(path)
+        if kind in (GMA, WORKSHOP):
+            for name in names:
+                if name in wanted and name not in found.where:
+                    found.archive[name] = path
         _listed(names, wanted, kind, label if number is None else (label, number), found)
 
     try:
