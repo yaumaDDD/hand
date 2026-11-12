@@ -391,6 +391,12 @@ return function(realm)
 	function CreateClientConVar(name, default, save, userinfo, help, min, max)
 		assert(CLIENT, "CreateClientConVar on the server")
 		assert(type(default) == "string")
+		-- (the tests of zcg_hide_bones were written when it alone decided: they run with
+		-- zcg_whole_hands 0; what 1, the default, does has checks of its own)
+		if name == "zcg_whole_hands" then
+			M.wholeHandsDefault = default
+			default = "0"
+		end
 		return CreateConVar(name, default, 0, help, min, max)
 	end
 	function GetConVar(name) return M.convars[name] end

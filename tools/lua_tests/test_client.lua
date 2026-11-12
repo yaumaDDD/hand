@@ -422,6 +422,21 @@ return function(testdir, luaroot)
 	dave.nw.zcg_glove = "none"
 	frame() Z.draw(dave)
 
+	-- zcg_whole_hands 1, the default: a hand that has a material keeps its shape whatever
+	-- zcg_hide_bones says - the sleeve of a jacket hangs on the same bones
+	eq(M.wholeHandsDefault, "1", "zcg_whole_hands is 1 unless asked otherwise")
+	M.setConVar("zcg_hide_bones", 1)
+	M.setConVar("zcg_whole_hands", 1)
+	Z.draw(erin)
+	eq(erin:GetSubMaterial(HANDS_SLOT), "null", "zcg_whole_hands 1: the hands are invisible - their material")
+	eq(drawnHands(erin), "whole", "... and keep their shape")
+	dave.nw.zcg_glove = "moto_3"
+	frame() Z.draw(dave)
+	eq(drawnHands(dave), "shrunk", "a model without that material still has its hands shrunk")
+	dave.nw.zcg_glove = "none"
+	frame() Z.draw(dave)
+	M.setConVar("zcg_whole_hands", 0)
+
 	-- zcg_hide_bones 2 (what version 2.2 called "on every model"): the same as 1
 	M.setConVar("zcg_hide_bones", 2)
 	frame() Z.draw(erin)

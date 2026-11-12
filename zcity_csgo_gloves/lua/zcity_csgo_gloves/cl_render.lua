@@ -51,6 +51,23 @@ local cvHideBones = CreateClientConVar("zcg_hide_bones", "1", true, false,
 	"CS:GO gloves: the wearer's own hands under a glove are shrunk into the wrist while the model is drawn, "
 	.. "so that nothing of them is left whatever they are made of: 1 = on every model (default; 2 is the same), "
 	.. "3 = only on a model that has no material of its own for the hands (as up to version 2.2), 0 = never.", 0, 3)
+-- Shrinking the hand bones takes along everything that hangs on them - the end of a jacket's
+-- sleeve as well: it is pulled into the wrist, the sleeve gets a pointed end and the cuff of the
+-- glove stands out of it, askew. Z-City's own gloves sit on a hand that keeps its shape. So does
+-- a CS:GO glove now: on a model that has a material for its hands the hand stays as it is, only
+-- invisible (the material), and the glove is drawn over it. The bones are still shrunk where
+-- there is no such material to hide.
+local cvWholeHands = CreateClientConVar("zcg_whole_hands", "1", true, false,
+	"CS:GO gloves: 1 = under a glove the hand of the model keeps its shape and is only made invisible (its material), "
+	.. "so the sleeve of a jacket ends the way it does without a glove (default); the bones are shrunk only on a model "
+	.. "without a material for the hands. 0 = zcg_hide_bones decides (as up to version 2.11: shrunk on every model).", 0, 1)
+
+-- how the bones of the hands are treated: 0 never shrunk, 1 on every model, 3 only without a hands material
+local function boneMode()
+	local mode = cvHideBones:GetInt()
+	if mode ~= 0 and cvWholeHands:GetBool() then return 3 end
+	return mode
+end
 
 -- ---------------------------------------------------------------------------------------------
 -- the "draw nothing" material
@@ -812,7 +829,7 @@ function ZCG.Wearing(ent, variant)
 	if variant.fingerless and not (ZCG.FingerMaterial() and ZCG.ArmRemoved(variant.model)) then return nil, false, false end
 
 	local slot = ZCG.HandsSlot(ent)
-	local mode = cvHideBones:GetInt()
+	local mode = boneMode()
 	local bones = mode ~= 0 and (mode ~= 3 or not slot) and ZCG.HandBones(ent) ~= nil
 	if not slot and not bones then return nil, false, false end
 	return slot, variant.fingerless and true or false, bones
@@ -1022,10 +1039,11 @@ concommand.Add("zcg_debug", function()
 	local handInfo = ZCG.HandBones(ent)
 	local below = 0
 	for _, tree in ipairs(handInfo and handInfo.trees or {}) do below = below + #tree end
-	local mode = cvHideBones:GetInt()
+	local mode = boneMode()
 	print("  hand bones           : " .. (handInfo and (#handInfo.trees .. " hands, " .. below .. " bones with the fingers") or "none found")
 		.. "; under a glove they are " .. (mode == 0 and "never shrunk" or mode == 3 and "shrunk only on a model without a hands material"
-			or "shrunk on every model") .. " (zcg_hide_bones " .. mode .. "; 1 = every model, 3 = only without a hands material, 0 = never)")
+			or "shrunk on every model") .. " (zcg_hide_bones " .. cvHideBones:GetInt() .. "; 1 = every model, 3 = only without a hands material, 0 = never"
+			.. "; zcg_whole_hands " .. cvWholeHands:GetString() .. ": 1 = a hand that has a material keeps its shape, whatever zcg_hide_bones says)")
 
 	local bones = {}
 	for _, name in ipairs({ "L_Hand", "R_Hand", "L_Forearm", "R_Forearm", "L_Wrist", "R_Wrist" }) do
