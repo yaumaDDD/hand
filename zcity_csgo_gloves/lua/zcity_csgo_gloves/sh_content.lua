@@ -573,8 +573,8 @@ local function tellVersions(out, trouble)
 				out("  IT LOOKS LIKE THE CONTENT HERE IS THAT OF \"" .. item.title .. "\": this addon looks for the files of \""
 					.. item.instead .. "\" and finds "
 					.. (item.ownThere == 0 and "none" or item.ownThere <= 2 and "next to none" or ("only " .. item.ownThere))
-					.. " of them. Take the build of this addon that has \"" .. item.title
-					.. "\" (the other archive of the release) and copy its folder over this one")
+					.. " of them. Close the game and run sort_content.bat in the folder of this addon: it puts the Lua of \""
+					.. item.title .. "\" in place by itself (it lies in sort_content/versions)")
 			end
 		end
 		if trouble then

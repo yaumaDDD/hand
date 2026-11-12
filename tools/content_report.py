@@ -111,8 +111,11 @@ def of_the_other_version(entry):
     return few and theirs * 2 > max(entry['theirs_all'], 1)
 
 
-def version_lines(found):
-    """what versions_found() gives, as lines for the screen and the report"""
+def version_lines(found, switch=(), held=()):
+    """what versions_found() gives, as lines for the screen and the report
+    switch: the titles of the versions whose Lua lies in the addon as well (sort_content/versions):
+    sort_content.py puts that Lua in place itself, nothing has to be fetched
+    held: such titles when the owner asked to keep the version in place (--no-switch, --use-version)"""
     out = []
     for entry in found:
         theirs = entry['theirs'] + entry['taken']
@@ -125,6 +128,16 @@ def version_lines(found):
             if entry['taken']:
                 out.append(u'  Моделей, которые лежат на местах «%s», а собраны для путей «%s»: %d.' % (taken, title, entry['taken']))
             out.append(u'  Файлов, которые называет только «%s»: %d из %d.' % (taken, entry['ours'], entry['ours_all']))
+            if title in held:
+                out.append(u'  С Lua «%s» игра ищет файлы «%s» — и не найдёт их.' % (taken, taken))
+                out.append(u'  Lua «%s» лежит в аддоне, но версию вы просили не менять. Переключить:' % title)
+                out.append(u'  sort_content.bat без параметров (он выберет версию по контенту сам).')
+                continue
+            if title in switch:
+                out.append(u'  С Lua «%s» игра искала бы файлы «%s» — и не нашла бы их.' % (taken, taken))
+                out.append(u'  Lua «%s» лежит в аддоне (sort_content/versions): аддон переключается на неё сам,' % title)
+                out.append(u'  ничего скачивать не нужно — см. ниже.')
+                continue
             out.append(u'  С этой сборкой игра ищет файлы «%s» — и не найдёт их. Нужна сборка с «%s»:' % (taken, title))
             archive = L.VERSION_ZIPS.get(title)
             if archive:

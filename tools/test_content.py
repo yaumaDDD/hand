@@ -2569,6 +2569,109 @@ def test_versions_of_a_pack(tmp):
           '(an addon whose list knows no other version works as before)')
 
 
+def test_switching_versions(tmp):
+    """The addon carries the Lua of both versions of a pack (sort_content/versions). When the
+    content turns out to be that of the version that is not in place, sort_content.py puts the
+    Lua of that version in place and starts over - nothing else has to be fetched."""
+    names = {'Mod': ['models/slav/m/male_10.mdl', 'models/slav/m/eli.mdl', 'models/slav/f/zoey.mdl', 'models/slav/m/bill.mdl'],
+             'Mod OLD': ['models/zcity/m/male_10.mdl', 'models/zcity/m/eli.mdl', 'models/zcity/f/zoey.mdl', 'models/zcity/m/bill.mdl']}
+    folders = {'Mod': 'mod', 'Mod OLD': 'mod_old'}
+    texts = dict((title, '\n'.join('hg.Appearance.PlayerModels[1]["%s"] = { mdl = "%s" }' % (name, name) for name in names[title]))
+                 for title in names)
+
+    def addon(label, content, in_place='Mod'):
+        root = os.path.join(tmp, 'switching ' + label, 'zcity_csgo_gloves')
+        base = os.path.join(root, 'sort_content', sort_content.VERSIONS)
+        for title, other in (('Mod', 'Mod OLD'), ('Mod OLD', 'Mod')):
+            there = os.path.join(base, folders[title])
+            write(os.path.join(there, 'lua', TABLE_LUA), texts[title])
+            write(os.path.join(there, 'lua', 'bound.lua'), '-- bound for ' + title)
+            os.makedirs(os.path.join(there, 'sort_content'), exist_ok=True)
+            list_content.write_run_list(os.path.join(there, 'sort_content', list_content.RUN_LIST), names[title],
+                                        {TABLE_LUA: texts[title], 'bound.lua': '-- bound for ' + title},
+                                        titles={TABLE_LUA: title}, left_out=[(other, title, names[other], names[title])])
+        write(os.path.join(base, sort_content.VERSIONS_INDEX),
+              '# comment\n' + ''.join('%s\t%s\n' % (folders[title], title) for title in sorted(names)) + '..\tOut\nnope\tGone\n')
+        for rel, data in tree(os.path.join(base, folders[in_place])).items():
+            write(os.path.join(root, rel), data)
+        for rel, data in content.items():
+            write(os.path.join(root, rel), data)
+        return root
+
+    def in_place(root):
+        got = tree(root)
+        return [title for title in sorted(names)
+                if all(got.get(rel) == data for rel, data in tree(os.path.join(root, 'sort_content', sort_content.VERSIONS, folders[title])).items())]
+
+    def content_of(title, where='materials/3/deep/er/'):
+        return dict((where + '/'.join(name.split('/')[-2:]), model([], [], name[len('models/'):])) for name in names[title])
+
+    root = addon('names', {})
+    check(sort_content.versions_of(root) == dict((title, os.path.join(root, 'sort_content', sort_content.VERSIONS, folders[title]))
+                                                 for title in names),
+          'the versions an addon carries are read from its index; a line that leads out of it or to no folder is not one')
+    check(sort_content.versions_of(os.path.join(tmp, 'nowhere')) == {}, 'an addon without them has none')
+    check(sort_content.version_asked(folders, 'old') == 'Mod OLD' and sort_content.version_asked(folders, 'mod') == 'Mod',
+          '--use-version takes a title or a part of it that fits one version only')
+    try:
+        sort_content.version_asked(folders, 'x')
+        check(False, 'a title of no version is refused')
+    except sort_content.UserError as err:
+        check(u'«Mod OLD»' in str(err), 'a title of no version is refused, with the ones there are')
+
+    # the content of the other version: the addon is switched, and the run starts over
+    root = addon('the other version', content_of('Mod OLD'))
+    before = tree(os.path.join(root, 'sort_content', sort_content.VERSIONS))
+    code, text = sort('--addon', root, '--no-game')
+    got = tree(root)
+    check(code == 0 and in_place(root) == ['Mod OLD'], 'content of the other version: its Lua and its list are put in place (%s)' % in_place(root))
+    check(all(got.get(name) for name in names['Mod OLD']) and not any(name in got for name in names['Mod']),
+          'and its files lie where its Lua looks for them')
+    check(tree(os.path.join(root, 'sort_content', sort_content.VERSIONS)) == before, 'the files of both versions stay in the addon')
+    check(u'переключён на «Mod OLD»' in text and text.rstrip().splitlines()[-1].startswith(u'Готово') and u'возьмите' not in text
+          and u'ВНИМАНИЕ: похоже' in text.split(u'=' * 78)[0] and u'ВНИМАНИЕ: похоже' not in text.split(u'=' * 78)[-1],
+          'the run says so, sends nobody for another archive, and ends as a run that went well: %s' % text.rstrip().splitlines()[-2:])
+    code, text = sort('--addon', root, '--no-game')
+    check(code == 0 and in_place(root) == ['Mod OLD'] and u'переключён' not in text, 'a second run changes nothing')
+
+    # ... and back, when the content is that of the first one
+    for name in names['Mod OLD']:
+        os.remove(os.path.join(root, name))
+    for rel, data in content_of('Mod').items():
+        write(os.path.join(root, rel), data)
+    code, text = sort('--addon', root, '--no-game')
+    check(code == 0 and in_place(root) == ['Mod'] and all(name in tree(root) for name in names['Mod']) and u'переключён на «Mod»' in text,
+          'the way back is the same: the content of the first version switches the addon to it again')
+
+    # the content of the version in place, with a stray file of the other one: nothing is switched
+    files = content_of('Mod')
+    files['materials/4/male_10.mdl'] = model([], [], 'zcity/m/male_10.mdl')
+    root = addon('its own content', files)
+    code, text = sort('--addon', root, '--no-game')
+    check(code == 0 and in_place(root) == ['Mod'] and u'переключён' not in text, 'content of the version in place leaves it there')
+
+    # asked not to: as before, but nobody is sent for an archive that is not needed
+    root = addon('kept', content_of('Mod OLD'))
+    code, text = sort('--addon', root, '--no-game', '--no-switch')
+    check(code == 0 and in_place(root) == ['Mod'] and u'без параметров' in text and u'возьмите' not in text,
+          '--no-switch keeps the version in place and tells how to switch: %s' % text.rstrip().splitlines()[-1])
+    root = addon('dry', content_of('Mod OLD'))
+    code, text = sort('--addon', root, '--no-game', '--dry-run')
+    check(in_place(root) == ['Mod'] and u'переключён' not in text, '--dry-run switches nothing')
+    # asked for a version by name
+    root = addon('asked', content_of('Mod'))
+    code, text = sort('--addon', root, '--no-game', '--use-version', 'old')
+    check(code == 0 and in_place(root) == ['Mod OLD'] and u'--use-version' in text,
+          '--use-version puts the Lua of that version in place whatever the content is')
+    code, text = sort('--addon', root, '--no-game')
+    check(code == 0 and in_place(root) == ['Mod'], '... and a plain run chooses by the content again')
+    # an addon without the versions folder: the old advice
+    root = addon('without', content_of('Mod OLD'))
+    shutil.rmtree(os.path.join(root, 'sort_content', sort_content.VERSIONS))
+    code, text = sort('--addon', root, '--no-game', '--names-list', os.path.join(root, 'sort_content', list_content.RUN_LIST))
+    check(code == 0 and u'возьмите' in text and u'переключён' not in text, 'an addon that does not carry the other version says where to get it')
+
+
 def test_missing_by_pack(tmp):
     """What is not there is told pack by pack: such a file comes with the content of that pack, or
     of something the pack depends on - it was not lost on the way. And a pack that was put beside
@@ -4361,6 +4464,7 @@ def main():
         test_namesakes_of_a_pack(tmp)
         test_the_build_takes_lua(tmp)
         test_versions_of_a_pack(tmp)
+        test_switching_versions(tmp)
         test_numbered_folders_of_the_owner(tmp)
         test_thrown_in_folders(tmp)
         test_game_files(tmp)

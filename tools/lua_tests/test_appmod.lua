@@ -289,7 +289,7 @@ return function(testdir, luaroot)
 		M.command("zcg_content", me)
 		eq(logged("  0 of the 2 files that only \"Mod\" names are here"), 1, "versions: zcg_content tells how many of them are installed")
 		eq(logged("IT LOOKS LIKE THE CONTENT HERE IS THAT OF \"Mod OLD\": this addon looks for the files of \"Mod\" and finds none of them. "
-			.. "Take the build of this addon that has \"Mod OLD\" (the other archive of the release) and copy its folder over this one"), 1,
+			.. "Close the game and run sort_content.bat in the folder of this addon: it puts the Lua of \"Mod OLD\" in place by itself (it lies in sort_content/versions)"), 1,
 			"versions: files of the other version and none of this one - the content is that of the other version, and it says so")
 		M.files["models/new/m/eli.mdl"] = true
 		M.log = {}

@@ -29,6 +29,7 @@ import re
 import shutil
 import struct
 import subprocess
+import tempfile
 import sys
 import hashlib
 import zipfile
@@ -745,6 +746,91 @@ def step_sort_tool(out, ran=None):
     return len(SORT_TOOL), len(stock), listed
 
 
+# The Lua of the versions that were left out goes into the addon as well, beside the scripts of
+# sort_content.bat: when the content of the owner turns out to be that of such a version, the tool
+# puts its Lua in place - nobody has to know which archive of a release to take.
+VERSIONS_DIR = 'versions'       # (sort_content.VERSIONS)
+VERSIONS_INDEX = 'index.txt'
+
+
+def version_folder(title):
+    return re.sub(r'[^a-z0-9]+', '_', title.lower()).strip('_') or 'version'
+
+
+def step_versions(out, temp, args, left_out):
+    """left_out: the versions that are not in the addon (what run_lua tells: title, instead).
+    Builds the addon once more with each of them, into a folder that goes away again, and keeps
+    the files that differ - those of that build and those of this one - by their paths in the
+    addon below sort_content/versions/<folder of the version>/.
+    Returns [(title, folder, files)], the version in the addon first."""
+    base = os.path.join(out, SORT_TOOL_DIR, VERSIONS_DIR)
+    if os.path.isdir(base):
+        shutil.rmtree(base)
+    kept = {}       # title -> {path: bytes}
+    order = []
+    for entry in left_out:
+        title, mine = entry['title'], entry['instead']
+        group = [g for g in L.PACK_VERSIONS if title in g]
+        others = [t for t in L.CHOSEN_PACKS if not group or t not in group[0]]
+        scratch = tempfile.mkdtemp(prefix='zcg_version_', dir=os.path.dirname(out))
+        try:
+            other_out = os.path.join(scratch, os.path.basename(out))
+            cmd = [sys.executable, os.path.abspath(__file__), '--out', other_out, '--temp', temp, '--keep-temp',
+                   '--no-versions', '--pack', title]
+            for t in others:
+                cmd += ['--pack', t]
+            if args.original_textures:
+                cmd.append('--original-textures')
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            if proc.returncode != 0:
+                tail = proc.stdout.decode('utf-8', 'replace').strip().splitlines()[-15:]
+                raise BuildError('the build with "%s" (for %s/%s) failed:\n    %s'
+                                 % (title, SORT_TOOL_DIR, VERSIONS_DIR, '\n    '.join(tail)))
+            here = dict(walk_files(out))
+            there = dict(walk_files(other_out))
+            uneven = sorted(set(here) ^ set(there))
+            if uneven:
+                # (a file only one version has would have to be deleted on a switch: the builds put
+                # an empty file at such a place instead, see EMPTY_LUA)
+                raise BuildError('the builds with "%s" and with "%s" do not have the same files, so one cannot be '
+                                 'switched to the other:\n    %s' % (mine, title, '\n    '.join(uneven[:20])))
+            for rel in sorted(here):
+                a, b = read_bytes(here[rel]), read_bytes(there[rel])
+                if a != b:
+                    kept.setdefault(mine, {})[rel] = a
+                    kept.setdefault(title, {})[rel] = b
+            for t in (mine, title):
+                if t not in order:
+                    order.append(t)
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+    # (a version takes part in every switch with the same files)
+    every = sorted(set(rel for files in kept.values() for rel in files))
+    done = []
+    for title in order:
+        folder = version_folder(title)
+        if folder in [f for _t, f, _n in done]:
+            raise BuildError('two versions would share the folder %s/%s/%s' % (SORT_TOOL_DIR, VERSIONS_DIR, folder))
+        for rel in every:
+            data = kept[title].get(rel)
+            if data is None:
+                data = read_bytes(os.path.join(out, rel))    # the same in this build and in that one
+            dest = os.path.join(base, folder, rel)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, 'wb') as f:
+                f.write(data)
+        done.append((title, folder, len(every)))
+    if done:
+        with open(os.path.join(base, VERSIONS_INDEX), 'w', encoding='utf-8', newline='\n') as f:
+            f.write('# The versions this addon can be switched to by sort_content.bat (it does so itself when the\n'
+                    '# content is that of another version; by hand: sort_content.bat --use-version <title>).\n'
+                    '# Each folder holds, by their paths in the addon, the files that differ between the versions.\n'
+                    '# <folder><tab><title>\n')
+            for title, folder, _files in done:
+                f.write('%s\t%s\n' % (folder, title))
+    return done
+
+
 def version_lines(versions, ran):
     """what the build says about the packs of a source that were left out because another version
     of them is in the addon (step_dropins)"""
@@ -1100,7 +1186,7 @@ def summary(out):
             key = 'materials'
         elif rel.endswith('.png'):
             key = 'icons'
-        elif rel.endswith('.lua'):
+        elif rel.endswith('.lua') and rel.startswith('lua/'):
             key = 'lua'
         else:
             key = 'other'
@@ -1128,6 +1214,9 @@ def main():
                     help='of the drop-in packs that are versions of one addon - they bring the same Lua files, and the '
                          'game can only have one (PACK_VERSIONS in tools/zcg_layout.py) - take this one, by the title in '
                          'its addon.json: --pack "Z-City Appearance Mod LEGACY". By default the first one listed there.')
+    ap.add_argument('--no-versions', action='store_true',
+                    help='do not put the Lua of the versions that were left out beside sort_content.bat '
+                         '(sort_content/versions): the addon then cannot switch to them by itself')
     ap.add_argument('--zip', action='store_true',
                     help='also pack the result into <out>.zip (with --pack "Z-City Appearance Mod LEGACY": <out>_legacy.zip)')
     args = ap.parse_args()
@@ -1167,6 +1256,7 @@ def main():
         print('  %d oversized textures replaced by their 1024 px DXT5 versions (saves %s)' % (replaced, mb(saved)))
 
     foreign = ()
+    left_out = ()
     # (the report of a build that was told to take a version with an archive of its own is named after
     # it, like the archive: content_report_legacy.txt - it does not replace the report of the other build)
     listing = os.path.join(os.path.dirname(out), 'content_report%s.txt' % zip_path('')[:-len('.zip')])
@@ -1181,6 +1271,7 @@ def main():
             os.remove(bat)
     else:
         sources, content, named, ran = step_dropins(extractor, temp, out, by_hand)
+        left_out = ran.get('left_out', ()) if ran else ()
         scripts, stock, listed = step_sort_tool(out, ran)
         print('  sort_content.bat: %d scripts, %d names of Z-City itself that it leaves alone%s'
               % (scripts, stock, '' if listed is None else ", %d names the addon's Lua gives when it is run" % listed))
@@ -1246,6 +1337,13 @@ def main():
             print('  ... and %d more' % (len(problems) - 40))
         raise BuildError('the build is not usable, see the problems above')
     print('  %d gloves, %d materials: every model finds its materials and textures' % (len(L.variants()), vmts))
+
+    if left_out and not args.no_versions:
+        print('Versions')
+        for title, folder, files in step_versions(out, temp, args, left_out):
+            print('  %s/%s/%s/: %d files of "%s"%s' % (SORT_TOOL_DIR, VERSIONS_DIR, folder, files, title,
+                                                      '' if title in [e['title'] for e in left_out] else '  (the one in place)'))
+        print('  sort_content.bat puts the Lua of the version the content belongs to in place by itself')
 
     if not args.keep_temp:
         shutil.rmtree(temp, ignore_errors=True)

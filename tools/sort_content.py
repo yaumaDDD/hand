@@ -66,6 +66,14 @@ LEFT_BEHIND = u'не материал и не модель (заметка, ка
 KNOWN_FOLDERS = L.CONTENT_ROOTS + ('maps', 'gamemodes', 'data', 'data_static', 'sort_content', STAGE, ASIDE)
 
 
+# The Lua of the other versions of a pack (zcg_layout.PACK_VERSIONS: Appearance Mod and its LEGACY)
+# lies in the addon as well: sort_content/versions/<folder>/ holds, by their paths in the addon,
+# the files that differ between the builds - a handful of Lua files and the list of names. When
+# the content turns out to be that of another version, these files are put in place.
+VERSIONS = 'versions'
+VERSIONS_INDEX = 'index.txt'     # "<folder><tab><title>" a line
+
+
 class UserError(Exception):
     pass
 
@@ -158,6 +166,71 @@ def find_addon(given):
     return addon
 
 
+def versions_of(addon):
+    """{title of a version: the folder with its files} - the versions the addon can be switched to
+    (the one that is in place is among them)"""
+    base = os.path.join(addon, 'sort_content', VERSIONS)
+    found = {}
+    try:
+        with io.open(os.path.join(base, VERSIONS_INDEX), encoding='utf-8-sig', errors='replace') as f:
+            lines = f.read().splitlines()
+    except (OSError, IOError):
+        return found
+    for line in lines:
+        if line.startswith('#') or '\t' not in line:
+            continue
+        folder, title = line.split('\t', 1)
+        folder, title = folder.strip(), title.strip()
+        # (a name of one folder, nothing that leads out of the addon)
+        if folder and title and folder not in ('.', '..') and not re.search(r'[\\/:]', folder) \
+                and os.path.isdir(os.path.join(base, folder)):
+            found[title] = os.path.join(base, folder)
+    return found
+
+
+def version_asked(versions, text):
+    """the title --use-version means: the title itself, else the only one that has the text in it"""
+    wanted = text.strip().lower()
+    for title in versions:
+        if title.lower() == wanted:
+            return title
+    fits = [title for title in versions if wanted and wanted in title.lower()]
+    if len(fits) == 1:
+        return fits[0]
+    raise UserError(u'--use-version «%s»: %s. Версии в этом аддоне: %s'
+                    % (text, u'подходит несколько' if fits else u'такой версии нет',
+                       u', '.join(u'«%s»' % title for title in sorted(versions)) or u'ни одной (в аддоне нет sort_content/versions)'))
+
+
+def switch_version(addon, folder):
+    """puts the files of a version in place (each by its path in the addon, whole or not at all);
+    returns (files that were replaced, files that were the same already)"""
+    changed = same = 0
+    for rel, full in sorted(walk_files(folder)):
+        target = os.path.join(addon, rel.replace('/', os.sep))
+        with open(long_path(full), 'rb') as f:
+            data = f.read()
+        try:
+            with open(long_path(target), 'rb') as f:
+                if f.read() == data:
+                    same += 1
+                    continue
+        except (OSError, IOError):
+            pass
+        try:
+            if not os.path.isdir(long_path(os.path.dirname(target))):
+                os.makedirs(long_path(os.path.dirname(target)))
+            fresh = target + '.zcg_new'
+            with open(long_path(fresh), 'wb') as f:
+                f.write(data)
+            os.replace(long_path(fresh), long_path(target))
+        except (OSError, IOError) as err:
+            raise UserError(u'Не удалось заменить файл %s: %s\n'
+                            u'Закройте игру (и сервер), если они запущены, и запустите sort_content.bat ещё раз.' % (rel, err))
+        changed += 1
+    return changed, same
+
+
 class Names(object):
     """what the Lua of the addon names"""
     def __init__(self):
@@ -176,6 +249,8 @@ class Names(object):
         self.instead = {}           # title of such a pack -> title of the pack that is in the addon
         self.spare = {}             # a file only such a pack names -> its title
         self.only = {}              # a file the addon names and such a pack does not -> the title of that pack
+        self.switch = set()         # titles of such packs whose Lua the addon carries: it can be switched to them
+        self.held = set()           # the same titles when the owner asked to keep the version that is in place
 
     def pack(self, name):
         """the pack that names a file: its title, else its Lua file; '' when that is not known"""
@@ -950,7 +1025,8 @@ def summary(addon, names, brought, report, job, dry, problems, seen=None, check=
             out.append(u'  файл, имени которого прежняя версия не знала, она не взяла, и он остался в той папке.')
     else:
         out.append(u'Все названные файлы на месте.')
-    out += content_report.version_lines(content_report.versions_found(report, names.instead, names.spare, names.only))
+    out += content_report.version_lines(content_report.versions_found(report, names.instead, names.spare, names.only),
+                                        names.switch, names.held)
     other = [text for text in report.notes if getattr(text, 'kind', None) == 'other version']
     if other:
         out.append(u'ВНИМАНИЕ: файлов, которые по имени подошли бы на пустые места, но оказались файлами другой версии'
@@ -1104,11 +1180,34 @@ def main(argv=None):
                                        'the addon does not have are looked for in it. Default: the game the addon '
                                        'lies in, else the one Steam has; "-" to leave the game alone')
     parser.add_argument('--no-game', action='store_true', help='do not look into the game')
+    parser.add_argument('--no-switch', action='store_true',
+                        help='keep the version of Appearance Mod the addon has, whatever the content turns out to be '
+                             '(by default the Lua of the version the content belongs to is put in place)')
+    parser.add_argument('--use-version', metavar='TITLE',
+                        help='put the Lua of this version in place, whatever the content says: its title or a part '
+                             'of it, e.g. --use-version legacy')
     args = parser.parse_args(argv)
+    return run(args)
 
+
+def run(args, switched=None):
+    """switched: the title of the version this very run has put in place before it started over"""
     temp = tempfile.mkdtemp(prefix='zcg_sort_')
     try:
         addon = find_addon(args.addon)
+        versions = versions_of(addon)
+        if args.names_list is None and versions and os.path.isfile(os.path.join(addon, 'sort_content', list_content.RUN_LIST)):
+            # (the list that is switched together with the Lua is the one in the addon)
+            args.names_list = os.path.join(addon, 'sort_content', list_content.RUN_LIST)
+        if args.use_version and switched is None:
+            asked_title = version_asked(versions, args.use_version)
+            if args.dry_run:
+                say(u'(--dry-run: Lua версии «%s» на место не кладётся)' % asked_title)
+            else:
+                changed, _same = switch_version(addon, versions[asked_title])
+                say(u'Версия по просьбе (--use-version): «%s». %s' % (asked_title, (
+                    u'Заменено файлов: %d.' % changed) if changed else u'Она и стояла: файлы те же.'))
+            switched = asked_title
         # The folder of the game itself among what was handed over is not content to take in: it
         # is the game to look into (the way to name it without typing: drop it onto the .bat).
         dropped = [source for source in args.sources if os.path.isdir(source) and game_files.sure_game(source)]
@@ -1125,6 +1224,10 @@ def main(argv=None):
 
         say(u'Читаю Lua аддона ...')
         names = names_of([os.path.join(addon, 'lua')] + args.lua, args.names_list)
+        if switched is None and not args.no_switch and not args.dry_run:
+            names.switch = set(title for title in names.instead if title in versions)
+        elif args.no_switch or args.use_version:
+            names.held = set(title for title in names.instead if title in versions)
         named = names.named
         say(u'Читаю файлы контента: каждую папку и подпапку ...')
         stock = list_content.stock_names()
@@ -1186,7 +1289,28 @@ def main(argv=None):
         if not args.dry_run and not problems:
             other = [entry for entry in content_report.versions_found(report, names.instead, names.spare, names.only)
                      if content_report.of_the_other_version(entry)]
-            if other:
+            if other and other[0]['title'] in names.switch:
+                # The Lua of that version lies in the addon: it is put in place, and the whole run
+                # starts over with it - its names are other names, its files have other places.
+                title = other[0]['title']
+                changed, _same = switch_version(addon, versions[title])
+                say()
+                say(u'=' * 78)
+                say(u'Контент — от «%s», а в аддоне стоял Lua «%s».' % (title, other[0]['instead']))
+                say(u'Аддон переключён на «%s»: заменено файлов: %d (из sort_content/versions; файлы «%s» лежат там же,'
+                    % (title, changed, other[0]['instead']))
+                say(u'вернуть их: sort_content.bat --use-version \"%s\"). Скачивать другой архив не нужно.' % other[0]['instead'])
+                say(u'Теперь всё проверяется заново — уже с «%s». Итог — тот, что ниже.' % title)
+                say(u'=' * 78)
+                say()
+                args.sources = []       # (they are in the addon by now)
+                shutil.rmtree(temp, ignore_errors=True)
+                return run(args, switched=title)
+            if other and other[0]['title'] in names.held:
+                say(u'Файлы разложены. Но контент — от «%s», а в аддоне стоит Lua «%s» (см. «ВНИМАНИЕ» выше) — так вы просили.'
+                    % (other[0]['title'], other[0]['instead']))
+                say(u'Чтобы аддон переключился на «%s», запустите sort_content.bat без параметров.' % other[0]['title'])
+            elif other:
                 # (the last line is the one that is read: the content is that of the other version)
                 archive = L.VERSION_ZIPS.get(other[0]['title'])
                 say(u'Файлы разложены. Но контент — от «%s», а эта сборка — с «%s» (см. «ВНИМАНИЕ» выше):'
@@ -1194,6 +1318,8 @@ def main(argv=None):
                 say(u'возьмите %s, скопируйте его папку поверх этой и запустите sort_content.bat ещё раз.'
                     % (u'архив %s' % archive if archive else u'сборку с «%s»' % other[0]['title']))
             else:
+                if switched and not args.use_version:
+                    say(u'Аддон переключён на «%s» — по контенту (см. выше).' % switched)
                 say(u'Готово. Запустите игру и наберите в консоли zcg_content — он покажет, чего ещё не хватает.')
         return 2 if problems else 0
     except UserError as err:
