@@ -1131,7 +1131,7 @@ def sort(*args, **kw):
     (fill_content.py, test_filling) - the other tests are about where sorting itself puts a file"""
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
-        code = sort_content.main(list(args) + ([] if kw.get('fill') else ['--no-fill']))
+        code = sort_content.main(list(args) + ([] if kw.get('fill') else ['--no-fill']) + ([] if kw.get('found') else ['--no-found']))
     return code, out.getvalue()
 
 
@@ -2782,6 +2782,48 @@ def test_filling(tmp):
     write(os.path.join(root2, 'materials/3/face (1).vmt'), material('models/p/face'))
     code, said = sort('--addon', root2, '--names-list', path, '--no-game')
     check(code == 0 and 'materials/models/p/face.vmt' not in tree(root2), '--no-fill leaves the names empty')
+
+
+def test_found(tmp):
+    """Materials that lie in the addon and that nobody names are written down for the game
+    (lua/zcity_csgo_gloves/sh_found.lua), which puts them into the menu (sh_auto.lua)."""
+    check(sort_content.lua_string(u'a"b\\c\u044f') == '"a\\"b\\\\c\\209\\143"', 'a name is written as a Lua string: %s' % sort_content.lua_string(u'a"b\\c\u044f'))
+    root = os.path.join(tmp, 'found', 'zcity_csgo_gloves')
+    lua = 'hg.Appearance.Clothes[1].epl = "models/gate/epl"'
+    files = {
+        'lua/autorun/clothes.lua': lua,
+        'materials/models/gate/epl.vmt': material('models/gate/epl'), 'materials/models/gate/epl.vtf': texture('epl'),
+        'materials/models/gate/extra.vmt': material('models/gate/extra'), 'materials/models/gate/extra.vtf': texture('extra'),
+        'materials/models/gate/extra (1).vmt': material('models/gate/extra'),
+        'materials/models/gate/epl copy.vmt': material('models/gate/epl'),
+        'materials/models/hat/skin.vmt': material('models/hat/skin'),
+        'materials/models/hat/empty.vmt': 'junk',
+        'materials/zcity_csgo_gloves/own.vmt': material('own'),
+        'models/hat/hat.mdl': model(['models/hat/'], ['skin'], 'hat/hat.mdl'),
+        'materials/models/faces/van_facemap_new.vmt': material('models/faces/van_facemap_new'),
+    }
+    for rel, data in files.items():
+        write(os.path.join(root, rel), data)
+    taken = set(['materials/models/gate/epl.vmt', 'materials/models/hat/skin.vmt'])
+    got = sort_content.found_materials(root, taken)
+    check(got == ['models/faces/van_facemap_new', 'models/gate/extra'],
+          'the materials nobody names, once each; none that is the same file as a named one, none of the addon itself: %s' % got)
+    code, said = sort('--addon', root, '--no-game', found=True)
+    path = os.path.join(root, sort_content.FOUND_LUA)
+    text = build_addon.read_bytes(path).decode('utf-8') if os.path.isfile(path) else ''
+    check(code == 0 and '"models/faces/van_facemap_new",' in text and '"models/gate/extra",' in text and 'models/gate/epl' not in text
+          and 'models/hat/skin' not in text and text.count('\t"') == 2 and 'ZCGloves.Found = {' in text,
+          'sort_content.py writes them into the Lua file for the game - without what the Lua or a model names: %s' % text[-200:])
+    check(u'Контент без Lua' in said and u'— 2.' in said and said.rstrip().splitlines()[-1].startswith(u'Готово'), 'and says so')
+    stamp = os.path.getmtime(path)
+    code, said2 = sort('--addon', root, '--no-game', found=True)
+    check(code == 0 and os.path.getmtime(path) == stamp and u'изменён' not in said2 and said2.count(u'ВНИМАНИЕ') == said.count(u'ВНИМАНИЕ'),
+          'a second run leaves the file as it is, and the file is no Lua somebody changed: nothing to warn of')
+    os.remove(os.path.join(root, 'materials/models/gate/extra.vmt'))
+    os.remove(os.path.join(root, 'materials/models/gate/extra (1).vmt'))
+    os.remove(os.path.join(root, 'materials/models/faces/van_facemap_new.vmt'))
+    code, said = sort('--addon', root, '--no-game', found=True)
+    check(code == 0 and not os.path.isfile(path) and u'Контент без Lua' not in said, 'with nothing left to list the file goes away')
 
 
 def test_missing_by_pack(tmp):
@@ -4578,6 +4620,7 @@ def main():
         test_versions_of_a_pack(tmp)
         test_switching_versions(tmp)
         test_filling(tmp)
+        test_found(tmp)
         test_numbered_folders_of_the_owner(tmp)
         test_thrown_in_folders(tmp)
         test_game_files(tmp)

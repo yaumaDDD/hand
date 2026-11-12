@@ -5,7 +5,7 @@
 if SERVER then AddCSLuaFile() end
 
 ZCGloves = ZCGloves or {}
-ZCGloves.Version = "2.8.0"
+ZCGloves.Version = "2.9.0"
 
 local DIR = "zcity_csgo_gloves/"
 
@@ -33,6 +33,9 @@ if file.Exists(DIR .. "sh_bound.lua", "LUA") then shared("sh_bound.lua") end
 shared("sh_core.lua")
 shared("sh_materials.lua")
 shared("sh_content.lua")
+-- (sort_content.bat writes this one when materials lie in the addon that no Lua names: see sh_auto.lua)
+if file.Exists(DIR .. "sh_found.lua", "LUA") then shared("sh_found.lua") end
+shared("sh_auto.lua")
 server("sv_core.lua")
 client("cl_render.lua")
 client("cl_editor.lua")

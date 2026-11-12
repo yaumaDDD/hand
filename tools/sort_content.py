@@ -1186,6 +1186,8 @@ def main(argv=None):
                              '(copies of renamed files, see fill_content.py)')
     parser.add_argument('--fill-namesakes', action='store_true',
                         help='also fill a name the Lua gives with the only file of that name from ANOTHER folder')
+    parser.add_argument('--no-found', action='store_true',
+                        help='do not write the list of the materials nobody names (content without Lua) for the game')
     parser.add_argument('--no-switch', action='store_true',
                         help='keep the version of Appearance Mod the addon has, whatever the content turns out to be '
                              '(by default the Lua of the version the content belongs to is put in place)')
@@ -1194,6 +1196,75 @@ def main(argv=None):
                              'of it, e.g. --use-version legacy')
     args = parser.parse_args(argv)
     return run(args)
+
+
+# Materials that lie in the addon and that nobody names - no Lua, no model: content that came
+# without its Lua. They are written down for the game, which puts them into the appearance menu
+# where its tables show that they belong (lua/zcity_csgo_gloves/sh_auto.lua).
+FOUND_LUA = 'lua/%s/sh_found.lua' % L.ADDON_DIRNAME
+
+
+def lua_string(text):
+    out = []
+    for byte in bytearray(text.encode('utf-8')):
+        char = chr(byte)
+        if char in '"\\':
+            out.append('\\' + char)
+        elif 32 <= byte < 127:
+            out.append(char)
+        else:
+            out.append('\\%03d' % byte)
+    return '"' + ''.join(out) + '"'
+
+
+def found_materials(addon, taken):
+    """the materials below materials/ that are not in taken (paths in the addon) and are not the
+    addon's own: game names without materials/ and .vmt, sorted. Of several files that are the
+    same byte for byte one is listed - none when one of them is taken."""
+    by_data = collections.OrderedDict()
+    for rel, full in sorted(walk_files(os.path.join(addon, 'materials'))):
+        rel = 'materials/' + rel
+        if not rel.lower().endswith('.vmt') or L.is_own_content(rel) or rel != rel.lower():
+            continue
+        try:
+            with open(long_path(full), 'rb') as f:
+                data = f.read()
+        except (OSError, IOError):
+            continue
+        by_data.setdefault(data, []).append(rel)
+    found = []
+    for data, rels in by_data.items():
+        if b'$' not in data or any(rel in taken for rel in rels):
+            continue
+        # (the plain name before "x (1)", the short path before the long one)
+        found.append(sorted(rels, key=lambda rel: (len(rel), rel))[0][len('materials/'):-len('.vmt')])
+    return sorted(found)
+
+
+def write_found(addon, found):
+    """writes (or removes) the list for the game; returns True when the file was changed"""
+    path = os.path.join(addon, FOUND_LUA.replace('/', os.sep))
+    if not found:
+        if os.path.isfile(path):
+            os.remove(path)
+            return True
+        return False
+    text = (u'-- Written by sort_content.bat: materials that lie in this addon and that no Lua and no model names.\n'
+            u'-- The game puts them into the appearance menu where they belong (sh_auto.lua; zcg_found_content 0 = not).\n'
+            u'-- Do not edit: the next run of sort_content.bat writes the file anew. The server needs the same file.\n'
+            u'ZCGloves.Found = {\n' + u''.join(u'\t%s,\n' % lua_string(name) for name in found) + u'}\n').encode('utf-8')
+    try:
+        with open(path, 'rb') as f:
+            if f.read() == text:
+                return False
+    except (OSError, IOError):
+        pass
+    if not os.path.isdir(os.path.dirname(path)):
+        os.makedirs(os.path.dirname(path))
+    with open(path + '.zcg_new', 'wb') as f:
+        f.write(text)
+    os.replace(path + '.zcg_new', path)
+    return True
 
 
 # how many times in a row the names without a file are filled: a material that was copied asks
@@ -1358,6 +1429,24 @@ def run(args, switched=None, filled=None):
                         f.write(u'\r\n' + u'\r\n'.join(now) + u'\r\n')
                     for line in fill_content.short(got):
                         say(line)
+            if not args.no_found:
+                # what nobody names is written down for the game
+                taken = set(named) | set(names.spare) | set(stock)
+                for _model, _name, group, there in report.model_materials:
+                    taken.update(group)
+                    if there:
+                        taken.add(there)
+                loose = found_materials(addon, taken)
+                try:
+                    write_found(addon, loose)
+                except (OSError, IOError) as err:
+                    say(u'ВНИМАНИЕ: не удалось записать %s: %s (закройте игру и запустите ещё раз).' % (FOUND_LUA, err))
+                    loose = []
+                if loose:
+                    say(u'Контент без Lua: материалов, которых не называет ни один Lua и ни одна модель, — %d.' % len(loose))
+                    say(u'  Они записаны в %s: игра сама добавит в меню внешности те, место которых' % FOUND_LUA)
+                    say(u'  понятно, — лица (…_facemap…) к лицам их модели, одежду к одежде. Сколько добавлено и что нет —')
+                    say(u'  покажут в игре zcg_content и zcg_found_list. Этот файл нужен и на сервере (копируйте папку целиком).')
             if other and other[0]['title'] in names.held:
                 say(u'Файлы разложены. Но контент — от «%s», а в аддоне стоит Lua «%s» (см. «ВНИМАНИЕ» выше) — так вы просили.'
                     % (other[0]['title'], other[0]['instead']))

@@ -77,10 +77,11 @@ def shipped_thrown(folder, how, outside):
 
 
 def result(folder):
-    """the files of the addon without the tool, its report and the list the build writes for the game"""
+    """the files of the addon without the tool, its report and the lists the build and the tool write for the game"""
     got = T.tree(folder)
     report = got.pop(sort_content.REPORT, None)
     got.pop('lua/' + build_addon.BOUND_LUA, None)
+    got.pop(sort_content.FOUND_LUA, None)       # (the list of materials nobody names, for the game)
     for rel in list(got):
         if rel == BAT or rel.startswith(build_addon.SORT_TOOL_DIR + '/'):
             del got[rel]
