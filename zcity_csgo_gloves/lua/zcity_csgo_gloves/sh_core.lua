@@ -50,6 +50,10 @@ ZCG.cvFixFaces = CreateConVar("zcg_fix_faces", "0", FLAGS,
 	.. "purple and black squares - on a computer that has the content of the menu as a whole; 2 = on any computer; "
 	.. "0 = the faces stay as the clothing Lua made them. Set it on the server. zcg_content tells how many there are.", 0, 2)
 
+ZCG.cvBodies = CreateConVar("zcg_fix_bodies", "1", FLAGS,
+	"Appearance menu: 1 = a jacket / T-shirt / trousers / shoes chosen in the menu is also put on a model that calls "
+	.. "the same part a little differently (the models of the LEGACY version and other added ones); 0 = only by exact name, as Z-City does.", 0, 1)
+
 -- ---------------------------------------------------------------------------------------------
 -- helpers
 -- ---------------------------------------------------------------------------------------------
@@ -66,6 +70,77 @@ function ZCG.AppearanceModel(name)
 	local entry = (istable(models[1]) and models[1][name]) or (istable(models[2]) and models[2][name])
 	if istable(entry) then return entry end
 	return nil
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- bodies (jacket / T-shirt / trousers / shoes / gloves of Z-City) on models that name them differently
+-- ---------------------------------------------------------------------------------------------
+-- Z-City and the Appearance Mod put a body on by exact names: the body group of the model must be
+-- called as the list of the menu calls it, and its part as the entry says ("sheet_tshirt_m").
+-- The models of the other version of the pack (LEGACY, models/zcity/...) and other added models
+-- may call the same things a little differently ("Sheet", "sheet_tshirt_m.smd", "sheet_tshirt",
+-- "sheet_tshirt_f" on a model the menu counts as male): the choice then silently did nothing.
+-- Here a name that has no exact match is looked for loosely. A name that matches exactly is left
+-- to Z-City, nothing is done twice.
+local function loose(name)
+	name = string.lower(tostring(name or ""))
+	name = string.gsub(name, "%.smd$", "")
+	name = string.gsub(name, "%.dmx$", "")
+	name = string.gsub(name, "[%s%-]+", "_")
+	name = string.gsub(name, "_female$", "")
+	name = string.gsub(name, "_male$", "")
+	name = string.gsub(name, "_[mf]$", "")
+	if name == "hand" then name = "hands" end
+	return name
+end
+
+local function insensitive(tbl, key)
+	if not istable(tbl) or not isstring(key) then return nil end
+	if tbl[key] ~= nil then return tbl[key], key end
+	local lower = string.lower(key)
+	for k, v in pairs(tbl) do
+		if isstring(k) and string.lower(k) == lower then return v, k end
+	end
+	return nil
+end
+
+-- puts on the bodies chosen in the appearance table that Z-City could not put on by exact name.
+-- Returns how many body groups were set.
+function ZCG.FixBodygroups(ent, appearance)
+	if not ZCG.cvBodies:GetBool() then return 0 end
+	local AP = hg and hg.Appearance
+	local catalog = AP and AP.Bodygroups
+	if not IsValid(ent) or not istable(appearance) or not istable(catalog) then return 0 end
+	local chosen = appearance.ABodygroups
+	if not istable(chosen) or not ent.GetBodyGroups then return 0 end
+	local entry = ZCG.AppearanceModel(appearance.AModel)
+	local sex = entry and entry.sex and 2 or 1
+
+	local set = 0
+	for _, group in ipairs(ent:GetBodyGroups() or {}) do
+		local variant = insensitive(chosen, group.name)
+		local list = insensitive(catalog, group.name)
+		list = istable(list) and list[sex]
+		local data = variant ~= nil and istable(list) and list[variant]
+		local wanted = istable(data) and data[1]
+		if isstring(wanted) and istable(group.submodels) then
+			local exact, found = false, nil
+			local want = loose(wanted)
+			for index = 0, #group.submodels do
+				local name = group.submodels[index]
+				if name == wanted then exact = index end
+				if found == nil and isstring(name) and loose(name) == want then found = index end
+			end
+			-- (an exact name under an exact group name is what Z-City already did)
+			local zcity = exact and chosen[group.name] ~= nil and catalog[group.name] ~= nil
+			local index = exact or found
+			if not zcity and index and ent:GetBodygroup(group.id) ~= index then
+				ent:SetBodygroup(group.id, index)
+				set = set + 1
+			end
+		end
+	end
+	return set
 end
 
 -- name of the material that covers the hands of a player model (lower case)

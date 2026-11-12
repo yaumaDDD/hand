@@ -125,6 +125,10 @@ local function wrapViewer(main, viewer)
 
 	viewer.LayoutEntity = function(self, ent, ...)
 		local result = layout(self, ent, ...)
+		-- (the bodies chosen in the menu on a model that names them differently: sh_core.lua)
+		if not broken and IsValid(ent) and istable(main.AppearanceTable) then
+			pcall(ZCG.FixBodygroups, ent, main.AppearanceTable)
+		end
 		guard(editorLayout, ent)
 		return result
 	end
