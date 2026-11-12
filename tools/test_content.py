@@ -4114,6 +4114,19 @@ def test_every_folder(tmp):
           % sorted(rel.encode('ascii', 'backslashreplace') for rel in made if not lies(made[rel])))
     check(not os.path.isdir(os.path.join(root, 'materials', 'materials1')) and not os.path.isdir(os.path.join(root, 'models', 'models4')),
           'and the folders they came in are gone')
+    # (said aloud, for the run on Windows: was the long path tried there, and does that computer
+    # open such a path as it is written - if not, it was the tool that got to it)
+    if long_made:
+        far = os.path.join(root, *('materials/models/%s/far.vmt' % long_name).split('/'))
+        try:
+            with open(far, 'rb'):
+                plainly = 'yes'
+        except OSError:
+            plainly = 'no'
+        print('  a path of %d characters: %s (this computer opens such a path as it is written: %s)'
+              % (longest, 'sorted' if lies('materials/models/%s/far.vmt' % long_name) else 'NOT SORTED', plainly))
+    else:
+        print('  a path beyond 260 characters could not be made on this computer: that part was not tried')
     check(u'Проверка после раскладки — папки materials и models аддона пройдены ещё раз, каждая подпапка:\n' in text
           and u'; файлов моделей: 0\n' in text and u'; материалов и текстур: 0\n' in text
           and u'  папок с номерами (materials1, models2 …) не осталось: всё из них разложено\n' in text
