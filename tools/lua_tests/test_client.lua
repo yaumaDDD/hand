@@ -523,6 +523,43 @@ return function(testdir, luaroot)
 		eq(fay:GetSubMaterial(NAILS), dressed[NAILS], "zcg_whole_hands 0: only the named material, as before")
 		util.GetModelMeshes = nil
 	end
+	do
+		-- A T-shirt: with that body the "hands" material is the whole bare arm. Hiding it would
+		-- take the arms away - it stays, and the hand goes by its bones. With long sleeves (the
+		-- other body) the same material lies on the hands alone and is hidden.
+		local TEE = "models/pack/tee.mdl"
+		M.models[TEE] = { materials = M.models[Z.MALE].materials, bones = M.models[Z.MALE].bones,
+			bodygroups = { { "torso", { "sleeves", "tshirt" } } } }
+		local gus = M.newPlayer("gus", TEE)
+		gus.tpik = Z.tpik
+		dress(gus)
+		local dressed = gus:GetSubMaterial(HANDS_SLOT)
+		gus.nw.zcg_glove = "moto_1"
+		local hand, forearm = gus:LookupBone(bone("R", "Hand")), gus:LookupBone(bone("R", "Forearm"))
+		local function vertices(n, b)
+			local out = {}
+			for i = 1, n do out[i] = { weights = { { bone = b, weight = 1 } } } end
+			return out
+		end
+		local masks = {}
+		util.GetModelMeshes = function(path, lod, mask)
+			masks[#masks + 1] = mask
+			local arm = vertices(40, hand)
+			if mask == 1 then for _, v in ipairs(vertices(60, forearm)) do arm[#arm + 1] = v end end
+			return { { material = M.models[Z.MALE].materials[HANDS_SLOT + 1], verticies = arm } }
+		end
+		M.setConVar("zcg_whole_hands", 1)
+		gus:SetBodygroup(0, 1)
+		frame() Z.draw(gus)
+		eq(gus:GetSubMaterial(HANDS_SLOT), dressed, "a T-shirt: the hands material is the bare arm as well and is not hidden")
+		eq(drawnHands(gus), "shrunk", "the hand goes by its bones instead - the arm stays")
+		eq(ZCG.States[gus].mdl.draws > 0, true, "the glove is drawn")
+		gus:SetBodygroup(0, 0)
+		frame() Z.draw(gus)
+		eq(gus:GetSubMaterial(HANDS_SLOT), "null", "long sleeves on the same model: the material lies on the hands alone and is hidden")
+		check(masks[1] == 1, "the mesh is read for the bodies that are worn: " .. table.concat(masks, " "))
+		util.GetModelMeshes = nil
+	end
 	M.setConVar("zcg_whole_hands", 0)
 
 	-- zcg_hide_bones 2 (what version 2.2 called "on every model"): the same as 1
