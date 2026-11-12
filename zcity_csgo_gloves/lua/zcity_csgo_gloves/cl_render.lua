@@ -230,6 +230,67 @@ local handBones = {} -- lower-case model path -> { count = bones of the model, t
 -- for every hand of the model: its bone and every bone below it, parents first. nil when the
 -- model has no hand bones. A model that is not loaded yet, or a hand with a bone that cannot be
 -- named yet, is asked again once a second; the hands that are known are used meanwhile.
+-- Every material of the model that lies on the hands and on nothing else - found in the mesh of
+-- the model itself (util.GetModelMeshes: every vertex says which bones it hangs on), not by a
+-- name: a hand that is made of another material than the one Z-City calls "hands" (a model of
+-- an appearance pack, a hand in two materials, nails of their own) is found all the same.
+-- Hiding those materials takes the whole hand away and nothing else: a material that also lies
+-- on the arm or the sleeve (less than 9 of 10 of its vertices on the hand bones) is left alone.
+-- Returns a list of sub-material slots (0..31), nil when none was found or the mesh cannot be read.
+local handSlots = {} -- lower-case model path -> { slots = { ... } or false, names = { ... } }
+local HAND_SHARE, HAND_WEIGHT = 0.9, 0.5
+
+function ZCG.HandSlots(ent)
+	local model = ent:GetModel()
+	if not model then return nil end
+	model = string.lower(model)
+	local known = handSlots[model]
+	if known then return known.slots or nil end
+	if not (util and util.GetModelMeshes) then return nil end
+
+	local info = ZCG.HandBones(ent)
+	local materials = ZCG.MaterialList(ent)
+	if not info or not materials or #materials == 0 then return nil end -- (asked again at the next draw)
+	local onHand = {}
+	for _, tree in ipairs(info.trees) do
+		for _, bone in ipairs(tree) do onHand[bone] = true end
+	end
+
+	known = { slots = false, names = {} }
+	handSlots[model] = known
+	local ok, meshes = pcall(util.GetModelMeshes, model, 0, 0)
+	if not ok or not istable(meshes) then return nil end
+
+	local total, hand = {}, {}
+	for _, mesh in ipairs(meshes) do
+		local name = isstring(mesh.material) and string.lower(string.gsub(mesh.material, "\\", "/")) or nil
+		local vertices = mesh.verticies or mesh.vertices or mesh.triangles
+		if name and istable(vertices) then
+			local all, count = 0, 0
+			for _, vertex in ipairs(vertices) do
+				all = all + 1
+				local weight = 0
+				for _, w in ipairs(vertex.weights or {}) do
+					if onHand[w.bone] then weight = weight + (w.weight or 0) end
+				end
+				if weight >= HAND_WEIGHT then count = count + 1 end
+			end
+			total[name], hand[name] = (total[name] or 0) + all, (hand[name] or 0) + count
+		end
+	end
+
+	local slots = {}
+	for i = 1, math.min(#materials, 32) do
+		local name = string.lower(materials[i])
+		if total[name] and total[name] > 0 and hand[name] >= HAND_SHARE * total[name] then
+			slots[#slots + 1] = i - 1
+			known.names[#known.names + 1] = materials[i]
+		end
+	end
+	if #slots > 0 then known.slots = slots end
+	return known.slots or nil
+end
+
 function ZCG.HandBones(ent)
 	local model = ent:GetModel()
 	if not model then return nil end
@@ -275,7 +336,7 @@ local function shrinkHands(ent, state)
 	local info = ZCG.HandBones(ent)
 	if not info or ent:GetBoneCount() ~= info.count then return false end
 	-- (zcg_whole_hands: the bone of the hand itself stays, the fingers go)
-	local fingersOnly = cvWholeHands:GetBool() and ZCG.HandsSlot(ent) ~= nil
+	local fingersOnly = cvWholeHands:GetBool() and (ZCG.HandsSlot(ent) ~= nil or ZCG.HandSlots(ent) ~= nil)
 
 	local saved = state.bones
 	if not saved then
@@ -399,7 +460,53 @@ end
 
 -- Give the hands back. The value is only touched while it still is our "invisible" material:
 -- when the server changed it in the meantime, the new value has already replaced ours.
+local function unhideMore(ent, state)
+	local more = state.more
+	if not more then return end
+	state.more = nil
+	if not IsValid(ent) then return end
+	local invisible = ZCG.HideMaterial()
+	for slot, old in pairs(more) do
+		if ent:GetSubMaterial(slot) == invisible then
+			if old ~= "" then ent:SetSubMaterial(slot, old) else ent:SetSubMaterial(slot, nil) end
+		end
+	end
+end
+
+-- the other materials of the hands (ZCG.HandSlots), next to the one Z-City names
+local function hideMore(ent, state, slots, main)
+	if not slots then return unhideMore(ent, state) end
+	local invisible = ZCG.HideMaterial()
+	local more = state.more
+	if more then
+		-- (another model: other slots)
+		local same = true
+		for slot in pairs(more) do
+			local found = false
+			for _, s in ipairs(slots) do if s == slot then found = true end end
+			if not found then same = false end
+		end
+		if not same then
+			unhideMore(ent, state)
+			more = nil
+		end
+	end
+	for _, slot in ipairs(slots) do
+		if slot ~= main then
+			local current = ent:GetSubMaterial(slot) or ""
+			if current ~= invisible then
+				more = more or {}
+				more[slot] = current
+				ent:SetSubMaterial(slot, invisible)
+			end
+		end
+	end
+	state.more = more
+end
+ZCG.HideMore, ZCG.UnhideMore = hideMore, unhideMore
+
 local function unhide(ent, state)
+	unhideMore(ent, state)
 	local hidden = state.hide
 	if not hidden then return end
 	state.hide = nil
@@ -845,8 +952,10 @@ function ZCG.Wearing(ent, variant)
 	local slot = ZCG.HandsSlot(ent)
 	local mode = boneMode()
 	local bones = mode ~= 0 and (mode ~= 3 or not slot or cvWholeHands:GetBool()) and ZCG.HandBones(ent) ~= nil
-	if not slot and not bones then return nil, false, false end
-	return slot, variant.fingerless and true or false, bones
+	local more = cvWholeHands:GetBool() and ZCG.HandSlots(ent) or nil
+	if not slot and not bones and not more then return nil, false, false end
+	-- (the fourth: every other material that lies on the hands alone - hidden as well)
+	return slot, variant.fingerless and true or false, bones, more
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -874,13 +983,14 @@ local function drawHook(ent)
 
 	-- The glove first: it takes its pose from the hands, and they are only hidden while a glove
 	-- really is drawn over them.
-	local slot, fingers, bones = ZCG.Wearing(ent, variant)
+	local slot, fingers, bones, more = ZCG.Wearing(ent, variant)
 	local drawn = ZCG.DrawGlove(ent, variant, fingers)
 	if drawn and slot then
 		hide(ent, state, slot)
 	else
 		unhide(ent, state)
 	end
+	hideMore(ent, state, drawn and more or nil, slot)
 	if drawn and bones then state.shrunk = shrinkHands(ent, state) end
 end
 
@@ -1047,6 +1157,12 @@ concommand.Add("zcg_debug", function()
 		print("  this glove           : " .. (variant.fingerless and "fingerless" or "full-finger")
 			.. ", hides the hands of this model: " .. (#how > 0 and ("yes, by " .. table.concat(how, " and ")) or "no")
 			.. ", drawn with its own fingers: " .. tostring(fingers))
+	end
+	do
+		local found = ZCG.HandSlots(ent)
+		local known = handSlots[string.lower(model)]
+		print("  materials on the hands alone (read from the mesh): " .. (found and (table.concat(known.names, ", ")
+			.. " -> slots " .. table.concat(found, ", ")) or "none found") .. "; hidden under a glove with zcg_whole_hands 1")
 	end
 	print("  hands material       : " .. ZCG.HandsMaterialName(model) .. " -> slot " .. tostring(slot)
 		.. (slot and (", currently \"" .. ent:GetSubMaterial(slot) .. "\"") or ""))
