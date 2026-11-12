@@ -421,6 +421,8 @@ class Job(object):
         # numbered folders ("materials/materials3"): folder -> [files in it, of them moved to a
         # place, of them put aside]
         self.numbered = collections.OrderedDict()
+        # ... folder -> the folders below it (and itself) that held files
+        self.inside = collections.defaultdict(set)
         # files of a model that lay below materials/ and go below models/, and the other way round
         self.crossed = collections.Counter()
         # what became of every file that was gone through: (where it lay, where it lies then, how) -
@@ -442,6 +444,7 @@ def plan(addon, items, lower_case, extra, report, along=(), real=()):
             entry[0] += 1
             entry[1] += moved
             entry[2] += aside
+            job.inside[folder].add(posixpath.dirname(now).lower())
     places = collections.defaultdict(list)
     for dest, item in report.placed:
         places[id(item)].append(dest)
@@ -1042,8 +1045,8 @@ def numbered_list(job):
     out = []
     for folder in sorted(job.numbered, key=P.natural):
         files, moved, aside = job.numbered[folder]
-        out.append(u'    %s/    файлов: %d, на места: %d, в %s: %d, осталось: %d'
-                   % (folder, files, moved, ASIDE, aside, files - moved - aside))
+        out.append(u'    %s/    папок: %d, файлов: %d, на места: %d, в %s: %d, осталось: %d'
+                   % (folder, len(job.inside.get(folder, ())), files, moved, ASIDE, aside, files - moved - aside))
     return out
 
 
@@ -1148,7 +1151,8 @@ def main(argv=None):
         reasons = collections.Counter(content_report.why(reason) for _now, reason in job.aside)
         more = list(head)
         if job.numbered:
-            more += [u'', u'Папки-копии materials и models — по папкам:'] + numbered_list(job)
+            more += [u'', u'Папки-копии materials и models — по папкам (каждая пройдена целиком; «папок» — сколько '
+                          u'в ней папок с файлами, на любой глубине):'] + numbered_list(job)
         if job.aside:
             more += [u'', u'Убрано в %s (причины):' % ASIDE] + [u'    %s — файлов: %d' % pair for pair in sorted(reasons.items())]
         tail = []

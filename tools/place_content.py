@@ -394,6 +394,9 @@ class Report(object):
         self.left_out = []        # (Item, why)
         self.notes = []
         self.moves = collections.Counter()   # (source, folder as packed, folder in the addon) -> files
+        # ... -> the folders these files lay in, as packed: one line of "moved" stands for a whole
+        # tree that went along, and this tells how many folders of it held files
+        self.moved_folders = {}
         # Items put where they were packed for want of anything better: nobody names them and
         # nothing is known of their folders, or they are not told from their namesakes
         self.as_packed = []
@@ -1357,10 +1360,13 @@ def place(items, named, own, spare=()):
             report.spare.append((dest, item))
         if dest != item.lies:
             src, dst = item.parts[:-1], dest.split('/')[:-1]
+            lay = tuple(src)
             same = common_suffix(src, dst)
             if same:
                 src, dst = src[:len(src) - same + 1], dst[:len(dst) - same + 1]
-            report.moves[(item.source, '/'.join(src), '/'.join(dst))] += 1
+            move = (item.source, '/'.join(src), '/'.join(dst))
+            report.moves[move] += 1
+            report.moved_folders.setdefault(move, set()).add(lay)
     for item in items:
         if id(item) in silent and item.dests == [item.lies]:
             report.as_packed.append(item)

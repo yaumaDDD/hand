@@ -464,8 +464,15 @@ def lines(sources, result, named, written_by, more=(), who=None, spare=None, che
     moves = sorted(result.moves.items(), key=lambda kv: (kv[0][0], kv[0][1]))
     out += [u'', u'Переложено (нашлись по имени или переехали вместе со своей папкой) — файлов: %d'
             % sum(result.moves.values())]
+    # (a line stands for a folder with everything below it: said so, and how many folders that is)
+    inside = dict((move, len(folders)) for move, folders in getattr(result, 'moved_folders', {}).items())
+    if any(count > 1 for count in inside.values()):
+        out.append(u'  Строка — папка целиком, вместе со всеми её подпапками: «папок» — сколько в ней папок с файлами.'
+                   + (u' Каждая подпапка и каждый файл — в конце отчёта, «Все файлы, папка за папкой».' if tail else u''))
     for (source, src, dst), count in moves:
-        out.append(u'    %s  ->  %s/    файлов: %d    [%s]' % (moved_from(sources, source, src), dst, count, source))
+        folders = inside.get((source, src, dst), 0)
+        out.append(u'    %s  ->  %s/    файлов: %d%s    [%s]'
+                   % (moved_from(sources, source, src), dst, count, u', папок: %d' % folders if folders > 1 else u'', source))
 
     # files nothing is known about: they are where they were packed, right or not
     folders = collections.Counter((item.source, posixpath.dirname(item.inner)) for item in result.as_packed)

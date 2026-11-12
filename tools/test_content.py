@@ -1079,6 +1079,38 @@ def test_report(tmp):
         check(content_report.why(reason) != reason, 'a reason in Russian: ' + reason)
     check(content_report.note('something else') == 'something else' and content_report.why('other') == 'other',
           'what is not known stays as it is')
+    check(u'Строка — папка целиком' not in text and u', папок: ' not in text,
+          'a line of one folder is a line of one folder: nothing is said about folders below it')
+
+    # a line of "moved" that stands for a whole tree says how many folders of it held files
+    three = os.path.join(tmp, 'report3')
+    write(os.path.join(three, 'pack/materials/gate/men/a/shirt.vmt'), material('models/gate/men/a/shirt'))
+    write(os.path.join(three, 'pack/materials/gate/men/a/shirt.vtf'), texture('shirt of a man'))
+    write(os.path.join(three, 'pack/materials/gate/women/b/c/shirt.vmt'), material('models/gate/women/b/c/shirt'))
+    write(os.path.join(three, 'pack/materials/gate/women/b/c/shirt.vtf'), texture('shirt of a woman'))
+    write(os.path.join(three, 'pack/materials/gate/logo.vtf'), texture('a logo nobody names'))
+    named = ['materials/models/gate/men/a/shirt.vmt', 'materials/models/gate/women/b/c/shirt.vmt']
+    report, placed = run(scan(three, source='pack.zip', order=1), named)
+    check(sorted(placed) == ['materials/models/gate/logo.vtf', 'materials/models/gate/men/a/shirt.vmt',
+                             'materials/models/gate/men/a/shirt.vtf', 'materials/models/gate/women/b/c/shirt.vmt',
+                             'materials/models/gate/women/b/c/shirt.vtf'],
+          'a tree that lies one level off moves as a whole: %s' % sorted(placed))
+    moved = dict(report.moved_folders)
+    check(list(report.moves.items()) == [(('pack.zip', 'pack/materials/gate', 'materials/models/gate'), 5)]
+          and sorted('/'.join(folder) for folder in moved.get(('pack.zip', 'pack/materials/gate', 'materials/models/gate'), ()))
+          == ['pack/materials/gate', 'pack/materials/gate/men/a', 'pack/materials/gate/women/b/c'],
+          'it is one move, and the folders its files lay in are kept: %s %s' % (sorted(report.moves.items()), sorted(moved.items())))
+    sources = [{'name': 'pack.zip', 'kind': 'archive', 'no_place': []}]
+    text = u'\n'.join(content_report.lines(sources, report, named, 'build_addon.py'))
+    check(u'\nПереложено (нашлись по имени или переехали вместе со своей папкой) — файлов: 5\n'
+          u'  Строка — папка целиком, вместе со всеми её подпапками: «папок» — сколько в ней папок с файлами.\n'
+          u'    pack/materials/gate/  ->  materials/models/gate/    файлов: 5, папок: 3    [pack.zip]\n' in text,
+          'the line says so, and how many folders: %r' % text[text.find(u'Переложено'):][:400])
+    text = u'\n'.join(content_report.lines(sources, report, named, 'sort_content.py', tail=[u'', u'Все файлы, папка за папкой: ...']))
+    check(u'сколько в ней папок с файлами. Каждая подпапка и каждый файл — в конце отчёта, «Все файлы, папка за папкой».\n'
+          u'    pack/materials/gate/  ->  materials/models/gate/    файлов: 5, папок: 3    [pack.zip]\n' in text
+          and text.endswith(u'\n\nВсе файлы, папка за папкой: ...'),
+          'a report that ends with the list of every folder points to it: %r' % text[text.find(u'Переложено'):][:500])
 
 
 # ---- sort_content.py: the same, done to an addon that is installed --------------------------
@@ -3239,8 +3271,8 @@ def test_thrown_in_folders(tmp):
                  u'\u00abmaterials/materials2/models/x/cloth.vmt\u00bb \u0438 \u00abmaterials/materials10/models/x/cloth.vmt\u00bb',
                  u'\u0442\u043e\u0447\u043d\u0430\u044f \u043a\u043e\u043f\u0438\u044f \u0444\u0430\u0439\u043b\u0430, \u043a\u043e\u0442\u043e\u0440\u044b\u0439 \u043b\u0435\u0436\u0438\u0442 \u043d\u0430 \u044d\u0442\u043e\u043c \u043c\u0435\u0441\u0442\u0435',
                  u'\u0444\u0430\u0439\u043b \u043c\u043e\u0434\u0435\u043b\u0438, \u043c\u0435\u0441\u0442\u043e \u043a\u043e\u0442\u043e\u0440\u043e\u0439 \u0437\u0430\u043d\u044f\u0442\u043e \u0434\u0440\u0443\u0433\u043e\u0439 \u043c\u043e\u0434\u0435\u043b\u044c\u044e',
-                 u'    materials/materials5/    \u0444\u0430\u0439\u043b\u043e\u0432: 2, \u043d\u0430 \u043c\u0435\u0441\u0442\u0430: 0, \u0432 %s: 0, \u043e\u0441\u0442\u0430\u043b\u043e\u0441\u044c: 2' % sort_content.ASIDE,
-                 u'    materials/materials10/    \u0444\u0430\u0439\u043b\u043e\u0432: 4, \u043d\u0430 \u043c\u0435\u0441\u0442\u0430: 3, \u0432 %s: 1, \u043e\u0441\u0442\u0430\u043b\u043e\u0441\u044c: 0' % sort_content.ASIDE):
+                 u'    materials/materials5/    \u043f\u0430\u043f\u043e\u043a: 1, \u0444\u0430\u0439\u043b\u043e\u0432: 2, \u043d\u0430 \u043c\u0435\u0441\u0442\u0430: 0, \u0432 %s: 0, \u043e\u0441\u0442\u0430\u043b\u043e\u0441\u044c: 2' % sort_content.ASIDE,
+                 u'    materials/materials10/    \u043f\u0430\u043f\u043e\u043a: 2, \u0444\u0430\u0439\u043b\u043e\u0432: 4, \u043d\u0430 \u043c\u0435\u0441\u0442\u0430: 3, \u0432 %s: 1, \u043e\u0441\u0442\u0430\u043b\u043e\u0441\u044c: 0' % sort_content.ASIDE):
         check(line in report, 'the report of it has: %s' % line)
     check(u'\u041e\u0441\u0442\u0430\u043b\u0438\u0441\u044c \u0444\u0430\u0439\u043b\u044b, \u043a\u043e\u0442\u043e\u0440\u044b\u0435 \u043b\u0435\u0436\u0430\u0442 \u043f\u0440\u044f\u043c\u043e \u0432 \u0442\u0430\u043a\u043e\u0439 \u043f\u0430\u043f\u043a\u0435' in text and u'\u043e\u0441\u0442\u0430\u043b\u043e\u0441\u044c: 2' in text,
           'the screen tells that files of a heap stayed: %r' % text[-1500:])
@@ -4123,6 +4155,15 @@ def test_every_folder(tmp):
           and u'    models/models4/props/  ->  materials/models/props/    файлов: 1\n        crate.jpg\n' in report
           and u'    models/models4/props/  ->  models/props/    файлов: 2\n        crate.mdl, crate.phy\n' in report,
           'the report lists every folder with its files: where each lay and where it lies now: %r' % report[report.find(u'Все файлы'):][:1500])
+    check(u'\nПапки-копии materials и models — по папкам (каждая пройдена целиком; «папок» — сколько в ней папок с файлами, '
+          u'на любой глубине):\n    materials/materials1/    папок: 2, файлов: 3, на места: 3, в _not_used: 0, осталось: 0\n' in report
+          and u'    models/models4/    папок: 1, файлов: 3, на места: 3, в _not_used: 0, осталось: 0\n' in report
+          and u'\n  Строка — папка целиком, вместе со всеми её подпапками: «папок» — сколько в ней папок с файлами. '
+              u'Каждая подпапка и каждый файл — в конце отчёта, «Все файлы, папка за папкой».\n'
+              u'    zcity_csgo_gloves/materials/materials1/models/  ->  materials/models/    файлов: 3, папок: 2    [zcity_csgo_gloves]\n' in report
+          and u'    zcity_csgo_gloves/models/models4/props/  ->  models/props/    файлов: 2    [zcity_csgo_gloves]\n' in report,
+          'where one line stands for a whole folder, it says how many folders of it held files, and where each is listed: %r'
+          % report[report.find(u'Папки-копии materials и models — по папкам'):][:1500])
 
     # ---- once more: nothing to do, and the list says where everything lies
     code, text = sort('--addon', root, '--no-game')
