@@ -67,8 +67,10 @@ end
 local function editorLayout(main, ent)
 	local variant = gloveOn(main, ent)
 	if not variant then return end
-	local slot = ZCG.Wearing(ent, variant)
+	local slot, _, _, more = ZCG.Wearing(ent, variant)
 	if slot then ent:SetSubMaterial(slot, ZCG.HideMaterial()) end
+	-- (every other material that lies on the hands alone; the editor resets them all each frame)
+	for _, other in ipairs(more or {}) do ent:SetSubMaterial(other, ZCG.HideMaterial()) end
 end
 
 -- runs right before the model is drawn: it gets the bones of this frame with the hands shrunk

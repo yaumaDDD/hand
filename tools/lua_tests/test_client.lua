@@ -422,6 +422,109 @@ return function(testdir, luaroot)
 	dave.nw.zcg_glove = "none"
 	frame() Z.draw(dave)
 
+	-- zcg_whole_hands 1, the default: a hand that has a material keeps its shape whatever
+	-- zcg_hide_bones says - the sleeve of a jacket hangs on the same bones
+	eq(M.wholeHandsDefault, "1", "zcg_whole_hands is 1 unless asked otherwise")
+	M.setConVar("zcg_hide_bones", 1)
+	M.setConVar("zcg_whole_hands", 1)
+	Z.draw(erin)
+	eq(erin:GetSubMaterial(HANDS_SLOT), "null", "zcg_whole_hands 1: the hands are invisible - their material")
+	do
+		-- the bone of the hand, on which the sleeve hangs, is as it was; the fingers are gone
+		local hands, fingers, gone = 0, 0, 0
+		for name, was in pairs(erin.posed or {}) do
+			if handBone(name) then
+				local now = erin.shown[name]
+				if name:match("_[LR]_Hand$") then
+					if M.sameMatrix(was, now) then hands = hands + 1 end
+				else
+					fingers = fingers + 1
+					if math.abs(now:GetScale().x - 0.05) < 1e-6 then gone = gone + 1 end
+				end
+			end
+		end
+		eq(hands, 2, "... and the bones of the hands keep their shape: the sleeve hangs on them")
+		check(fingers > 0 and gone == fingers, "the fingers are shrunk away, whatever they are made of: " .. gone .. " of " .. fingers)
+	end
+	do
+		local keep = Z.keepBones
+		Z.keepBones = true
+		Z.draw(erin)
+		local back, all = 0, 0
+		for name, was in pairs(erin.posed or {}) do
+			if handBone(name) then
+				all = all + 1
+				if M.sameMatrix(was, erin:GetBoneMatrix(erin:LookupBone(name))) then back = back + 1 end
+			end
+		end
+		eq(back, all, "after the draw the fingers are given back as they were")
+		Z.keepBones = keep
+	end
+	dave.nw.zcg_glove = "moto_3"
+	frame() Z.draw(dave)
+	eq(drawnHands(dave), "shrunk", "a model without that material still has its hands shrunk")
+	dave.nw.zcg_glove = "none"
+	frame() Z.draw(dave)
+	do
+		-- The hand of a model may be made of other materials than the one Z-City calls "hands":
+		-- they are found in the mesh (every vertex names its bones) and hidden as well - the
+		-- ones that lie on the hands alone, none that also lies on the arm.
+		local PACK = "models/pack/guy.mdl"
+		local list = {}
+		for i, name in ipairs(M.models[Z.MALE].materials) do list[i] = name end
+		list[#list + 1] = "models/pack/skin_hands"
+		list[#list + 1] = "models/pack/arms_and_hands"
+		list[#list + 1] = "models/pack/nails"
+		M.models[PACK] = { materials = list, bones = M.models[Z.MALE].bones }
+		local fay = M.newPlayer("fay", PACK)
+		fay.tpik = Z.tpik
+		dress(fay)
+		local dressed = {}
+		for i = 0, #list - 1 do dressed[i] = fay:GetSubMaterial(i) end
+		fay.nw.zcg_glove = "moto_1"
+		local hand, finger, forearm = fay:LookupBone(bone("R", "Hand")), fay:LookupBone(bone("R", "Finger1")), fay:LookupBone(bone("R", "Forearm"))
+		local function vertices(n, b, w, b2)
+			local out = {}
+			for i = 1, n do out[i] = { weights = { { bone = b, weight = w }, { bone = b2 or forearm, weight = 1 - w } } } end
+			return out
+		end
+		local function join(a, b) for _, v in ipairs(b) do a[#a + 1] = v end return a end
+		local asked = 0
+		util.GetModelMeshes = function(path)
+			asked = asked + 1
+			if path ~= PACK then return nil end
+			return {
+				{ material = "models/pack/skin_hands", verticies = join(vertices(95, hand, 0.8), vertices(5, forearm, 1)) },
+				{ material = "models/pack/Nails", verticies = vertices(10, finger, 1, hand) },
+				{ material = "models/pack/arms_and_hands", verticies = join(vertices(50, hand, 1), vertices(50, forearm, 1)) },
+				{ material = list[1], verticies = vertices(20, forearm, 1) },
+			}
+		end
+		M.setConVar("zcg_whole_hands", 1)
+		frame() Z.draw(fay)
+		local SKIN, BOTH, NAILS = #list - 3, #list - 2, #list - 1
+		eq(fay:GetSubMaterial(SKIN), "null", "a material that lies on the hands alone is hidden, whatever its name")
+		eq(fay:GetSubMaterial(NAILS), "null", "one on the fingers as well")
+		eq(fay:GetSubMaterial(BOTH), dressed[BOTH], "a material that also lies on the arm is left alone")
+		eq(fay:GetSubMaterial(0), dressed[0], "and so is the rest of the model")
+		eq(fay:GetSubMaterial(HANDS_SLOT), "null", "the material Z-City names is hidden as ever")
+		frame() Z.draw(fay)
+		eq(asked, 1, "the mesh of a model is read once")
+		fay:SetSubMaterial(SKIN, "models/server/put")
+		frame() Z.draw(fay)
+		eq(fay:GetSubMaterial(SKIN), "null", "what the server writes over it is hidden again")
+		fay.nw.zcg_glove = "none"
+		frame() Z.draw(fay)
+		eq(fay:GetSubMaterial(SKIN), "models/server/put", "without a glove the materials are back: what was there last")
+		eq(fay:GetSubMaterial(NAILS), dressed[NAILS], "all of them")
+		fay.nw.zcg_glove = "moto_1"
+		M.setConVar("zcg_whole_hands", 0)
+		frame() Z.draw(fay)
+		eq(fay:GetSubMaterial(NAILS), dressed[NAILS], "zcg_whole_hands 0: only the named material, as before")
+		util.GetModelMeshes = nil
+	end
+	M.setConVar("zcg_whole_hands", 0)
+
 	-- zcg_hide_bones 2 (what version 2.2 called "on every model"): the same as 1
 	M.setConVar("zcg_hide_bones", 2)
 	frame() Z.draw(erin)
