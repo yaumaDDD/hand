@@ -370,12 +370,20 @@ def _by_folder(wanted):
     return folders
 
 
+def _long(path):
+    """Windows refuses a path of 260 characters and more unless it is written this way"""
+    if os.name != 'nt' or len(path) < 240 or path.startswith('\\\\?\\'):
+        return path
+    path = os.path.abspath(path)
+    return ('\\\\?\\UNC\\' + path[2:]) if path.startswith('\\\\') else '\\\\?\\' + path
+
+
 def _loose(base, folders, kind, label, found):
     """the wanted files that lie below a folder as files"""
     if not (os.path.isdir(os.path.join(base, 'materials')) or os.path.isdir(os.path.join(base, 'models'))):
         return False
     for folder, names in folders.items():
-        full = os.path.join(base, *folder.split('/'))
+        full = _long(os.path.join(base, *folder.split('/')))
         if not os.path.isdir(full):
             continue
         try:

@@ -50,6 +50,7 @@ def check(ok, text):
 
 
 def write(path, data):
+    path = sort_content.long_path(path)     # (Windows: a path of 260 characters and more)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'wb') as f:
         f.write(data if isinstance(data, bytes) else data.encode('utf-8'))
@@ -3706,6 +3707,20 @@ def test_game_files(tmp):
     check(again.where == {'materials/right/there.vmt': ('workshop', ('Right There', '987654'))},
           'an archive that lies right in the workshop folder is read as well: %s' % again.where)
     os.remove(there)
+    # (a file of an addon folder at a path beyond 260 characters: Windows opens it only when the
+    # path is written the long way)
+    far = '/'.join(['a folder of the game with a long name %02d' % n for n in range(1, 8)])
+    try:
+        write(os.path.join(inner, 'addons', 'deep_pack', 'materials', *(far.split('/') + ['far.vmt'])), material('far'))
+        made = True
+    except OSError:
+        made = False        # (a computer that refuses such a path: nothing to try there)
+    if made:
+        again = game_files.look(game_files.find(given=game), ['materials/%s/far.vmt' % far, 'materials/%s/none.vmt' % far])
+        check(again.where == {'materials/%s/far.vmt' % far: ('folder', 'deep_pack')},
+              'a file of the game at a path of %d characters is found: %s'
+              % (len(os.path.join(inner, 'addons', 'deep_pack', 'materials', far, 'far.vmt')), again.where))
+        shutil.rmtree(sort_content.deep(os.path.join(inner, 'addons', 'deep_pack')))
 
     # ---- in words
     check(content_report.game_place(('vpk', 'sourceengine/hl2_textures_dir.vpk')).endswith(u'sourceengine/hl2_textures_dir.vpk')
@@ -4355,7 +4370,7 @@ def main():
         test_random_trees(tmp)
         test_random_packings(tmp)
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(sort_content.deep(tmp), ignore_errors=True)
     print('test_content.py    %d checks, %d failed' % tuple(CHECKS))
     return 1 if CHECKS[1] else 0
 
