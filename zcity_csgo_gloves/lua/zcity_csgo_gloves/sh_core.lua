@@ -104,6 +104,47 @@ local function insensitive(tbl, key)
 	return nil
 end
 
+-- The parts of the older body groups (TORSO and LEGS of ZCITY Clothing+: "Standard Top", "Wide Top",
+-- "Shorts", "Boots Wider" ...) that the model of this entity has, for one window of the menu:
+-- part "main" (jacket) - TORSO, "pants" - LEGS, "boots" - the boots of LEGS.
+-- Returns { { key = name of the group in the list, name = name in the menu, group = id, index = part }, ... }
+-- sorted by name, and whether the model has such a group at all.
+local LEGACY_GROUP = { main = "TORSO", pants = "LEGS", boots = "LEGS" }
+
+function ZCG.LegacyParts(part, ent, appearance)
+	local wantedGroup = LEGACY_GROUP[part]
+	local AP = hg and hg.Appearance
+	local catalog = AP and AP.Bodygroups
+	if not wantedGroup or not IsValid(ent) or not istable(appearance) or not istable(catalog) or not ent.GetBodyGroups then return {}, false end
+	local list, key = insensitive(catalog, wantedGroup)
+	local entry = ZCG.AppearanceModel(appearance.AModel)
+	list = istable(list) and list[entry and entry.sex and 2 or 1]
+	if not istable(list) then return {}, false end
+
+	local out, has = {}, false
+	for _, group in ipairs(ent:GetBodyGroups() or {}) do
+		if isstring(group.name) and string.lower(group.name) == string.lower(wantedGroup) and istable(group.submodels) then
+			has = true
+			for name, data in pairs(list) do
+				local wanted = istable(data) and data[1]
+				if isstring(name) and isstring(wanted) and (part ~= "boots" or string.find(string.lower(name), "boot", 1, true)) then
+					local exact, found
+					for index = 0, #group.submodels do
+						local sub = group.submodels[index]
+						if sub == wanted then exact = index end
+						if found == nil and isstring(sub) and loose(sub) == loose(wanted) then found = index end
+					end
+					local index = exact or found
+					if index then out[#out + 1] = { key = key, name = name, group = group.id, index = index } end
+				end
+			end
+			break
+		end
+	end
+	table.sort(out, function(a, b) return a.name < b.name end)
+	return out, has
+end
+
 -- puts on the bodies chosen in the appearance table that Z-City could not put on by exact name.
 -- Returns how many body groups were set.
 function ZCG.FixBodygroups(ent, appearance)

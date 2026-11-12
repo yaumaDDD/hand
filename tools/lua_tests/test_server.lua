@@ -209,6 +209,44 @@ return function(testdir, luaroot)
 		AP.Bodygroups.sheet, AP.Bodygroups.pants, AP.Bodygroups.shoes = kept.sheet, kept.pants, kept.shoes
 		AP.PlayerModels[1]["Legacy Guy"] = nil
 	end
+	do -- the older body groups (TORSO, LEGS) for the windows of the Appearance Mod (2.14.0)
+		local AP = hg.Appearance
+		local OLD = "models/zcityadodser/m/old_guy.mdl"
+		M.models[OLD] = { materials = M.models[Z.MALE].materials, bones = M.models[Z.MALE].bones, bodygroups = {
+			{ "torso", { "male_standart_top.smd", "male_standart_tshirt.smd", "male_odessa_jacket.smd" } },
+			{ "legs", { "male_reference_bottom.smd", "male_reference_boots.smd", "male_reference_bottom_shorts.smd", "male_reference_boots_wider.smd" } },
+		} }
+		AP.PlayerModels[1]["Old Guy"] = { mdl = OLD, submatSlots = {}, sex = false }
+		local keptTorso, keptLegs = AP.Bodygroups.TORSO, AP.Bodygroups.LEGS
+		AP.Bodygroups.TORSO = { [1] = { ["Standard Top"] = { "male_standart_top.smd" }, ["T-Shirt"] = { "male_standart_tshirt.smd" },
+			["Robotic Arm"] = { "male_robotic_arm.smd" }, ["Odessa Jacket"] = { "male_odessa_jacket.smd" } },
+			[2] = { ["Mossman Jacket"] = { "female_mossman_jacket.smd" } } }
+		AP.Bodygroups.LEGS = { [1] = { ["Standard Bottom"] = { "male_reference_bottom.smd" }, ["Boots"] = { "male_reference_boots.smd" },
+			["Shorts"] = { "male_reference_bottom_shorts.smd" }, ["Boots Wider"] = { "male_reference_boots_wider.smd" } } }
+		local old = M.newPlayer("old", OLD)
+		local app = { AModel = "Old Guy", ABodygroups = {} }
+		local function names(list)
+			local out = {}
+			for i, item in ipairs(list) do out[i] = item.name .. "=" .. item.index end
+			return table.concat(out, ", ")
+		end
+		local items, has = ZCG.LegacyParts("main", old, app)
+		eq(names(items), "Odessa Jacket=2, Standard Top=0, T-Shirt=1", "jacket window: the TORSO parts this model has, by name")
+		eq(has, true, "the model has the group")
+		eq(items[1].key, "TORSO", "chosen under the name of the group in the list")
+		eq(names((ZCG.LegacyParts("pants", old, app))), "Boots=1, Boots Wider=3, Shorts=2, Standard Bottom=0", "pants window: all of LEGS")
+		eq(names((ZCG.LegacyParts("boots", old, app))), "Boots=1, Boots Wider=3", "boots window: the boots of LEGS")
+		local none, hasNone = ZCG.LegacyParts("main", M.newPlayer("plain", Z.MALE), { AModel = "Male 01", ABodygroups = {} })
+		eq(#none, 0, "a model without such a group: nothing")
+		eq(hasNone, false, "... and it is said so")
+		-- chosen: the server puts it on although the group is called "torso" there
+		old.CurAppearance = { AModel = "Old Guy", ABodygroups = { TORSO = "T-Shirt", LEGS = "Shorts" } }
+		M.advance(0.5)
+		eq(old:GetBodygroup(0), 1, "TORSO = T-Shirt is on")
+		eq(old:GetBodygroup(1), 2, "LEGS = Shorts is on")
+		AP.Bodygroups.TORSO, AP.Bodygroups.LEGS = keptTorso, keptLegs
+		AP.PlayerModels[1]["Old Guy"] = nil
+	end
 	-- an appearance whose AModel is a raw model path (Z-City allows that)
 	frank.CurAppearance.AModel = Z.COMBINE
 	frank:SetModel(Z.COMBINE)
