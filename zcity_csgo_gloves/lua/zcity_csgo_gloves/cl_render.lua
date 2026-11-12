@@ -1079,7 +1079,8 @@ function ZCG.Wearing(ent, variant)
 	-- (a "hands" material that is the bare arm as well - under a T-shirt - is not hidden: the
 	-- arm would go with it. The hand is taken away by its bones then, as on a model without
 	-- such a material.)
-	if slot and cvWholeHands:GetBool() and ZCG.SlotShared(ent, slot) then slot = nil end
+	-- (whatever zcg_whole_hands says: an arm is never hidden)
+	if slot and ZCG.SlotShared(ent, slot) then slot = nil end
 	local mode = boneMode()
 	local bones = mode ~= 0 and (mode ~= 3 or not slot or cvWholeHands:GetBool()) and ZCG.HandBones(ent) ~= nil
 	local more = cvWholeHands:GetBool() and ZCG.HandSlots(ent) or nil

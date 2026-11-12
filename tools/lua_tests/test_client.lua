@@ -580,6 +580,16 @@ return function(testdir, luaroot)
 		hal:SetBodygroup(0, 0)
 		frame() Z.draw(hal)
 		eq(hal:GetSubMaterial(HANDS_SLOT), "null", "the usual body of the same model: hidden")
+		-- the same with zcg_whole_hands 0 (the way of 2.11): the arms of a T-shirt stay as well
+		M.setConVar("zcg_whole_hands", 0)
+		hal:SetBodygroup(0, 1)
+		frame() Z.draw(hal)
+		eq(hal:GetSubMaterial(HANDS_SLOT), dressed, "zcg_whole_hands 0, a T-shirt: the hands material is not hidden either")
+		eq(drawnHands(hal), "shrunk", "... the hand goes by its bones")
+		hal:SetBodygroup(0, 0)
+		frame() Z.draw(hal)
+		eq(hal:GetSubMaterial(HANDS_SLOT), "null", "zcg_whole_hands 0, the usual body: hidden")
+		M.setConVar("zcg_whole_hands", 1)
 
 		-- An arm has few vertices and the fingers many: nearly all of the material is on the hand
 		-- bones, and still it is an arm - some of it lies far from the hand.
