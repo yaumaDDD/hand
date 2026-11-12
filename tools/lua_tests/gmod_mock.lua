@@ -391,12 +391,6 @@ return function(realm)
 	function CreateClientConVar(name, default, save, userinfo, help, min, max)
 		assert(CLIENT, "CreateClientConVar on the server")
 		assert(type(default) == "string")
-		-- (the tests compare the bones of a glove with those of its wearer, one by one: the cuff
-		-- is as the model has it unless a test asks for a thinner one)
-		if name == "zcg_cuff" then
-			M.cuffDefault = default
-			default = "1"
-		end
 		return CreateConVar(name, default, 0, help, min, max)
 	end
 	function GetConVar(name) return M.convars[name] end

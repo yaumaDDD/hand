@@ -51,13 +51,6 @@ local cvHideBones = CreateClientConVar("zcg_hide_bones", "1", true, false,
 	"CS:GO gloves: the wearer's own hands under a glove are shrunk into the wrist while the model is drawn, "
 	.. "so that nothing of them is left whatever they are made of: 1 = on every model (default; 2 is the same), "
 	.. "3 = only on a model that has no material of its own for the hands (as up to version 2.2), 0 = never.", 0, 3)
--- The glove models were made for the bare CS:GO arm, and their cuffs are as wide as a sleeve of
--- a Z-City jacket or wider: the cuff came out through the sleeve. The bones that carry the cuff
--- (forearm, its twist helpers) are made thinner around the arm for the glove alone, so the cuff
--- lies under the sleeve; the hand of the glove keeps its size.
-local cvCuff = CreateClientConVar("zcg_cuff", "0.78", true, false,
-	"CS:GO gloves: how thick the cuff of a glove is around the forearm: 1 = as the model was made (it comes out through "
-	.. "the sleeves of jackets), less = thinner, under the sleeve (default 0.78). Works with zcg_bonemerge 0.", 0.3, 1.5)
 
 -- ---------------------------------------------------------------------------------------------
 -- the "draw nothing" material
@@ -524,11 +517,9 @@ local function readSkeleton(mdl, path)
 	end
 
 	local left, right = index[L_HAND], index[R_HAND]
-	local side, finger, wrists, cuff = {}, {}, {}, {}
+	local side, finger, wrists = {}, {}, {}
 	for i = 0, count - 1 do
 		local name = names[i]
-		cuff[i] = (string.find(name, "Forearm", 1, true) or string.find(name, "Wrist", 1, true)
-			or string.find(name, "Ulna", 1, true)) and true or false
 		side[i] = string.find(name, "_L_", 1, true) and 1 or string.find(name, "_R_", 1, true) and 2 or 0
 
 		-- below a hand: the bones that carry the glove itself
@@ -543,7 +534,7 @@ local function readSkeleton(mdl, path)
 	end
 
 	skeleton = { count = count, names = names, parents = parents, left = left, right = right,
-		side = side, finger = finger, wrists = wrists, cuff = cuff }
+		side = side, finger = finger, wrists = wrists }
 	skeletons[path] = skeleton
 	return skeleton
 end
@@ -646,9 +637,7 @@ local function poseGlove(ent, mdl, state)
 	end
 
 	local names, parents, bones = skeleton.names, skeleton.parents, map.bones
-	local side, wrists, cuff = skeleton.side, skeleton.wrists, skeleton.cuff
-	local thin = cvCuff:GetFloat()
-	if thin > 0.995 and thin < 1.005 then thin = nil end
+	local side, wrists = skeleton.side, skeleton.wrists
 	for i = 0, count - 1 do
 		local matrix
 		local hand = side[i] == 1 and left or side[i] == 2 and right or nil
@@ -674,14 +663,6 @@ local function poseGlove(ent, mdl, state)
 		end
 
 		placed[i] = matrix or false
-		if matrix and thin and cuff[i] and matrix ~= gone then
-			-- the cuff: thinner around the arm (the bone runs along its x axis), as long as it was
-			local scale = matrix:GetScale()
-			if scale.x > 0.1 then
-				matrix = matrix * IDENTITY -- a copy: the bones below are placed by the one as it was
-				matrix:SetScale(Vector(scale.x, scale.y * thin, scale.z * thin))
-			end
-		end
 		-- (a bone nothing could be found for stays where SetupBones put it; none of them carries a glove)
 		if matrix and mdl:GetBoneName(i) == names[i] then mdl:SetBoneMatrix(i, matrix) end
 	end

@@ -745,28 +745,6 @@ return function(testdir, luaroot)
 			"the glove of the missing hand is shrunk to nothing (" .. part .. ")")
 	end
 
-	-- zcg_cuff: the cuff of the glove is thinner around the forearm, so that it lies under a sleeve
-	check(tonumber(M.cuffDefault) and tonumber(M.cuffDefault) < 1, "the cuff is thinner than the model has it unless asked otherwise")
-	M.setConVar("zcg_cuff", "0.5")
-	Z.draw(gina)
-	for _, part in ipairs({ "Forearm", "Wrist" }) do
-		local m, theirs = ginaGlove.shown[bone("R", part)], gina.shown[bone("R", part)]
-		local s, t = m:GetScale(), theirs:GetScale()
-		check(math.abs(s.x - t.x) < 1e-6 and math.abs(s.y - t.y * 0.5) < 1e-6 and math.abs(s.z - t.z * 0.5) < 1e-6
-			and m:GetTranslation() == theirs:GetTranslation(),
-			"zcg_cuff 0.5: half as thick around the arm, as long, at its place (" .. part .. ")")
-	end
-	for _, part in ipairs({ "Hand", "Finger1", "Finger11" }) do
-		local m, theirs = ginaGlove.shown[bone("R", part)], gina.shown[bone("R", part)]
-		local s = m:GetScale()
-		check(theirs ~= nil and math.abs(s.y - s.x) < 1e-6 and math.abs(s.z - s.x) < 1e-6 and s.x > 0.9,
-			"the hand of the glove keeps its size and its place (" .. part .. ")")
-	end
-	check(ginaGlove.shown[bone("L", "Forearm")]:GetScale().x < 0.02, "the glove of a missing hand stays shrunk to nothing")
-	M.setConVar("zcg_cuff", "1")
-	Z.draw(gina)
-	eq(offBone(ginaGlove, gina), nil, "zcg_cuff 1: as the model was made")
-
 	-- a wearer whose bones were never set up (somebody calls ZCG.DrawGlove on a model of their own)
 	local doll = ClientsideModel(Z.MALE)
 	eq(ZCG.DrawGlove(doll, ZCG.ByID.moto_1), false, "no bone matrices: nothing is drawn")
