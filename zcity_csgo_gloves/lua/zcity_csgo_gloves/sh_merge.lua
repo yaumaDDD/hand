@@ -34,6 +34,14 @@ local COPIED = { "PlayerModels", "FuckYouModels", "Clothes", "ClothesDesc", "Fac
 
 local function nothing() end
 
+-- is the entry still the one that was put there? (A face whose material file is not installed is
+-- emptied for the time being - ZCG.FixFaces, sh_content.lua - and is the same face all the same.)
+local function stands(entry)
+	if not istable(entry[1]) then return false end
+	local now = entry[1][entry[2]]
+	return now == entry[3] or (now == "" and isstring(entry[3]))
+end
+
 local function copy(value, seen)
 	if not istable(value) then return value end
 	seen = seen or {}
@@ -78,6 +86,7 @@ local function boxed(file)
 		net = setmetatable({ Receive = nothing }, { __index = net or {} }),
 		util = setmetatable({ AddNetworkString = nothing, PrecacheModel = nothing }, { __index = util or {} }),
 		AddCSLuaFile = nothing,
+		print = nothing, Msg = nothing, MsgN = nothing, MsgC = nothing,
 		include = nothing,
 	}, { __index = _G })
 	setfenv(fn, env)
@@ -156,8 +165,12 @@ local function merge(AP, shadow, suffix)
 				elseif istable(mine) then
 					local materials = {}
 					for _, path in pairs(mine) do materials[lower(path)] = true end
+					for _, entry in ipairs(ZCG.MergeAdded) do
+						if entry[1] == mine then materials[lower(entry[3])] = true end
+					end
 					for name, path in pairs(theirs) do
-						if not materials[lower(path)] then
+						-- (an emptied face of that name is this very face, waiting for its file)
+						if not materials[lower(path)] and mine[name] ~= "" then
 							local key = name
 							if mine[key] ~= nil then key = tostring(name) .. suffix end
 							if mine[key] == nil then
@@ -185,7 +198,7 @@ function ZCG.MergeRemove()
 	local count = 0
 	for i = #ZCG.MergeAdded, 1, -1 do
 		local entry = ZCG.MergeAdded[i]
-		if istable(entry[1]) and entry[1][entry[2]] == entry[3] then
+		if stands(entry) then
 			entry[1][entry[2]] = nil
 			count = count + 1
 		end
@@ -206,7 +219,7 @@ function ZCG.MergeApply()
 	-- (entries of tables that were made anew are forgotten: the old tables are nobody's any more)
 	local kept = {}
 	for _, entry in ipairs(ZCG.MergeAdded) do
-		if istable(entry[1]) and entry[1][entry[2]] == entry[3] and roots[entry[5]] == AP[entry[5]] then kept[#kept + 1] = entry end
+		if stands(entry) and roots[entry[5]] == AP[entry[5]] then kept[#kept + 1] = entry end
 	end
 	ZCG.MergeAdded = kept
 	local before, trouble = #kept, nil

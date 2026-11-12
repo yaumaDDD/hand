@@ -131,6 +131,22 @@ return function(testdir, luaroot)
 	M.setConVar("zcg_merge_versions", "1")
 	check(ZCG.MergeApply() == total, "switched on again: back")
 
+	-- faces whose file is not installed are emptied for the time being (ZCG.FixFaces): they are
+	-- the same faces all the same - no second one "(LEGACY)", and the list keeps its own
+	slot = AP.FacemapsSlots["models/mossman/face"]
+	eq(slot["Face 1 (LEGACY)"], "models/slav/mossman_face", "(the face is there)")
+	slot["Face 2"] = ""
+	slot["Face 1 (LEGACY)"] = ""
+	local t3, m3 = ZCG.MergeApply()
+	check(t3 == total and m3 == 0 and slot["Face 2 (LEGACY)"] == nil, "emptied faces: nothing new, nothing forgotten: " .. tostring(t3) .. ", " .. tostring(m3))
+	M.setConVar("zcg_merge_versions", "0")
+	ZCG.MergeApply()
+	eq(slot["Face 1 (LEGACY)"], nil, "an emptied face that was added goes out with the rest")
+	eq(slot["Face 2"], "", "one that was not stays")
+	slot["Face 2"] = "models/both/face2"
+	M.setConVar("zcg_merge_versions", "1")
+	ZCG.MergeApply()
+
 	-- a build with the other version: an empty list, an empty file
 	ZCG.Merged = {}
 	eq(ZCG.MergeApply(), 0, "an empty list: nothing")
