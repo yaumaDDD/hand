@@ -2,6 +2,8 @@
 
     python tools/title_picture.py SOURCE.png OUT.png --font Bahnschrift.ttf \
         --lines "Z-CITY" "BACK HOLSTER" --behind 68,60,160,420 298,50,140,400
+    python tools/title_picture.py SOURCE.png OUT.png --font Bahnschrift.ttf --bouncy \
+        --lines "REMORSEIM" "GUNS FOR Z-CITY" ...
 
 The first letter of the first line is red, the rest white; the letters are bold, slanted and
 squashed from top to bottom. --behind RECTS: the figures inside these rectangles (x,y,w,h) are
@@ -32,6 +34,35 @@ def line(font, parts, tracking, squash=0.72, slant=0.22):
     wide = Image.new('RGBA', (im.width + int(im.height * slant) + 2, im.height), (0, 0, 0, 0))
     wide.paste(im, (0, 0))
     return wide.transform(wide.size, Image.AFFINE, (1, slant, -slant * im.height, 0, 1, 0), Image.BICUBIC)
+
+
+def bouncy(font, text, squash=0.82, slant=0.2):
+    """A word whose letters jump: each one has its own size, tilt and height, one of them is small
+    (the logo of Remorse). All white."""
+    sizes = (1.22, 1.0, 0.92, 0.7, 1.08, 1.0, 1.04, 0.86, 0.98)
+    tilts = (7, -4, 6, -9, 5, 8, -6, 5, -7)
+    lifts = (0.0, 0.05, -0.06, -0.1, 0.03, -0.05, 0.06, -0.04, 0.02)
+    asc, desc = font.getmetrics()
+    letters, x = [], 0
+    for i, ch in enumerate(text):
+        k = i % len(sizes)
+        if sizes[k] < 0.8:
+            ch = ch.lower()
+        im = Image.new('RGBA', (int(font.getlength(ch)) + 40 * S, asc + desc), (0, 0, 0, 0))
+        ImageDraw.Draw(im).text((20 * S, 0), ch, font=font, fill=WHITE, stroke_width=int(1.6 * S), stroke_fill=WHITE)
+        im = im.crop(im.getbbox())
+        im = im.resize((int(im.width * sizes[k]), int(im.height * sizes[k] * squash)), Image.LANCZOS)
+        wide = Image.new('RGBA', (im.width + int(im.height * slant) + 2, im.height), (0, 0, 0, 0))
+        wide.paste(im, (0, 0))
+        im = wide.transform(wide.size, Image.AFFINE, (1, slant, -slant * im.height, 0, 1, 0), Image.BICUBIC)
+        im = im.rotate(tilts[k], Image.BICUBIC, expand=True)
+        letters.append((im, x, lifts[k]))
+        x += int(im.width * 0.88)
+    height = max(im.height for im, _, _ in letters)
+    out = Image.new('RGBA', (x + 40 * S, int(height * 1.5)), (0, 0, 0, 0))
+    for im, left, lift in letters:
+        out.alpha_composite(im, (left, int(height * 1.25 - im.height + lift * height)))
+    return out.crop(out.getbbox())
 
 
 def blood(size, alpha, seed):
@@ -100,6 +131,8 @@ def main():
     ap.add_argument('--behind', nargs='*', default=[])
     ap.add_argument('--add', nargs='*', default=[])
     ap.add_argument('--blood', type=int, default=None, help='smear blood over the title (seed)')
+    ap.add_argument('--bouncy', action='store_true', help='the first line with jumping letters, white; '
+                    'in the other lines the first Z is red')
     a = ap.parse_args()
 
     src = Image.open(a.source).convert('RGBA')
@@ -108,7 +141,10 @@ def main():
     rows = []
     for i, text in enumerate(a.lines):
         parts = [(text[0], RED), (text[1:], WHITE)] if i == 0 else [(text, WHITE)]
-        im = line(font, parts, (5 if i == 0 else 3) * S)
+        if a.bouncy and 'Z' in text and i:
+            z = text.index('Z')
+            parts = [(text[:z], WHITE), ('Z', RED), (text[z + 1:], WHITE)]
+        im = bouncy(font, text) if a.bouncy and i == 0 else line(font, parts, (5 if i == 0 else 3) * S)
         width = a.width if i == len(a.lines) - 1 else int(a.width * a.first)
         rows.append(im.resize((width * S, int(im.height * width * S / im.width)), Image.LANCZOS))
     total = sum(r.height for r in rows) + a.gap * S * (len(rows) - 1)
