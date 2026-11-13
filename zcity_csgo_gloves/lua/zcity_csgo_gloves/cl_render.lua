@@ -450,6 +450,8 @@ local function shrinkHands(ent, state)
 	local named = ZCG.HandsSlot(ent)
 	if named and ZCG.SlotShared(ent, named) then named = nil end
 	local fingersOnly = cvWholeHands:GetBool() and (named ~= nil or ZCG.HandSlots(ent) ~= nil)
+	-- (short sleeves: no material is hidden there, so the whole hand goes by its bones)
+	if shortSleeves(ent) then fingersOnly = false end
 
 	local saved = state.bones
 	if not saved then
@@ -1251,6 +1253,13 @@ function ZCG.Wearing(ent, variant)
 	local mode = boneMode()
 	local bones = mode ~= 0 and (mode ~= 3 or not slot or cvWholeHands:GetBool()) and ZCG.HandBones(ent) ~= nil
 	local more = cvWholeHands:GetBool() and ZCG.HandSlots(ent) or nil
+	-- Short sleeves: NO material at all is hidden - any of them may be the bare arm (the skin of
+	-- a T-shirt body is found "on the hands" as easily as a glove). The hand goes by its bones
+	-- alone, and the arm, which hangs on other bones, stays.
+	if shortSleeves(ent) then
+		slot, more = nil, nil
+		bones = mode ~= 0 and ZCG.HandBones(ent) ~= nil
+	end
 	-- Hands that are known for certain to be hidden whole by their materials (the mesh was read)
 	-- are hidden and nothing else: no bone of theirs is touched, they stand where they stood.
 	if bones and cvWholeHands:GetBool() and (slot or more) and ZCG.MeshRead(ent) then bones = false end
