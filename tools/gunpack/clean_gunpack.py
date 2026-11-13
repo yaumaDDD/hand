@@ -16,7 +16,9 @@ it; a material its textures.
 An addon that lists the files it needs (tools/models.txt, materials.txt, sounds.txt - the
 Remorseim gun pack does) is sorted by those lists: a listed file that is not at its place is
 looked for by its name among everything that was thrown into the addon (and in the folders
-dropped on the .bat, from which it is copied) and put where the list wants it; used is what
+dropped on the .bat, from which it is copied) and put where the list wants it; what is still
+missing is looked for in the game - its folders, the other addons, the addon archives of the
+workshop (.gma: the files are taken out of them; game_files.py) - and copied in; used is what
 the lists and the Lua of the addon itself name, and pictures (.png .jpg) are judged as well.
 
 Steps: 1. files in numbered, nested or wrong folders (sound1, pack/materials, everything thrown
@@ -38,6 +40,14 @@ import shutil
 import struct
 import sys
 import zipfile
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))    # (in the repository: tools/)
+try:
+    import game_files       # (finds the game and reads its addon archives; lies next to this script)
+except ImportError:
+    game_files = None
 
 ROOTS = ('sound', 'materials', 'models')
 SOUNDS = ('.wav', '.mp3', '.ogg')
@@ -247,6 +257,20 @@ def read_lists(addon):
             if line and not line.startswith('#') and line.split('/')[0] in ROOTS and '.' in line.rsplit('/', 1)[-1]:
                 out.append(line)
     return out if any_list else None
+
+
+def find_file(base, rel):
+    """the file base/rel on the disk, whatever the case its folders and its name are spelled in"""
+    path = long_path(base)
+    for part in rel.split('/'):
+        try:
+            match = [name for name in os.listdir(path) if name.lower() == part]
+        except OSError:
+            return None
+        if not match:
+            return None
+        path = os.path.join(path, match[0])
+    return path if os.path.isfile(path) else None
 
 
 def is_vtx(rel):
@@ -470,6 +494,12 @@ def run(a):
             if os.path.isdir(os.path.join(game, folder)):
                 count += lua_of(os.path.join(game, folder), names)
         say(u'  Lua других аддонов в %s и самой игры: файлов %d' % (parent, count))
+    if game_files is not None:
+        for extra in list(a.lua):
+            if os.path.isdir(extra) and game_files.sure_game(extra):
+                a.lua.remove(extra)
+                a.game = a.game or game_files.sure_game(extra)
+                say(u'  %s — это сама игра: в ней ищутся недостающие файлы' % extra)
     for extra in a.lua:
         if os.path.isdir(extra) and listed_files is not None:
             say(u'  %s: отсюда берутся недостающие файлы списка' % extra)
@@ -515,6 +545,7 @@ def run(a):
     # ---- 1b. an addon with lists: a listed file that is not at its place is looked for by its
     # name - among the files of the addon that are not listed themselves, then in the dropped folders
     found, brought, unsure, lacking, keep_stems, protected = [], [], [], [], set(), set()
+    taken, in_game = [], []
     if listed_files is not None:
         wanted_set = set(listed_files)
         for want in listed_files:
@@ -643,6 +674,76 @@ def run(a):
             else:
                 lacking.append(want)
 
+        # ... and in the game itself: its folders, the other addons, the archives of the workshop
+        # (.gma - the icons and the rest are taken out of them; nothing else is unpacked)
+        if lacking and not a.no_game and game_files is not None:
+            game = game_files.find(addon=addon, given=a.game)
+            if game is None:
+                say(u'  Игра не найдена — недостающее в ней не искалось. Перетащите папку GarrysMod на clean_gunpack.bat.')
+            else:
+                say(u'  Игра: %s — ищу в ней недостающие файлы списка (%d) ...' % (game.root, len(lacking)))
+                ask = {}                            # the name looked for -> the listed file it is for
+                for want in lacking:
+                    if is_vtx(want):
+                        for kind in ('.dx90.vtx', '.dx80.vtx', '.sw.vtx', '.vtx'):
+                            ask[want[:-4] + kind] = want
+                    else:
+                        ask[want] = want
+                seen = game_files.look(game, ask, skip=[addon], seconds=240)
+                inner = os.path.join(game.root, 'garrysmod')
+                got, by_archive = set(), {}
+                for name in sorted(seen.where):
+                    kind, label = seen.where[name]
+                    if kind in (game_files.VPK, game_files.OTHER):
+                        in_game.append(ask[name])           # the game has it by itself: nothing to bring
+                        got.add(ask[name])
+                    elif name in seen.archive:
+                        by_archive.setdefault(seen.archive[name], set()).add(name)
+                    else:
+                        base = {game_files.LOOSE: inner, game_files.DOWNLOAD: os.path.join(inner, 'download')}.get(
+                            kind, os.path.join(inner, 'addons', label if isinstance(label, str) else ''))
+                        source = find_file(base, name)
+                        target = long_path(os.path.join(addon, *name.split('/')))
+                        if source is None:
+                            continue
+                        try:
+                            if not a.dry_run:
+                                os.makedirs(os.path.dirname(target), exist_ok=True)
+                                shutil.copy2(source, target)
+                            files[name] = source if a.dry_run else target
+                            taken.append((source, name))
+                            got.add(ask[name])
+                        except (OSError, IOError):
+                            failed.append(name)
+                for archive in sorted(by_archive):
+                    members = by_archive[archive]
+                    if a.dry_run:
+                        for name in sorted(members):
+                            taken.append((archive, name))
+                            got.add(ask[name])
+                        continue
+                    try:
+                        title, _all, data = game_files.gma_names(archive, lambda name, members=members: name in members)
+                    except (ValueError, OSError, MemoryError) as err:
+                        say(u'  ВНИМАНИЕ: не удалось прочитать %s: %s' % (archive, err))
+                        continue
+                    for name in sorted(data):
+                        target = long_path(os.path.join(addon, *name.split('/')))
+                        try:
+                            os.makedirs(os.path.dirname(target), exist_ok=True)
+                            with open(target, 'wb') as f:
+                                f.write(data[name])
+                            files[name] = target
+                            taken.append((u'%s (%s)' % (title or u'?', os.path.basename(archive)), name))
+                            got.add(ask[name])
+                        except (OSError, IOError):
+                            failed.append(name)
+                lacking[:] = [want for want in lacking if want not in got]
+                if seen.cut:
+                    say(u'  (поиск в игре прерван по времени: просмотрено не всё — запустите ещё раз)')
+                if seen.unread:
+                    say(u'  (архивов, которые не удалось прочитать: %d)' % len(seen.unread))
+
     # ---- 2. what is used
     used, wanted = used_files(files, names, keep_stems)
 
@@ -667,6 +768,11 @@ def run(a):
         say(u'  найдено по имени и переложено туда, где их ждёт список аддона: %d' % len(found))
     if brought:
         say(u'  скопировано из перетащенных папок: %d' % len(brought))
+    if taken:
+        say(u'  %s из игры (папки игры, другие аддоны, архивы мастерской .gma): %d, из них картинок .png / .jpg: %d' % (
+            u'будет взято' if a.dry_run else u'взято', len(taken), sum(1 for _s, name in taken if name.endswith(PICTURES))))
+    if in_game:
+        say(u'  есть в самой игре (её архивы) — в аддон класть не нужно: %d' % len(in_game))
     if protected:
         say(u'  оставлено как есть — несколько разных файлов с именем из списка, какой нужен, неясно: %d' % len(protected))
     if stray:
@@ -680,6 +786,10 @@ def run(a):
     report += [u'  %s -> %s' % pair for pair in found]
     report.append(u'Скопировано из перетащенных папок: %d' % len(brought))
     report += [u'  %s -> %s' % pair for pair in brought]
+    report.append(u'Взято из игры: %d' % len(taken))
+    report += [u'  %s -> %s' % pair for pair in taken]
+    report.append(u'Есть в самой игре (в аддон не кладётся): %d' % len(in_game))
+    report += [u'  ' + rel for rel in in_game]
     if listed_files is not None:
         report.append(u'Файлы списка, которых нет нигде в аддоне: %d' % len(lacking))
         report += [u'  ' + rel for rel in lacking]
@@ -708,8 +818,8 @@ def run(a):
             len(set(listed_files)), len(set(listed_files)) - len(lacking) - len(unsure), len(lacking),
             (u', неясных (несколько разных файлов с одним именем) %d' % len(unsure)) if unsure else u''))
         if lacking:
-            say(u'  Чего не хватает — в отчёте. Эти файлы берутся из игры и мастерской: ИщиКонтент.bat, пункт 1,')
-            say(u'  или перетащите на clean_gunpack.bat папку, где они лежат.')
+            say(u'  Чего не хватает — в отчёте: этих файлов нет ни в аддоне, ни в игре, ни в аддонах мастерской на этом')
+            say(u'  компьютере. Подпишитесь на аддон, в котором они есть, или перетащите на clean_gunpack.bat папку с ними.')
     todo = [files[rel] for rel in unused] + [full for _rel, full in doubles]
     if not todo:
         say(u'Лишнего нет — удалять нечего.')
@@ -751,6 +861,8 @@ def main():
     ap.add_argument('--yes', action='store_true', help='delete without asking')
     ap.add_argument('--dry-run', action='store_true', help='change nothing, only tell')
     ap.add_argument('--keep', action='store_true', help='put the files to their places, delete nothing')
+    ap.add_argument('--game', help='the folder GarrysMod (found by itself when the addon lies in it or Steam has it)')
+    ap.add_argument('--no-game', action='store_true', help='do not look for missing listed files in the game')
     ap.add_argument('--no-neighbours', action='store_true', help='do not read the Lua of the other addons')
     ap.add_argument('--write-names', metavar='OUT')
     ap.add_argument('lua', nargs='*')
