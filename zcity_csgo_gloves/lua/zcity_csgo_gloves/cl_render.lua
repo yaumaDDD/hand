@@ -65,6 +65,13 @@ local cvWholeHands = CreateClientConVar("zcg_whole_hands", "1", true, false,
 	.. "so the sleeve of a jacket ends the way it does without a glove (default); only the fingers are shrunk away, the whole "
 	.. "hand only on a model without a material for the hands. 0 = zcg_hide_bones decides (as up to version 2.11: shrunk on every model).", 0, 1)
 
+-- A T-shirt (short sleeves) under a CS:GO glove. The bare arm of such a body is one piece with
+-- the hand: no material of it is ever hidden, and shrinking the bone of the hand takes the
+-- forearm away with it on the models of the Appearance Mod. So only the fingers go.
+local cvTshirt = CreateClientConVar("zcg_tshirt_hand", "1", true, false,
+	"CS:GO gloves with a T-shirt (short sleeves): 0 = the hand of the model is left as it is (it may show through the glove), "
+	.. "1 = only its fingers are shrunk away, the arm stays (default), 2 = the whole hand is shrunk (takes the forearm away on some models).", 0, 2)
+
 -- how the bones of the hands are treated: 0 never shrunk, 1 on every model, 3 only without a hands material
 local function boneMode()
 	local mode = cvHideBones:GetInt()
@@ -450,8 +457,22 @@ local function shrinkHands(ent, state)
 	local named = ZCG.HandsSlot(ent)
 	if named and ZCG.SlotShared(ent, named) then named = nil end
 	local fingersOnly = cvWholeHands:GetBool() and (named ~= nil or ZCG.HandSlots(ent) ~= nil)
-	-- (short sleeves: no material is hidden there, so the whole hand goes by its bones)
-	if shortSleeves(ent) then fingersOnly = false end
+	-- (short sleeves: zcg_tshirt_hand - the fingers alone, and of the bones below the hand only
+	-- those that are fingers by their names: a helper bone there may carry the forearm)
+	local onlyNamed = false
+	if shortSleeves(ent) then
+		fingersOnly = cvTshirt:GetInt() ~= 2
+		onlyNamed = fingersOnly
+		if onlyNamed and not info.fingers then
+			info.fingers = {}
+			for _, tree in ipairs(info.trees) do
+				for k = 2, #tree do
+					local name = ent:GetBoneName(tree[k])
+					info.fingers[tree[k]] = isstring(name) and string.find(string.lower(name), "finger", 1, true) ~= nil
+				end
+			end
+		end
+	end
 
 	local saved = state.bones
 	if not saved then
@@ -470,7 +491,7 @@ local function shrinkHands(ent, state)
 			local change = small * back -- what happens to the hand happens to the fingers
 			for k = 2, #tree do
 				local bone = tree[k]
-				local matrix = ent:GetBoneMatrix(bone)
+				local matrix = (not onlyNamed or info.fingers[bone]) and ent:GetBoneMatrix(bone) or nil
 				if matrix then
 					saved[n + 1], saved[n + 2] = bone, matrix
 					n = n + 2
@@ -1258,7 +1279,7 @@ function ZCG.Wearing(ent, variant)
 	-- alone, and the arm, which hangs on other bones, stays.
 	if shortSleeves(ent) then
 		slot, more = nil, nil
-		bones = mode ~= 0 and ZCG.HandBones(ent) ~= nil
+		bones = mode ~= 0 and cvTshirt:GetInt() ~= 0 and ZCG.HandBones(ent) ~= nil
 	end
 	-- Hands that are known for certain to be hidden whole by their materials (the mesh was read)
 	-- are hidden and nothing else: no bone of theirs is touched, they stand where they stood.
@@ -1673,7 +1694,7 @@ concommand.Add("zcg_debug", function()
 		.. "\", a glove of Z-City is on " .. tostring(ZCG.StockGlove(ent))
 		.. ", jacket \"" .. tostring(ZCG.JacketOf(ent)) .. "\", short sleeves " .. tostring(shortSleeves(ent) == true)
 		.. ", zcg_fix_bodies " .. ZCG.cvBodies:GetString() .. ", zcg_fix_gloves " .. ZCG.cvGloves:GetString()
-		.. ", zcg_whole_hands " .. cvWholeHands:GetString())
+		.. ", zcg_whole_hands " .. cvWholeHands:GetString() .. ", zcg_tshirt_hand " .. cvTshirt:GetString())
 	if file and file.Write then
 		file.Write("zcg_debug.txt", table.concat(lines, "\n"))
 		say("[CS:GO Gloves] all of this is in garrysmod/data/zcg_debug.txt as well")

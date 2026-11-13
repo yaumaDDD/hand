@@ -137,6 +137,22 @@ return function(testdir, luaroot)
 		if count == 0 then return "no hands" end
 		return whole and "whole" or shrunk and "shrunk" or "something else"
 	end
+	-- (2.17.0, a T-shirt: the bone of the hand as it was, every finger shrunk to the wrist)
+	local function fingersGone(wearer)
+		local fingers = 0
+		for name, was in pairs(wearer.posed or {}) do
+			if handBone(name) then
+				local now = wearer.shown[name]
+				if name:find("Finger", 1, true) then
+					fingers = fingers + 1
+					if math.abs(now:GetScale().x - 0.05) > 1e-6 then return false end
+				elseif not M.sameMatrix(was, now) then
+					return false
+				end
+			end
+		end
+		return fingers > 0
+	end
 
 	-- the server applied the appearance: clothes on every slot, hands included
 	local function dress(ent)
@@ -553,7 +569,14 @@ return function(testdir, luaroot)
 		gus:SetBodygroup(0, 1)
 		frame() Z.draw(gus)
 		eq(gus:GetSubMaterial(HANDS_SLOT), dressed, "a T-shirt: the hands material is the bare arm as well and is not hidden")
-		eq(drawnHands(gus), "shrunk", "the hand goes by its bones instead - the arm stays")
+		eq(fingersGone(gus), true, "only the fingers go by their bones - the hand and the arm stay")
+		M.setConVar("zcg_tshirt_hand", "2")
+		frame() Z.draw(gus)
+		eq(drawnHands(gus), "shrunk", "zcg_tshirt_hand 2: the whole hand is shrunk")
+		M.setConVar("zcg_tshirt_hand", "0")
+		frame() Z.draw(gus)
+		eq(drawnHands(gus), "whole", "zcg_tshirt_hand 0: nothing is shrunk")
+		M.setConVar("zcg_tshirt_hand", "1")
 		eq(ZCG.States[gus].mdl.draws > 0, true, "the glove is drawn")
 		gus:SetBodygroup(0, 0)
 		frame() Z.draw(gus)
@@ -576,7 +599,7 @@ return function(testdir, luaroot)
 		hal:SetBodygroup(0, 1)
 		frame() Z.draw(hal)
 		eq(hal:GetSubMaterial(HANDS_SLOT), dressed, "a body named a T-shirt, no mesh to read: the hands material is not hidden")
-		eq(drawnHands(hal), "shrunk", "... the hand goes by its bones")
+		eq(fingersGone(hal), true, "... only the fingers go by their bones")
 		eq(ZCG.States[hal].mdl.draws > 0, true, "... the glove is drawn over the hand")
 		hal:SetBodygroup(0, 0)
 		frame() Z.draw(hal)
@@ -586,7 +609,7 @@ return function(testdir, luaroot)
 		hal:SetBodygroup(0, 1)
 		frame() Z.draw(hal)
 		eq(hal:GetSubMaterial(HANDS_SLOT), dressed, "zcg_whole_hands 0, a T-shirt: the hands material is not hidden either")
-		eq(drawnHands(hal), "shrunk", "... the hand goes by its bones")
+		eq(fingersGone(hal), true, "... only the fingers go by their bones")
 		hal:SetBodygroup(0, 0)
 		frame() Z.draw(hal)
 		eq(hal:GetSubMaterial(HANDS_SLOT), "null", "zcg_whole_hands 0, the usual body: hidden")
