@@ -1238,9 +1238,8 @@ end
 -- when it can hide the hands: two sets of fingers in one glove would be worse than either.
 function ZCG.Wearing(ent, variant)
 	if not ZCG.HidesHands(variant) then return nil, false, false end
-	-- A T-shirt (short sleeves): the wearer is left as it is - no material hidden, no bone shrunk.
-	-- The glove is drawn over the hand and that is all.
-	if shortSleeves(ent) then return nil, false, false end
+	-- (a T-shirt: the same as with long sleeves - the hand under a CS:GO glove is taken away, the
+	-- arm stays: see the shared material below)
 	if variant.fingerless and not (ZCG.FingerMaterial() and ZCG.ArmRemoved(variant.model)) then return nil, false, false end
 
 	local slot = ZCG.HandsSlot(ent)
