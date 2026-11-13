@@ -174,6 +174,7 @@ return function(testdir, luaroot)
 			{ "Sheet", { "sheet_m.smd", "sheet_tshirt.smd", "sheet_hood_m.smd" } },
 			{ "pants", { "pants_m", "pants_wide_m" } },
 			{ "shoes", { "shoes_m", "shoes_02_f" } },
+			{ "hands", { "hands.smd", "reggloves_FIN_M.smd" } },
 		} }
 		AP.PlayerModels[1]["Legacy Guy"] = { mdl = LEG, submatSlots = {}, sex = false }
 		local kept = { sheet = AP.Bodygroups.sheet, pants = AP.Bodygroups.pants, shoes = AP.Bodygroups.shoes }
@@ -202,6 +203,15 @@ return function(testdir, luaroot)
 		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "Hoodie" } }
 		M.advance(0.5)
 		eq(leg:GetBodygroup(0), 2, "zcg_fix_bodies 1 again: the hoodie is on")
+		-- (2.15.2) a glove of Z-City on a model that names its part with ".smd": Z-City cannot put it on
+		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { HANDS = "Gloves" } }
+		M.advance(0.5)
+		eq(leg:GetBodygroup(3), 1, "the glove of Z-City goes on a model that calls it reggloves_FIN_M.smd")
+		eq(leg:GetNWString("zcg_glove"), "none", "and no CS:GO glove with it")
+		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { HANDS = "CS:GO Moto 05" } }
+		M.advance(0.5)
+		eq(leg:GetBodygroup(3), 0, "a CS:GO glove: the bare hands are back under it")
+		eq(leg:GetNWString("zcg_glove"), "moto_5", "and the CS:GO glove is told")
 		leg:SetModel(Z.COMBINE)
 		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "T-Shirt" } }
 		M.advance(0.5)

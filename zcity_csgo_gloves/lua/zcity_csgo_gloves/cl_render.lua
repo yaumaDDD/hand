@@ -1115,7 +1115,8 @@ function ZCG.StockGlove(ent)
 			if isstring(group.name) and string.lower(group.name) == "hands" and istable(group.submodels) then
 				for index = 0, #group.submodels do
 					local name = group.submodels[index]
-					if isstring(name) and bare[string.lower(name)] then
+					-- (the models of the Appearance Mod call the part "hands.smd")
+					if isstring(name) and bare[(string.gsub(string.lower(name), "%.smd$", ""))] then
 						known = { id = group.id, bare = index }
 						break
 					end
