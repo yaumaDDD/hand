@@ -1137,6 +1137,13 @@ return function(testdir, luaroot)
 			"and who else draws before the wearer: " .. line)
 		check(report:find("hand bones shrunk true (still shrunk after the draw)", 1, true) ~= nil,
 			"an engine that keeps the bones: the report says the hands were still shrunk after the draw")
+		do
+			local out, old = {}, print
+			print = function(text) out[#out + 1] = tostring(text) end
+			local ok, err = pcall(M.command, "zcg_hands", alice)
+			print = old
+			check(ok and #out >= 3 and table.concat(out, "\n"):find("HANDS = ", 1, true) ~= nil, "zcg_hands prints the parts of HANDS in a few lines: " .. tostring(err))
+		end
 		alice:SetBodygroup(1, 2)
 		eq(ZCG.StockGlove(alice), false, "the bare arms of a T-shirt (a part of HANDS) are no glove of Z-City")
 		alice:SetBodygroup(1, 1)

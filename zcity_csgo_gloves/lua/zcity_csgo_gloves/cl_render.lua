@@ -1506,6 +1506,39 @@ concommand.Add("zcg_finger_tint", function(_, _, args)
 		.. "FingerTint = Vector(%.2f, %.2f, %.2f) in lua/zcity_csgo_gloves/sh_config.lua", r, g, b, r, g, b))
 end, nil, "CS:GO gloves: try a colour for the skin of the glove fingers (this client only). zcg_finger_tint <r> <g> <b>")
 
+-- The short one: a few lines that can be copied out of the console as they are.
+concommand.Add("zcg_hands", function()
+	local me = LocalPlayer()
+	local ent = me
+	local target = me:GetEyeTrace().Entity
+	if IsValid(target) and (target:IsPlayer() or target:IsRagdoll()) then ent = target end
+	local invisible = ZCG.HideMaterial()
+	print("[CS:GO Gloves] " .. ZCG.Version .. "  " .. tostring(ent:GetModel()))
+	for _, group in ipairs(ent.GetBodyGroups and ent:GetBodyGroups() or {}) do
+		local name = string.lower(tostring(group.name))
+		local value = ent:GetBodygroup(group.id)
+		if name == "hands" then
+			local parts = {}
+			for index = 0, istable(group.submodels) and #group.submodels or -1 do
+				parts[#parts + 1] = (index == value and ">" or "") .. index .. ":" .. tostring(group.submodels[index])
+			end
+			print("  HANDS = " .. table.concat(parts, " "))
+		elseif (tonumber(group.num) or 0) > 1 then
+			print("  " .. tostring(group.name) .. " = " .. value .. ":" .. tostring(istable(group.submodels) and group.submodels[value]))
+		end
+	end
+	local mats = {}
+	for i, name in ipairs(ent:GetMaterials() or {}) do
+		local sub = ent:GetSubMaterial(i - 1) or ""
+		mats[#mats + 1] = (i - 1) .. ":" .. string.match(name, "[^/]+$") .. (sub == "" and "" or (sub == invisible and "=HIDDEN" or ("=" .. string.match(sub, "[^/]+$"))))
+	end
+	print("  materials = " .. table.concat(mats, " "))
+	local variant = ZCG.GloveOf(ent)
+	print("  cs:go glove \"" .. tostring(variant and variant.id or "none") .. "\", z-city glove on " .. tostring(ZCG.StockGlove(ent))
+		.. ", hands slot " .. tostring(ZCG.HandsSlot(ent)) .. ", short sleeves " .. tostring(shortSleeves(ent) == true)
+		.. ", fix_bodies " .. ZCG.cvBodies:GetString() .. ", fix_gloves " .. ZCG.cvGloves:GetString())
+end, nil, "CS:GO gloves: a few lines about the hands of you or the player you look at, to copy out of the console.")
+
 concommand.Add("zcg_debug", function()
 	-- (everything that is printed goes to data/zcg_debug.txt as well: a file is easier to send)
 	local lines, say = {}, print
