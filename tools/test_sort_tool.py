@@ -209,7 +209,7 @@ def main():
         if os.name != 'nt':
             print('  (not on Windows: sort_content.bat itself is not run)')
         else:
-            env = dict(os.environ, ZCG_NO_PAUSE='1', PYTHONIOENCODING='utf-8')
+            env = dict(os.environ, ZCG_NO_PAUSE='1', PYTHONIOENCODING='utf-8', ZCG_KEEP_UNUSED='1')
             # ---- the batch file and numbered folders: thrown into the addon, then handed over
             for number, how in enumerate(T.THROWN):
                 home = os.path.join(tmp, u'bat (%d)' % number)
