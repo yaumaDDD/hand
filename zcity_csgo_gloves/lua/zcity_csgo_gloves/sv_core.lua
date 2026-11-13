@@ -55,19 +55,6 @@ function ZCG.UpdatePlayer(ply)
 	local id = variant and variant.id or NONE
 	setGlove(ply, id)
 
-	-- Bodies of the menu on models that name them differently (ZCG.FixBodygroups, sh_core.lua):
-	-- once for each time Z-City applies an appearance (it makes a new table then), and only while
-	-- the player wears the model of that appearance - a player class dresses its model itself.
-	local appearance = ply.CurAppearance
-	if istable(appearance) and (ply.zcg_bodies ~= appearance or ply.zcg_bodies_model ~= ply:GetModel()) then
-		ply.zcg_bodies, ply.zcg_bodies_model = appearance, ply:GetModel()
-		local entry = ZCG.AppearanceModel(appearance.AModel)
-		local wanted = entry and entry.mdl
-		if isstring(wanted) and isstring(ply:GetModel()) and string.lower(wanted) == string.lower(ply:GetModel()) then
-			ZCG.FixBodygroups(ply, appearance)
-		end
-	end
-
 	-- the ragdoll of a knocked down (still alive) player follows its owner
 	local ragdoll = ply.FakeRagdoll
 	if IsValid(ragdoll) and ragdoll.zcg_owner == ply and ply:Alive() then
