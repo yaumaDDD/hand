@@ -66,6 +66,7 @@ ZCGloves.Config = {
 		["sheet_hood_m"] = { 0.5, 1, 0 },
 		["sheet_closed_m"] = { 0.6, 1, 0 },
 		["sheet_wide_m"] = { 0.8, 1, 0 },
+		["sheet_tshirt_m"] = { 0.8, 1, 0 },
 	},
 
 	-- text of the extra entry in the "Gloves" menu of the appearance editor

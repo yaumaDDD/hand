@@ -206,7 +206,7 @@ return function(testdir, luaroot)
 		-- (2.15.2) a glove of Z-City on a model that names its part with ".smd": Z-City cannot put it on
 		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "Hoodie", HANDS = "Gloves" } }
 		M.advance(0.5)
-		eq(leg:GetBodygroup(3), 1, "the glove of Z-City goes on a model that calls it reggloves_FIN_M.smd")
+		eq(leg:GetBodygroup(3), 0, "a glove of Z-City: HANDS is not touched by this addon")
 		eq(leg:GetNWString("zcg_glove"), "none", "and no CS:GO glove with it")
 		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "Hoodie", HANDS = "CS:GO Moto 05" } }
 		M.advance(0.5)
@@ -220,10 +220,10 @@ return function(testdir, luaroot)
 		eq(leg:GetNWString("zcg_glove"), "moto_5", "... and the glove is drawn over them")
 		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "T-Shirt", HANDS = "Gloves" } }
 		M.advance(0.5)
-		eq(leg:GetBodygroup(3), 1, "a T-shirt and a glove of Z-City: the glove, as Z-City means it")
+		eq(leg:GetBodygroup(3), 2, "a T-shirt and a glove of Z-City: HANDS is not touched")
 		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "Hoodie", HANDS = "Gloves" } }
 		M.advance(0.5)
-		eq(leg:GetBodygroup(3), 1, "long sleeves again: the glove of Z-City")
+		eq(leg:GetBodygroup(3), 2, "long sleeves and a glove of Z-City: HANDS is not touched")
 		leg:SetModel(Z.COMBINE)
 		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "T-Shirt" } }
 		M.advance(0.5)
