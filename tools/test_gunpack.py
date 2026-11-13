@@ -77,6 +77,10 @@ w('lua/weapons/weapon_bat.lua', b'SWEP.WorldModel = "models/weapons/bat/w.mdl"')
 # pictures the lists leave out: an icon the Lua names, a material it names without an ending, the icon of a class
 w('lua/weapons/weapon_axe.lua', b'SWEP.IconOverride = "vgui/hud/knife.png"\nSWEP.WepSelectIcon = Material("vgui/wep_baton")\nSWEP.Other = "vgui/nowhere.png"')
 w('materials/flat/weapon_axe.png'); w('materials/entities/some_other_class.png')
+# an icon asked for as a picture that exists as a material only (the spawn menu takes that); one that is nowhere
+w('lua/weapons/weapon_hammer.lua', b'SWEP.Spawnable = true\nSWEP.PrintName = "Hammer"\nSWEP.IconOverride = "vgui/hud/hammer_i.png"')
+w('lua/weapons/weapon_saw.lua', b'SWEP.Spawnable = true\nSWEP.PrintName = "Saw"\nSWEP.IconOverride = "vgui/saw.png"')
+w('materials/dump2/materials/vgui/hud/hammer_i.vmt', b'"UnlitGeneric" { "$basetexture" "vgui/hud/hammer_tex" }'); w('materials/flat/hammer_tex.vtf')
 w('materials/dump/models/weapons/bat/w.mdl', mdl('models/weapons/bat/',['wood'])); w('materials/dump/models/weapons/bat/w.dx90.vtx')
 w('materials/dump/materials/models/weapons/bat/wood.vmt', b'"x" { "$basetexture" "models/weapons/bat/wood" }'); w('materials/dump/materials/models/weapons/bat/wood.vtf')
 w('materials/flat/hit.wav'); w('materials/other/sounds/swing.wav'); w('materials/flat/weapon_bat.png'); w('materials/flat/unused.png')
@@ -96,10 +100,12 @@ r=subprocess.run([sys.executable,A+'/tools/clean_gunpack.py','--yes'],capture_ou
 taken=(open(A+'/materials/vgui/hud/pipe.png','rb').read()==b'PNG pipe' and open(A+'/sound/bat/far.wav','rb').read()==b'RIFF far'
     and open(A+'/materials/entities/icon2.png','rb').read()==b'PNG 2') if os.path.isfile(A+'/materials/vgui/hud/pipe.png') else False
 print('taken from the game:',taken); first=first and taken
+icons='Saw' in r.stdout and 'materials/vgui/saw.png' in r.stdout and 'Hammer   ' not in r.stdout
+print('icons told:',icons); first=first and icons
 got=sorted(rel for rel in (os.path.relpath(os.path.join(d,f),A).replace(os.sep,'/') for d,_,fs in os.walk(A) for f in fs) if rel.split('/')[0] in ('sound','materials','models'))
 want=sorted(['models/weapons/bat/w.mdl','models/weapons/bat/w.dx90.vtx','materials/models/weapons/bat/wood.vmt','materials/models/weapons/bat/wood.vtf',
     'sound/bat/hit.wav','sound/bat/swing.wav','materials/entities/weapon_bat.png','materials/vgui/hud/pipe.png','materials/entities/icon2.png','sound/bat/far.wav',
-    'materials/entities/weapon_axe.png','materials/entities/some_other_class.png','materials/vgui/hud/knife.png','materials/vgui/wep_baton.vmt','materials/vgui/wep_baton_tex.vtf','models/a/w.mdl','models/b/w.mdl','models/weapons/axe/w.dx90.vtx'])
+    'materials/entities/weapon_axe.png','materials/entities/some_other_class.png','materials/vgui/hud/hammer_i.vmt','materials/vgui/hud/hammer_tex.vtf','materials/vgui/hud/knife.png','materials/vgui/wep_baton.vmt','materials/vgui/wep_baton_tex.vtf','models/a/w.mdl','models/b/w.mdl','models/weapons/axe/w.dx90.vtx'])
 print('ONLY GOT',sorted(set(got)-set(want))); print('ONLY WANT',sorted(set(want)-set(got)))
 print('OK' if got==want and first else 'FAILED')
 shutil.rmtree(TOP,ignore_errors=True)

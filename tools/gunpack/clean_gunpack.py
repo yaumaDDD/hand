@@ -547,7 +547,7 @@ def run(a):
     # ---- 1b. an addon with lists: a listed file that is not at its place is looked for by its
     # name - among the files of the addon that are not listed themselves, then in the dropped folders
     found, brought, unsure, lacking, keep_stems, protected = [], [], [], [], set(), set()
-    taken, in_game = [], []
+    taken, in_game, bound = [], [], []
     if listed_files is not None:
         listed_set = set(listed_files)
         # Pictures are content as well. The lists leave out what Z-City has - but an icon the
@@ -609,7 +609,6 @@ def run(a):
                 pool.setdefault(key_of(rel.rsplit('/', 1)[1]), []).append((rel, full, rel))
         for rel in stray:
             pool.setdefault(key_of(rel.rsplit('/', 1)[-1]), []).append((rel.lower(), on_disk[rel], None))
-        outside = None
 
         def score(have, want):
             a_parts, b_parts = have.split('/')[:-1], want.split('/')[:-1]
@@ -636,79 +635,101 @@ def run(a):
                 fit = first
             return fit, False
 
-        asked = {}                                  # key -> how many listed files of that name are not at their place
-        for want in wanted_set:
-            if not here_already(want):
-                key = key_of(want.rsplit('/', 1)[1])
-                asked[key] = asked.get(key, 0) + 1
+        outside = [None]
 
-        for want in sorted(wanted_set):
-            if here_already(want):
-                continue
-            folder, base = want.rsplit('/', 1)
-            fit, torn = best(pool.get(key_of(base), []), want)
-            # (several listed files of this name are missing and no folder of the find says which
-            # of them it is: w.mdl of which weapon? - it is not guessed)
-            if fit and asked.get(key_of(base), 0) > 1 and score(fit[0][0], want) == 0:
-                fit, torn = None, True
-            if torn:
-                # (several different files of that name: none is moved - and none is deleted)
-                unsure.append(want)
-                protected.update(c[2] for c in pool[key_of(base)] if c[2] is not None)
-                continue
-            if fit:
-                # (every .vtx of the model goes along: x.dx90.vtx, x.dx80.vtx, x.sw.vtx)
-                group = [c for c in pool[key_of(base)] if c[0].rsplit('/', 1)[0] == fit[0][0].rsplit('/', 1)[0]] if is_vtx(want) else fit[:1]
-                for c in group:
-                    dest = folder + '/' + c[0].rsplit('/', 1)[1]
-                    if dest in files:
-                        continue
-                    if move(c[1], addon, dest, a.dry_run):
-                        if c[2] is not None:
-                            files.pop(c[2], None)
-                        elif c[0] in [s.lower() for s in stray]:
-                            stray[:] = [s for s in stray if s.lower() != c[0]]
-                        files[dest] = c[1] if a.dry_run else long_path(os.path.join(addon, *dest.split('/')))
-                        by_folder.setdefault(folder, []).append(dest)
-                        found.append((c[0], dest))
-                    else:
-                        failed.append(c[0])
-                pool[key_of(base)] = [c for c in pool[key_of(base)] if c not in group]
-                continue
-            # ... in the folders that were dropped on the .bat
-            if outside is None:
-                outside = {}
-                for extra in a.lua:
-                    if os.path.isdir(extra):
-                        top = long_path(extra)
-                        for base_dir, _dirs, names_here in os.walk(top):
-                            for name in names_here:
-                                if os.path.splitext(name)[1].lower() in kinds:
-                                    rel = os.path.relpath(os.path.join(base_dir, name), top).replace(os.sep, '/').lower()
-                                    outside.setdefault(key_of(name), []).append((rel, os.path.join(base_dir, name), None))
-            fit, torn = best(outside.get(key_of(base), []), want)
-            if torn:
-                unsure.append(want)
-            elif fit:
-                group = [c for c in outside[key_of(base)] if c[0].rsplit('/', 1)[0] == fit[0][0].rsplit('/', 1)[0]] if is_vtx(want) else fit[:1]
-                for c in group:
-                    dest = folder + '/' + c[0].rsplit('/', 1)[-1]
-                    target = long_path(os.path.join(addon, *dest.split('/')))
-                    try:
-                        if not a.dry_run:
-                            os.makedirs(os.path.dirname(target), exist_ok=True)
-                            shutil.copy2(c[1], target)
-                        files[dest] = c[1] if a.dry_run else target
-                        by_folder.setdefault(folder, []).append(dest)
-                        brought.append((c[1], dest))
-                    except (OSError, IOError):
-                        failed.append(dest)
-            elif want not in optional:
-                lacking.append(want)
+        def settle(wanted_now, quiet=False):
+            """puts the wanted files that are not at their place there - from the addon, then from
+            the dropped folders; quiet: what is not found is not noted as lacking"""
+            asked = {}                                  # key -> how many listed files of that name are not at their place
+            for want in wanted_now:
+                if not here_already(want):
+                    key = key_of(want.rsplit('/', 1)[1])
+                    asked[key] = asked.get(key, 0) + 1
+
+            for want in sorted(wanted_now):
+                if here_already(want):
+                    continue
+                folder, base = want.rsplit('/', 1)
+                fit, torn = best(pool.get(key_of(base), []), want)
+                # (several listed files of this name are missing and no folder of the find says which
+                # of them it is: w.mdl of which weapon? - it is not guessed)
+                if fit and asked.get(key_of(base), 0) > 1 and score(fit[0][0], want) == 0:
+                    fit, torn = None, True
+                if torn:
+                    # (several different files of that name: none is moved - and none is deleted)
+                    unsure.append(want)
+                    protected.update(c[2] for c in pool[key_of(base)] if c[2] is not None)
+                    continue
+                if fit:
+                    # (every .vtx of the model goes along: x.dx90.vtx, x.dx80.vtx, x.sw.vtx)
+                    group = [c for c in pool[key_of(base)] if c[0].rsplit('/', 1)[0] == fit[0][0].rsplit('/', 1)[0]] if is_vtx(want) else fit[:1]
+                    for c in group:
+                        dest = folder + '/' + c[0].rsplit('/', 1)[1]
+                        if dest in files:
+                            continue
+                        if move(c[1], addon, dest, a.dry_run):
+                            if c[2] is not None:
+                                files.pop(c[2], None)
+                            elif c[0] in [s.lower() for s in stray]:
+                                stray[:] = [s for s in stray if s.lower() != c[0]]
+                            files[dest] = c[1] if a.dry_run else long_path(os.path.join(addon, *dest.split('/')))
+                            by_folder.setdefault(folder, []).append(dest)
+                            found.append((c[0], dest))
+                        else:
+                            failed.append(c[0])
+                    pool[key_of(base)] = [c for c in pool[key_of(base)] if c not in group]
+                    continue
+                # ... in the folders that were dropped on the .bat
+                if outside[0] is None:
+                    outside[0] = {}
+                    for extra in a.lua:
+                        if os.path.isdir(extra):
+                            top = long_path(extra)
+                            for base_dir, _dirs, names_here in os.walk(top):
+                                for name in names_here:
+                                    if os.path.splitext(name)[1].lower() in kinds:
+                                        rel = os.path.relpath(os.path.join(base_dir, name), top).replace(os.sep, '/').lower()
+                                        outside[0].setdefault(key_of(name), []).append((rel, os.path.join(base_dir, name), None))
+                fit, torn = best(outside[0].get(key_of(base), []), want)
+                if torn:
+                    unsure.append(want)
+                elif fit:
+                    group = [c for c in outside[0][key_of(base)] if c[0].rsplit('/', 1)[0] == fit[0][0].rsplit('/', 1)[0]] if is_vtx(want) else fit[:1]
+                    for c in group:
+                        dest = folder + '/' + c[0].rsplit('/', 1)[-1]
+                        target = long_path(os.path.join(addon, *dest.split('/')))
+                        try:
+                            if not a.dry_run:
+                                os.makedirs(os.path.dirname(target), exist_ok=True)
+                                shutil.copy2(c[1], target)
+                            files[dest] = c[1] if a.dry_run else target
+                            by_folder.setdefault(folder, []).append(dest)
+                            brought.append((c[1], dest))
+                        except (OSError, IOError):
+                            failed.append(dest)
+                elif not quiet and want not in optional:
+                    lacking.append(want)
+
+        settle(wanted_set)
+
+        # An icon that is asked for as a picture and is nowhere - while a material of that name is
+        # (vgui/hud/x.vmt for vgui/hud/x.png: the packs the weapons come from have their icons that
+        # way): the spawn menu takes the material when the picture is missing, so it is brought to
+        # the place of the picture, with its textures.
+        def alternates():
+            out = {}
+            for want in lacking:
+                if want.endswith(PICTURES) and not here_already(want):
+                    out[os.path.splitext(want)[0] + '.vmt'] = want
+            return out
+
+        alts = alternates()
+        wanted_set.update(alts)
+        settle(alts, quiet=True)
 
         # ... and in the game itself: its folders, the other addons, the archives of the workshop
         # (.gma - the icons and the rest are taken out of them; nothing else is unpacked)
-        maybe = [want for want in sorted(optional) if not here_already(want)]
+        maybe = [want for want in sorted(optional) + sorted(alts) if not here_already(want)]
         game = None
         if (lacking or maybe) and not a.no_game and game_files is not None:
             game = game_files.find(addon=addon, given=a.game)
@@ -787,20 +808,74 @@ def run(a):
                 return got
 
         if game is not None:
-            before = len(taken)
             got = from_game(lacking + maybe)
             lacking[:] = [want for want in lacking if want not in got]
             # (a material that came needs its textures: those are asked for as well)
-            if not a.dry_run:
-                more = set()
-                for _source, name in taken[before:]:
-                    if name.endswith('.vmt') and name in files:
-                        more.update(need for need in needs_of_material(files[name]) if need not in files)
-                if more:
-                    from_game(sorted(more))
+        # (a material that came - from the game, or as the stand-in of a picture - needs its textures)
+        if not a.dry_run:
+            more = set()
+            for name in [name for _source, name in taken] + list(alts):
+                if name.endswith('.vmt') and name in files:
+                    more.update(need for need in needs_of_material(files[name]) if need not in files)
+            if more:
+                wanted_set.update(more)
+                settle(more, quiet=True)
+                if game is not None:
+                    from_game(sorted(need for need in more if need not in files))
+        for alt, want in sorted(alts.items()):
+            if alt in files and want in lacking:
+                lacking.remove(want)
+                names.whole.add(alt)
+                bound.append((want, alt))
 
     # ---- 2. what is used
     used, wanted = used_files(files, names, keep_stems)
+
+    # ---- the icons of the spawn menu: which file each weapon and entity asks for, and is it there
+    icons, no_icon = [], []
+    if listed_files is not None:
+        in_game_set, bound_to = set(in_game), dict(bound)
+        for kind in ('weapons', 'entities'):
+            base = os.path.join(addon, 'lua', kind)
+            try:
+                entries = sorted(os.listdir(base))
+            except OSError:
+                entries = []
+            for entry in entries:
+                full = os.path.join(base, entry)
+                sources = [full] if os.path.isfile(full) else [os.path.join(full, n) for n in ('shared.lua', 'cl_init.lua') if os.path.isfile(os.path.join(full, n))]
+                text = u''
+                for source in sources:
+                    try:
+                        with open(source, 'rb') as f:
+                            text += read_text(f.read()) + u'\n'
+                    except (OSError, IOError):
+                        pass
+                cls = os.path.splitext(entry)[0].lower()
+                title = re.findall(r'PrintName\s*=\s*["\']([^"\'\n]*)["\']', text)
+                asked_for = re.findall(r'IconOverride\s*=\s*["\']([^"\'\n]+)["\']', text)
+                if not re.search(r'Spawnable\s*=\s*true', text) and not asked_for:
+                    continue
+                icon = tidy(asked_for[-1]) if asked_for else 'entities/%s.png' % cls
+                path = icon if icon.startswith('materials/') else 'materials/' + icon
+                stem, ext = os.path.splitext(path)
+                tries = [path, stem + '.vmt'] if ext in PICTURES else [path + '.png', path + '.vmt', path]
+                if not asked_for:
+                    tries.append('materials/vgui/entities/%s.vmt' % cls)
+                state = None
+                for one in tries:
+                    if one in files:
+                        state = u'есть в аддоне' + (u'' if one == path else u' (%s)' % one)
+                        break
+                    if one in in_game_set:
+                        state = u'есть в игре'
+                        break
+                if state is None and path in bound_to:
+                    state = u'есть в аддоне (%s)' % bound_to[path]
+                line = u'%-40s %-34s %s' % (cls, title[-1] if title else u'', icon)
+                icons.append(u'  %s  —  %s' % (line, state or (u'НЕТ' if asked_for else u'нет (своей иконки Lua не называет)')))
+                if state is None and asked_for:
+                    no_icon.append((title[-1] if title else cls, path))
 
     unused = sorted(rel for rel in files if rel not in used and rel not in protected)
     size = 0
@@ -828,6 +903,8 @@ def run(a):
             u'будет взято' if a.dry_run else u'взято', len(taken), sum(1 for _s, name in taken if name.endswith(PICTURES))))
     if in_game:
         say(u'  есть в самой игре (её архивы) — в аддон класть не нужно: %d' % len(in_game))
+    if bound:
+        say(u'  вместо картинки, которой нигде нет, взят материал с тем же именем (.vmt): %d' % len(bound))
     if protected:
         say(u'  оставлено как есть — несколько разных файлов с именем из списка, какой нужен, неясно: %d' % len(protected))
     if stray:
@@ -843,6 +920,8 @@ def run(a):
     report += [u'  %s -> %s' % pair for pair in brought]
     report.append(u'Взято из игры: %d' % len(taken))
     report += [u'  %s -> %s' % pair for pair in taken]
+    report.append(u'Материал (.vmt) вместо картинки, которой нигде нет: %d' % len(bound))
+    report += [u'  %s -> %s' % pair for pair in bound]
     report.append(u'Есть в самой игре (в аддон не кладётся): %d' % len(in_game))
     report += [u'  ' + rel for rel in in_game]
     if listed_files is not None:
@@ -881,6 +960,19 @@ def run(a):
         if lacking:
             say(u'  Чего не хватает — в отчёте: этих файлов нет ни в аддоне, ни в игре, ни в аддонах мастерской на этом')
             say(u'  компьютере. Подпишитесь на аддон, в котором они есть, или перетащите на clean_gunpack.bat папку с ними.')
+    if icons:
+        report.append(u'')
+        report.append(u'Иконки меню спавна (класс, название, файл в materials/, который называет Lua): %d' % len(icons))
+        report += icons
+        say()
+        if no_icon:
+            say(u'Иконки меню спавна: без файла иконки осталось %d из %d. Игра ищет иконку ровно по этому пути в materials:' % (len(no_icon), len(icons)))
+            for title, path in no_icon[:40]:
+                say(u'    %-30s %s' % (title, path))
+            say(u'  Этих файлов нет ни в аддоне, ни в игре, ни в аддонах мастерской на этом компьютере (ни .png, ни .vmt).')
+            say(u'  Положите картинку по этому пути в папку аддона — и иконка появится после перезапуска игры.')
+        else:
+            say(u'Иконки меню спавна: у всех %d есть файл. Если в меню они пустые — перезапустите игру.' % len(icons))
     todo = [files[rel] for rel in unused] + [full for _rel, full in doubles]
     if not todo:
         say(u'Лишнего нет — удалять нечего.')
