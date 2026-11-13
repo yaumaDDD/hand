@@ -53,6 +53,18 @@ ZCGloves.Config = {
 	-- the game as it is.
 	CompleteMaterialList = true,
 
+	-- The cuff of a CS:GO glove under the sleeve of a jacket, jacket by jacket. The key is the name
+	-- of the jacket part the model shows (body group "sheet" / "TORSO"), as the console command
+	-- "zcg_cuff" prints it; the numbers are { thickness, length, shift }:
+	--   thickness  around the forearm, 1 = as the glove was made, 0.8 = thinner
+	--   length     of the cuff from the wrist up the arm, 1 = as made, 0.7 = shorter
+	--   shift      of the cuff along the arm in units, + towards the elbow, - towards the fingers
+	-- A jacket that is not listed leaves the glove as it is. Found in game with
+	-- "zcg_cuff 0.8 1 0" (for the jacket you wear; your own screen only) and written down here.
+	Cuffs = {
+		-- ["sheet_hood_m"] = { 0.8, 1, 0 },
+	},
+
 	-- text of the extra entry in the "Gloves" menu of the appearance editor
 	MenuText = "CS:GO gloves...",
 	-- title of the picker window

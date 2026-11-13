@@ -591,6 +591,34 @@ return function(testdir, luaroot)
 		eq(hal:GetSubMaterial(HANDS_SLOT), "null", "zcg_whole_hands 0, the usual body: hidden")
 		M.setConVar("zcg_whole_hands", 1)
 
+		-- 2.16.0: the cuff of the glove, jacket by jacket (zcg_cuff)
+		eq(ZCG.JacketOf(hal), "sheet_m", "the jacket is the part of the body group sheet that is shown")
+		eq(ZCG.CuffOf(hal), nil, "a jacket without a setting: the glove as it was made")
+		local function forearm(who) return ZCG.States[hal].mdl.shown[bone("R", "Forearm")], who.shown[bone("R", "Forearm")] end
+		frame() Z.draw(hal)
+		local m, theirs = forearm(hal)
+		check(m ~= nil and theirs ~= nil and math.abs(m:GetScale().y - theirs:GetScale().y) < 1e-6, "... its forearm is as thick as the wearer's")
+		M.command("zcg_cuff", hal, "sheet_m", "0.5")
+		frame() Z.draw(hal)
+		m, theirs = forearm(hal)
+		local s, t = m:GetScale(), theirs:GetScale()
+		check(math.abs(s.x - t.x) < 1e-6 and math.abs(s.y - t.y * 0.5) < 1e-6 and math.abs(s.z - t.z * 0.5) < 1e-6
+			and m:GetTranslation() == theirs:GetTranslation(), "zcg_cuff sheet_m 0.5: half as thick, as long, at its place")
+		local hand = ZCG.States[hal].mdl.shown[bone("R", "Hand")]:GetScale()
+		check(math.abs(hand.y - hand.x) < 1e-6 and hand.x > 0.9, "the hand of the glove keeps its size")
+		hal:SetBodygroup(0, 1)
+		frame() Z.draw(hal)
+		m, theirs = forearm(hal)
+		check(math.abs(m:GetScale().y - theirs:GetScale().y) < 1e-6, "another jacket on the same model: not changed")
+		hal:SetBodygroup(0, 0)
+		M.command("zcg_cuff", hal, "sheet_m", "1", "1", "2")
+		frame() Z.draw(hal)
+		m, theirs = forearm(hal)
+		check(math.abs(m:GetTranslation():Distance(theirs:GetTranslation()) - 2) < 1e-4 and math.abs(m:GetScale().y - theirs:GetScale().y) < 1e-6,
+			"zcg_cuff <jacket> 1 1 2: as thick, two units up the arm")
+		M.command("zcg_cuff", hal, "reset", "all")
+		eq(ZCG.CuffOf(hal), nil, "zcg_cuff reset all: as the addon comes")
+
 		-- An arm has few vertices and the fingers many: nearly all of the material is on the hand
 		-- bones, and still it is an arm - some of it lies far from the hand.
 		local LONG = "models/pack/long.mdl"

@@ -111,6 +111,7 @@ return function(realm)
 	end
 	function MAT:GetTranslation() return Vector(self[4], self[8], self[12]) end
 	function MAT:SetTranslation(v) self[4], self[8], self[12] = v.x, v.y, v.z end
+	function MAT:GetForward() return Vector(self[1], self[5], self[9]) end
 	function MAT:GetScale()
 		local out = {}
 		for col = 1, 3 do out[col] = math.sqrt(self[col] ^ 2 + self[4 + col] ^ 2 + self[8 + col] ^ 2) end

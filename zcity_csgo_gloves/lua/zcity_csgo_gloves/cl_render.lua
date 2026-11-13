@@ -795,6 +795,90 @@ local function notReady(mdl, why)
 	return false, why
 end
 
+-- ---------------------------------------------------------------------------------------------
+-- the cuff under a sleeve, jacket by jacket (Config.Cuffs, console command zcg_cuff)
+-- ---------------------------------------------------------------------------------------------
+-- The glove models were made for the bare CS:GO arm; under some jackets their cuff comes out
+-- through the sleeve. For the jackets that are listed the bones that carry the cuff (forearm and
+-- its twist helpers) are made thinner / shorter / moved for the glove alone. Nothing of the
+-- wearer is touched, and a jacket that is not listed changes nothing.
+local JACKET_GROUPS = { sheet = true, torso = true }
+local CUFF_FILE = "zcg_cuffs.txt"
+local cuffs, cuffsSaved = {}, {} -- jacket -> { thickness, length, shift }; what the player set himself
+local jacketGroups = {} -- lower-case model path -> { id, names = { [index] = name } } or false
+
+local function cuffName(name)
+	name = string.lower(tostring(name or ""))
+	return (string.gsub(name, "%.smd$", ""))
+end
+
+local function cuffValues(thick, long, shift)
+	thick, long, shift = tonumber(thick), tonumber(long), tonumber(shift)
+	if not thick then return nil end
+	return { math.Clamp(thick, 0.2, 2), math.Clamp(long or 1, 0.2, 2), math.Clamp(shift or 0, -10, 10) }
+end
+
+local function loadCuffs()
+	cuffs = {}
+	for name, values in pairs(istable(Config.Cuffs) and Config.Cuffs or {}) do
+		local set = istable(values) and cuffValues(values[1], values[2], values[3])
+		if isstring(name) and set then cuffs[cuffName(name)] = set end
+	end
+	cuffsSaved = {}
+	local text = file.Read and file.Read(CUFF_FILE, "DATA")
+	for line in string.gmatch(isstring(text) and text or "", "[^\r\n]+") do
+		local name, thick, long, shift = string.match(line, "^(%S+)%s+(%S+)%s*(%S*)%s*(%S*)")
+		local set = name and cuffValues(thick, long, shift)
+		if set then cuffsSaved[name], cuffs[name] = set, set end
+	end
+end
+loadCuffs()
+
+local function saveCuffs()
+	if not file.Write then return end
+	local lines = {}
+	for name, set in SortedPairs(cuffsSaved) do
+		lines[#lines + 1] = string.format("%s %g %g %g", name, set[1], set[2], set[3])
+	end
+	file.Write(CUFF_FILE, table.concat(lines, "\n"))
+end
+
+-- the name of the jacket part the entity shows, nil when its model has no such body group
+function ZCG.JacketOf(ent)
+	if not IsValid(ent) or not ent.GetBodyGroups or not ent.GetBodygroup then return nil end
+	local model = ent:GetModel()
+	if not isstring(model) then return nil end
+	model = string.lower(model)
+	local known = jacketGroups[model]
+	if known == nil then
+		local groups = ent:GetBodyGroups()
+		if not istable(groups) or #groups == 0 then return nil end -- (not loaded yet: asked again)
+		known = false
+		for _, group in ipairs(groups) do
+			if isstring(group.name) and JACKET_GROUPS[string.lower(group.name)] and istable(group.submodels) then
+				local names = {}
+				for index = 0, #group.submodels do
+					if isstring(group.submodels[index]) then names[index] = cuffName(group.submodels[index]) end
+				end
+				known = { id = group.id, names = names }
+				break
+			end
+		end
+		jacketGroups[model] = known
+	end
+	if not known then return nil end
+	return known.names[ent:GetBodygroup(known.id) or 0]
+end
+
+-- { thickness, length, shift } for what the entity wears, nil: the glove as it was made
+function ZCG.CuffOf(ent)
+	if next(cuffs) == nil then return nil end
+	local jacket = ZCG.JacketOf(ent)
+	local set = jacket and cuffs[jacket]
+	if not set or (set[1] == 1 and set[2] == 1 and set[3] == 0) then return nil end
+	return set
+end
+
 local function readSkeleton(mdl, path)
 	local skeleton = skeletons[path]
 	if skeleton then return skeleton end
@@ -811,9 +895,12 @@ local function readSkeleton(mdl, path)
 	end
 
 	local left, right = index[L_HAND], index[R_HAND]
-	local side, finger, wrists = {}, {}, {}
+	local side, finger, wrists, cuff = {}, {}, {}, {}
 	for i = 0, count - 1 do
 		local name = names[i]
+		-- the bones that carry the cuff: 1 the forearm (it begins at the elbow), 2 its helpers at the wrist
+		cuff[i] = (string.find(name, "Wrist", 1, true) or string.find(name, "Ulna", 1, true)) and 2
+			or string.find(name, "Forearm", 1, true) and 1 or false
 		side[i] = string.find(name, "_L_", 1, true) and 1 or string.find(name, "_R_", 1, true) and 2 or 0
 
 		-- below a hand: the bones that carry the glove itself
@@ -828,7 +915,7 @@ local function readSkeleton(mdl, path)
 	end
 
 	skeleton = { count = count, names = names, parents = parents, left = left, right = right,
-		side = side, finger = finger, wrists = wrists }
+		side = side, finger = finger, wrists = wrists, cuff = cuff }
 	skeletons[path] = skeleton
 	return skeleton
 end
@@ -932,6 +1019,7 @@ local function poseGlove(ent, mdl, state)
 
 	local names, parents, bones = skeleton.names, skeleton.parents, map.bones
 	local side, wrists = skeleton.side, skeleton.wrists
+	local cuff, thin = skeleton.cuff, ZCG.CuffOf(ent)
 	for i = 0, count - 1 do
 		local matrix
 		local hand = side[i] == 1 and left or side[i] == 2 and right or nil
@@ -957,6 +1045,21 @@ local function poseGlove(ent, mdl, state)
 		end
 
 		placed[i] = matrix or false
+		if thin and matrix and cuff[i] and matrix ~= gone then
+			-- the cuff of this jacket (the bone runs along its x axis); the bones below were and are
+			-- placed by the matrix as it was
+			local scale = matrix:GetScale()
+			if scale.x > 0.1 then
+				local kind = cuff[i]
+				local changed = matrix * IDENTITY -- a copy
+				changed:SetScale(Vector(scale.x * (kind == 2 and thin[2] or 1), scale.y * thin[1], scale.z * thin[1]))
+				if thin[3] ~= 0 then
+					-- (the first axis of a bone points from the elbow to the hand; it is as long as the scale)
+					changed:SetTranslation(matrix:GetTranslation() - matrix:GetForward() * (thin[3] / scale.x))
+				end
+				matrix = changed
+			end
+		end
 		-- (a bone nothing could be found for stays where SetupBones put it; none of them carries a glove)
 		if matrix and mdl:GetBoneName(i) == names[i] then mdl:SetBoneMatrix(i, matrix) end
 	end
@@ -1283,6 +1386,54 @@ end, "zcg_gloves")
 -- ---------------------------------------------------------------------------------------------
 -- console commands for testing
 -- ---------------------------------------------------------------------------------------------
+-- zcg_cuff                               what you wear, and every jacket that has a cuff setting
+-- zcg_cuff <thickness> [length] [shift]  for the jacket you wear now
+-- zcg_cuff <jacket> <thickness> [length] [shift]
+-- zcg_cuff reset [jacket | all]          back to what the addon comes with
+concommand.Add("zcg_cuff", function(_, _, args)
+	local me = LocalPlayer()
+	local worn = IsValid(me) and ZCG.JacketOf(me) or nil
+	local first = string.lower(args[1] or "")
+	local function line(name)
+		local set = cuffs[name] or { 1, 1, 0 }
+		return string.format('zcg_cuff "%s" %g %g %g%s', name, set[1], set[2], set[3], cuffsSaved[name] and "   (set by you)" or "")
+	end
+	if first == "" then
+		ZCG.Print("the cuff of a CS:GO glove under a sleeve: thickness (1 = as made, 0.8 = thinner), length (1 = as made, "
+			.. "0.7 = shorter), shift along the arm in units (+ to the elbow)")
+		ZCG.Print("  zcg_cuff 0.8 1 0            for the jacket you wear now")
+		ZCG.Print('  zcg_cuff "name" 0.8 1 0     for a jacket by name;   zcg_cuff reset [name | all]')
+		ZCG.Print("you wear: " .. (worn and line(worn) or "a model without a jacket part (body group sheet / TORSO)"))
+		local any = false
+		for name in SortedPairs(cuffs) do
+			if name ~= worn then
+				if not any then ZCG.Print("other jackets with a setting:") end
+				any = true
+				ZCG.Print("  " .. line(name))
+			end
+		end
+		return
+	end
+	if first == "reset" then
+		local which = string.lower(args[2] or "")
+		if which == "all" then cuffsSaved = {} else cuffsSaved[cuffName(which ~= "" and which or worn)] = nil end
+		saveCuffs()
+		loadCuffs()
+		ZCG.Print("cuff settings: " .. (which == "all" and "all" or (which ~= "" and which or tostring(worn))) .. " as the addon comes")
+		return
+	end
+	local name, from = worn, 1
+	if not tonumber(args[1]) then name, from = cuffName(args[1]), 2 end
+	local set = cuffValues(args[from], args[from + 1], args[from + 2])
+	if not name or not set then
+		ZCG.Print("usage: zcg_cuff <thickness> [length] [shift]   or   zcg_cuff <jacket> <thickness> [length] [shift]")
+		return
+	end
+	cuffsSaved[name], cuffs[name] = set, set
+	saveCuffs()
+	ZCG.Print(line(name))
+end)
+
 concommand.Add("zcg_preview", function(_, _, args)
 	local id = string.lower(args[1] or "")
 	if id == "" then
