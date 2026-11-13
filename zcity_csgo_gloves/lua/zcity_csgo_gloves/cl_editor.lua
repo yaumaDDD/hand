@@ -125,6 +125,10 @@ local function wrapViewer(main, viewer)
 
 	viewer.LayoutEntity = function(self, ent, ...)
 		local result = layout(self, ent, ...)
+		-- (the bodies chosen in the menu on a model that names them differently: sh_core.lua)
+		if not broken and IsValid(ent) and istable(main.AppearanceTable) then
+			pcall(ZCG.FixBodygroups, ent, main.AppearanceTable)
+		end
 		guard(editorLayout, ent)
 		return result
 	end
@@ -694,6 +698,190 @@ local function attachMod(main, viewer)
 end
 
 -- ---------------------------------------------------------------------------------------------
+-- 4. the older body groups (Torso, Legs/Boots) inside the windows of the Appearance Mod
+-- ---------------------------------------------------------------------------------------------
+-- ZCITY Clothing+ puts two buttons into the editor, "Torso" and "Legs/Boots", with plain lists of
+-- its body groups (TORSO, LEGS). The Appearance Mod has windows with previews for its own groups
+-- (the cog buttons next to Jacket / Pants / Boots). Here the two buttons are taken away and
+-- their choices are shown inside those windows, as a part of their own under the heading LEGACY,
+-- below the choices of the Appearance Mod (heading NEW).
+local OLD_BUTTONS = { ["Torso"] = true, ["Legs/Boots"] = true }
+local WINDOWS = { ["Select Jacket Bodygroup"] = "main", ["Select Pants Bodygroup"] = "pants", ["Select Boots Bodygroup"] = "boots" }
+local CAMERAS = {
+	main = { Vector(70, 0, 45), Vector(0, 0, 46), 25 },
+	pants = { Vector(70, 0, 25), Vector(0, 0, 15), 30 },
+	boots = { Vector(40, -50, 30), Vector(7, 0, 0), 14 },
+}
+local clrPart = Color(26, 26, 38, 255)
+local clrPartOn = Color(10, 130, 10, 255)
+local clrPartBorder = Color(100, 100, 120, 200)
+
+local function hideOldButtons(viewer)
+	for _, child in ipairs(viewer:GetChildren()) do
+		if not child.zcg_old and isfunction(child.GetText) and OLD_BUTTONS[child:GetText() or ""] then
+			child.zcg_old = true
+			child:SetVisible(false)
+			child.Think = function(self) if self:IsVisible() then self:SetVisible(false) end end
+		end
+	end
+end
+
+local function heading(parent, text, z)
+	local label = vgui.Create("DLabel", parent)
+	label:SetFont("ZCG_Label")
+	label:SetText(text)
+	label:SetTextColor(clrDim)
+	label:Dock(TOP)
+	label:DockMargin(4, 4, 0, 2)
+	label:SetTall(math.floor(ScreenScale(9)))
+	label:SetZPos(z)
+	return label
+end
+
+-- the preview of one part: the model of the editor as it is dressed now, with this part on
+local function partTile(main, frame, part, item)
+	local source = main.zcg_viewer
+	local tile = vgui.Create("DButton")
+	tile:SetText("")
+	tile:SetSize(ScreenScale(66), ScreenScale(62))
+
+	local mdl = vgui.Create("DModelPanel", tile)
+	mdl:Dock(FILL)
+	mdl:DockMargin(2, 2, 2, 10)
+	local from = IsValid(source) and source.Entity
+	if IsValid(from) then mdl:SetModel(from:GetModel()) end
+	mdl:SetAnimated(false)
+	function mdl:RunAnimation() end
+	local camera = CAMERAS[part]
+	mdl:SetCamPos(camera[1])
+	mdl:SetLookAt(camera[2])
+	mdl:SetFOV(camera[3])
+	function mdl:LayoutEntity(ent)
+		if not IsValid(ent) then return end
+		ent:SetAngles(Angle(0, 0, 0))
+		local now = IsValid(source) and source.Entity
+		if IsValid(now) and now ~= ent then
+			for slot = 0, 31 do
+				local name = now:GetSubMaterial(slot) or ""
+				if name == ZCG.HideMaterial() then name = "" end -- (hands hidden under a glove)
+				ent:SetSubMaterial(slot, name ~= "" and name or nil)
+			end
+			for _, group in ipairs(now:GetBodyGroups() or {}) do
+				ent:SetBodygroup(group.id, now:GetBodygroup(group.id) or 0)
+			end
+			if now.GetPlayerColor then
+				local colour = now:GetPlayerColor()
+				ent.GetPlayerColor = function() return colour end
+			end
+		end
+		ent:SetBodygroup(item.group, item.index)
+	end
+
+	local label = vgui.Create("DLabel", tile)
+	label:SetPos(0, ScreenScale(50))
+	label:SetSize(ScreenScale(66), ScreenScale(10))
+	label:SetFont("ZCity_Tiny")
+	label:SetText(item.name)
+	label:SetTextColor(clrText)
+	label:SetContentAlignment(8)
+	label:SetMouseInputEnabled(false)
+
+	local function selected()
+		local groups = istable(main.AppearanceTable) and main.AppearanceTable.ABodygroups
+		return istable(groups) and groups[item.key] == item.name
+	end
+	function tile:Paint(w, h)
+		draw.RoundedBox(4, 0, 0, w, h, selected() and clrPartOn or clrPart)
+		local hovered = vgui.GetHoveredPanel()
+		if hovered == self or hovered == mdl then
+			surface.SetDrawColor(clrText)
+		else
+			surface.SetDrawColor(clrPartBorder)
+		end
+		surface.DrawOutlinedRect(0, 0, w, h, 1)
+	end
+	function tile:DoClick()
+		local appearance = main.AppearanceTable
+		if istable(appearance) then
+			appearance.ABodygroups = appearance.ABodygroups or {}
+			appearance.ABodygroups[item.key] = item.name
+		end
+		surface.PlaySound("player/weapon_draw_0" .. math.random(2, 5) .. ".wav")
+		if IsValid(frame) then frame:Close() end
+	end
+	function mdl:DoClick() tile:DoClick() end
+	return tile
+end
+
+local function extendWindow(main, frame, part)
+	local source = main.zcg_viewer
+	local ent = IsValid(source) and source.Entity
+	if not IsValid(ent) or not istable(main.AppearanceTable) then return end
+	local items, has = ZCG.LegacyParts(part, ent, main.AppearanceTable)
+
+	local scroll
+	for _, child in ipairs(frame:GetChildren()) do
+		if isfunction(child.GetCanvas) then scroll = child break end
+	end
+	if not scroll then return end
+	local cols = 3
+	for _, child in ipairs(scroll:GetCanvas():GetChildren()) do
+		if isfunction(child.GetCols) then
+			cols = child:GetCols() or cols
+			child:SetZPos(1)
+		end
+	end
+
+	setupFonts()
+	scroll:AddItem(heading(scroll, "NEW", 0))
+	scroll:AddItem(heading(scroll, "LEGACY", 2))
+	if #items == 0 then
+		scroll:AddItem(heading(scroll, has and "No parts for this model." or "This model has no LEGACY parts.", 3))
+		return
+	end
+	local grid = vgui.Create("DGrid", scroll)
+	grid:Dock(TOP)
+	grid:SetZPos(3)
+	grid:SetCols(cols)
+	grid:SetColWide(ScreenScale(68))
+	grid:SetRowHeight(ScreenScale(66))
+	for _, item in ipairs(items) do grid:AddItem(partTile(main, frame, part, item)) end
+	scroll:AddItem(grid)
+end
+
+local function titleOf(panel)
+	if not isfunction(panel.GetTitle) then return nil end
+	local ok, title = pcall(panel.GetTitle, panel)
+	return ok and isstring(title) and title or nil
+end
+
+-- looks for a window of the Appearance Mod that has just been opened
+local function watchWindows(main)
+	if not (vgui.GetWorldPanel and IsValid(vgui.GetWorldPanel())) then return end
+	for _, frame in ipairs(vgui.GetWorldPanel():GetChildren()) do
+		if not frame.zcg_parts then
+			local title = titleOf(frame)
+			if title then
+				for prefix, part in pairs(WINDOWS) do
+					if string.sub(title, 1, #prefix) == prefix then
+						frame.zcg_parts = true
+						local ok, err = pcall(extendWindow, main, frame, part)
+						if not ok then report("appearance editor, LEGACY parts", err) end
+						break
+					end
+				end
+			end
+		end
+	end
+end
+
+hook.Add("Think", "zcg_legacy_parts", function()
+	local open = rawget(_G, "zpan")
+	if not (ispanel(open) and IsValid(open)) or not IsValid(open.zcg_viewer) then return end
+	watchWindows(open)
+end)
+
+-- ---------------------------------------------------------------------------------------------
 -- attaching to the editor
 -- ---------------------------------------------------------------------------------------------
 -- Hooks into every model panel of the editor window that is not hooked yet (PostInit may run
@@ -714,6 +902,12 @@ function ZCG.AttachEditor(main)
 				ok, err = pcall(wrapGlovesButton, main, child)
 				if not ok then report("appearance editor menu", err) end
 			end
+
+			main.zcg_viewer = child
+			-- (only next to the windows of the Appearance Mod, where their choices go: without
+			-- it the two buttons are the only way to them)
+			local AP = hg and hg.Appearance
+			if AP and (AP.OpenClothesMenu or AP.OpenFacemapMenu) then pcall(hideOldButtons, child) end
 
 			-- the Appearance Mod wraps the button later than this addon does
 			if not child.zcg_mod_failed then
