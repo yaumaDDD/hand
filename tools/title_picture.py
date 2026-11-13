@@ -17,6 +17,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 S = 4  # supersampling
 RED, WHITE = (222, 32, 28, 255), (245, 245, 245, 255)
+PURE, BLACK = (255, 255, 255, 255), (12, 12, 12, 255)  # the logo of Remorse: white on black
 
 
 def line(font, parts, tracking, squash=0.72, slant=0.22):
@@ -49,7 +50,7 @@ def bouncy(font, text, squash=0.82, slant=0.2):
         if sizes[k] < 0.8:
             ch = ch.lower()
         im = Image.new('RGBA', (int(font.getlength(ch)) + 40 * S, asc + desc), (0, 0, 0, 0))
-        ImageDraw.Draw(im).text((20 * S, 0), ch, font=font, fill=WHITE, stroke_width=int(1.6 * S), stroke_fill=WHITE)
+        ImageDraw.Draw(im).text((20 * S, 0), ch, font=font, fill=PURE, stroke_width=int(1.6 * S), stroke_fill=PURE)
         im = im.crop(im.getbbox())
         im = im.resize((int(im.width * sizes[k]), int(im.height * sizes[k] * squash)), Image.LANCZOS)
         wide = Image.new('RGBA', (im.width + int(im.height * slant) + 2, im.height), (0, 0, 0, 0))
@@ -133,6 +134,7 @@ def main():
     ap.add_argument('--blood', type=int, default=None, help='smear blood over the title (seed)')
     ap.add_argument('--bouncy', action='store_true', help='the first line with jumping letters, white; '
                     'in the other lines the first Z is red')
+    ap.add_argument('--squash', type=float, default=0.72, help='how flat the usual lines are')
     a = ap.parse_args()
 
     src = Image.open(a.source).convert('RGBA')
@@ -144,9 +146,20 @@ def main():
         if a.bouncy and 'Z' in text and i:
             z = text.index('Z')
             parts = [(text[:z], WHITE), ('Z', RED), (text[z + 1:], WHITE)]
-        im = bouncy(font, text) if a.bouncy and i == 0 else line(font, parts, (5 if i == 0 else 3) * S)
+        if a.bouncy and i == 0:
+            im = bouncy(font, text)
+        else:
+            im = line(font, parts, (5 if i == 0 else 3) * S, squash=a.squash)
         width = a.width if i == len(a.lines) - 1 else int(a.width * a.first)
-        rows.append(im.resize((width * S, int(im.height * width * S / im.width)), Image.LANCZOS))
+        im = im.resize((width * S, int(im.height * width * S / im.width)), Image.LANCZOS)
+        if a.bouncy and i == 0:  # a thick black edge, as the word stands on black in the logo
+            pad = 5 * S
+            wide = Image.new('RGBA', (im.width + 2 * pad, im.height + 2 * pad), (0, 0, 0, 0))
+            wide.alpha_composite(im, (pad, pad))
+            back = Image.new('RGBA', wide.size, (0, 0, 0, 0))
+            back.paste(BLACK, (0, 0), wide.getchannel('A').filter(ImageFilter.MaxFilter(4 * S + 1)).filter(ImageFilter.GaussianBlur(S / 2)))
+            im = Image.alpha_composite(back, wide)
+        rows.append(im)
     total = sum(r.height for r in rows) + a.gap * S * (len(rows) - 1)
     layer = Image.new('RGBA', (src.width * S, src.height * S), (0, 0, 0, 0))
     top = a.y * S - total // 2
