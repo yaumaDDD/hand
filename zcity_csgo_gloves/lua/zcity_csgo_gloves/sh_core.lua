@@ -209,15 +209,17 @@ function ZCG.FixBodygroups(ent, appearance)
 		local wanted = istable(data) and data[1]
 		-- (HANDS as well: the models of the Appearance Mod name the glove parts "reggloves_FIN_M.smd"
 		-- where Z-City asks for "reggloves_FIN_M", so Z-City itself never puts its gloves on them.
-		-- Not with short sleeves: there the hands stay exactly as Z-City left them.)
-		if isstring(group.name) and string.lower(group.name) == "hands" and ZCG.ShortSleevesByName(ent) then
-			wanted = nil
-			-- (... or, on a model that has them as a part of HANDS, the bare arms of a T-shirt:
-			-- whatever glove was chosen, without that part there are no arms at all)
+		-- A glove of Z-City is put on the way Z-City means it, on every jacket.)
+		-- A CS:GO glove with short sleeves, on a model that keeps the bare arms of a T-shirt as a
+		-- part of HANDS: that part instead of the hands alone - without it there are no arms.
+		if istable(data) and data.ZCG and isstring(group.name) and string.lower(group.name) == "hands" and ZCG.ShortSleevesByName(ent) then
 			local arms = ZCG.ArmsPart(group)
-			if arms and ent:GetBodygroup(group.id) ~= arms then
-				ent:SetBodygroup(group.id, arms)
-				set = set + 1
+			if arms then
+				wanted = nil
+				if ent:GetBodygroup(group.id) ~= arms then
+					ent:SetBodygroup(group.id, arms)
+					set = set + 1
+				end
 			end
 		end
 		if isstring(wanted) and istable(group.submodels) then

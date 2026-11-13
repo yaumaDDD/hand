@@ -220,7 +220,7 @@ return function(testdir, luaroot)
 		eq(leg:GetNWString("zcg_glove"), "moto_5", "... and the glove is drawn over them")
 		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "T-Shirt", HANDS = "Gloves" } }
 		M.advance(0.5)
-		eq(leg:GetBodygroup(3), 2, "a T-shirt and a glove of Z-City: the arms stay")
+		eq(leg:GetBodygroup(3), 1, "a T-shirt and a glove of Z-City: the glove, as Z-City means it")
 		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "Hoodie", HANDS = "Gloves" } }
 		M.advance(0.5)
 		eq(leg:GetBodygroup(3), 1, "long sleeves again: the glove of Z-City")
