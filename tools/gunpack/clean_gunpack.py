@@ -13,7 +13,8 @@ path .. "open.ogg": every file that begins / ends that way stays) - or when a us
 it: a model its .vvd / .vtx / .phy / .ani, its materials, the models and sounds named inside
 it; a material its textures.
 
-Steps: 1. files in numbered or nested folders (sound1, pack/materials ...) go to their place
+Steps: 1. files in numbered, nested or wrong folders (sound1, pack/materials, everything thrown
+into materials: materials/sound/..., materials/models/x.mdl ...) go to their place
 (an exact copy of a file that is there already is deleted with the rest); 2. the list of what
 is not used is shown, and after Enter those files are deleted. (A missing file is not looked
 for by its name alone: the Lua also names files of the game itself, and a file of the same name
@@ -156,11 +157,13 @@ def read_text(data):
     return data.decode('utf-8', 'replace') if isinstance(data, bytes) else data
 
 
-def lua_of(folder, names, skip=None):
-    """reads every text below the lua-like folders of an addon (or of any folder)"""
+def lua_of(folder, names, skip=None, everywhere=False):
+    """reads every text below the lua-like folders of an addon (or of any folder); everywhere:
+    below its sound / materials / models as well (Lua that was thrown in there with the content)"""
     count = 0
+    passed = ('.git', 'maps', 'resource', 'particles') + (() if everywhere else ROOTS)
     for base, dirs, files in os.walk(long_path(folder)):
-        dirs[:] = [d for d in dirs if d.lower() not in ROOTS + ('.git', 'maps', 'resource', 'particles')]
+        dirs[:] = [d for d in dirs if d.lower() not in passed]
         if skip and os.path.normcase(base) == os.path.normcase(long_path(skip)):
             dirs[:] = []
             continue
@@ -191,14 +194,36 @@ def lua_of_zip(path, names):
 
 
 # ---- the files ---------------------------------------------------------------------------------
+def root_of(name):
+    """the folder of the game a file belongs to, by what it is"""
+    ext = os.path.splitext(name)[1].lower()
+    if ext in SOUNDS:
+        return 'sound'
+    return 'materials' if ext in ('.vmt', '.vtf') else 'models'
+
+
 def game_path(rel):
-    """materials1/models/x.vmt -> materials/models/x.vmt ; pack/sound/a.wav -> sound/a.wav ;
-    None when no folder above the file is one of the game"""
+    """Where a file belongs. A file that lies in its own folder of the game stays there
+    (sound/a.wav, materials/models/x.vmt). Otherwise the last folder above it that is named like
+    its folder of the game counts (numbered or not):
+        materials1/models/x.vmt -> materials/models/x.vmt     pack/sound/a.wav -> sound/a.wav
+        materials/pack/sound/weapons/a.wav -> sound/weapons/a.wav
+        materials/models/weapons/w.mdl -> models/weapons/w.mdl
+    and without such a folder a sound or a model below another folder of the game keeps its path
+    below that one (materials/weapons/a.wav -> sound/weapons/a.wav). None: no place is known."""
     parts = rel.split('/')
-    for i, part in enumerate(parts[:-1]):
-        found = _ROOT_PART.match(part)
-        if found:
-            return '/'.join([found.group(1).lower()] + parts[i + 1:]).lower()
+    root = root_of(parts[-1])
+    if parts[0].lower() == root and len(parts) > 1:
+        # (a numbered folder of the same kind right below it was thrown in whole: materials/materials2/...)
+        inner = _ROOT_PART.match(parts[1]) if len(parts) > 2 else None
+        if not (inner and inner.group(1).lower() == root and parts[1].lower() != root):
+            return '/'.join([root] + parts[1:]).lower()
+    for i in range(len(parts) - 2, -1, -1):
+        found = _ROOT_PART.match(parts[i])
+        if found and found.group(1).lower() == root:
+            return '/'.join([root] + parts[i + 1:]).lower()
+    if root != 'materials' and len(parts) > 1 and _ROOT_PART.match(parts[0]):
+        return '/'.join([root] + parts[1:]).lower()
     return None
 
 
@@ -392,9 +417,9 @@ def run(a):
     if os.path.isfile(listed):
         names.read(listed)
         say(u'  имена из Lua Remorseim и Z-City (%s): файлов Lua %d' % (NAMES, names.files))
-    count = lua_of(addon, names, skip=here)
+    count = lua_of(addon, names, skip=here, everywhere=True)
     if count:
-        say(u'  Lua самого аддона: файлов %d' % count)
+        say(u'  Lua в самом аддоне (где бы он ни лежал, в том числе в materials): файлов %d' % count)
     parent = os.path.dirname(addon)
     if not a.no_neighbours and os.path.basename(parent).lower() == 'addons':
         count = 0
@@ -428,7 +453,7 @@ def run(a):
         if place is None:
             stray.append(rel)
             continue
-        if rel.lower() == place and rel.split('/')[0] == place.split('/')[0]:
+        if rel.lower() == place and rel.split('/')[0] == place.split('/')[0] and place not in files:
             files[place] = full
     for rel in sorted(on_disk):
         full = on_disk[rel]

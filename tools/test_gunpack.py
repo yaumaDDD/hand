@@ -41,6 +41,12 @@ w('sound/weapons/guny/shot.wav'); w('sound/weapons/guny/unused.wav'); w('sound/w
 w('somepack/sound/weapons/gunx/fire3.wav'); w('sound/random/moved_here.wav'); w('sound/ambient/junk.mp3')
 w('models/props/crate.mdl', mdl('props/',['crate'])); w('models/props/crate.vvd')
 w('sound2/weapons/guny/shot.wav'); w('readme.txt')
+# everything thrown into materials: the Lua, sounds, models, a pack with folders of its own
+w('materials/lua/weapons/w2.lua', b'SWEP.ViewModel = "models/weapons/in_mat/v_gun.mdl"\nsnd = "weapons/in_mat/shot.wav"\nsnd2 = "weapons/in_mat/loose.wav"')
+w('materials/models/weapons/in_mat/v_gun.mdl', mdl('models/weapons/in_mat/',['skin'])); w('materials/models/weapons/in_mat/v_gun.vvd')
+w('materials/models/weapons/in_mat/skin.vmt', b'"x" { "$basetexture" "models/weapons/in_mat/skin" }'); w('materials/models/weapons/in_mat/skin.vtf')
+w('materials/pack/sound/weapons/in_mat/shot.wav'); w('materials/weapons/in_mat/loose.wav'); w('materials/pack/sound/weapons/in_mat/unused.wav')
+w('materials/materials3/models/weapons/gun/extra_unused.vtf')
 def tree(): return sorted(os.path.relpath(os.path.join(d,f),A).replace(os.sep,'/') for d,_,fs in os.walk(A) for f in fs if 'clean_gunpack/' not in os.path.join(d,f)+'/' or f.endswith('report.txt'))
 before=tree()
 r=subprocess.run([sys.executable,A+'/clean_gunpack/clean_gunpack.py','--dry-run'],capture_output=True,text=True); print(r.stdout,r.stderr)
@@ -53,7 +59,9 @@ want=sorted('''materials/models/weapons/gun/body.vmt materials/models/weapons/gu
 materials/models/weapons/gun/scope.vmt materials/models/weapons/gun/scope.vtf materials/vgui/hud/gun_icon.vmt materials/vgui/hud/gun_icon.vtf materials/vgui/hud/other.png
 models/weapons/tfa/w_gun.mdl models/weapons/tfa/w_gun.vvd models/weapons/tfa/w_gun.dx90.vtx models/weapons/tfa/w_gun.phy models/weapons/tfa/anim.mdl
 sound/weapons/gunx/open.ogg sound/weapons/gunx/fire1.wav sound/weapons/gunx/fire2.wav sound/weapons/gunx/fire3.wav sound/weapons/gunx/mdlsound.wav
-sound/weapons/guny/shot.wav readme.txt'''.split())
+sound/weapons/guny/shot.wav readme.txt materials/lua/weapons/w2.lua
+models/weapons/in_mat/v_gun.mdl models/weapons/in_mat/v_gun.vvd materials/models/weapons/in_mat/skin.vmt materials/models/weapons/in_mat/skin.vtf
+sound/weapons/in_mat/shot.wav sound/weapons/in_mat/loose.wav'''.split())
 print('ONLY GOT',sorted(set(got)-set(want))); print('ONLY WANT',sorted(set(want)-set(got)))
 print('OK' if got==want else 'FAILED')
 shutil.rmtree(TOP,ignore_errors=True)
