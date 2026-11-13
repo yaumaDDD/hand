@@ -74,6 +74,9 @@ open(A+'/tools/models.txt','w').write('models\\Weapons\\bat\\w.mdl\nmodels\\weap
 open(A+'/tools/materials.txt','w').write('materials\\entities\\weapon_bat.png\nmaterials\\vgui\\hud\\Pipe.png\nmaterials\\entities\\icon2.png\n')
 open(A+'/tools/sounds.txt','w').write('sound\\bat\\hit.wav\nsound\\bat\\swing.wav\nsound\\bat\\far.wav\n')
 w('lua/weapons/weapon_bat.lua', b'SWEP.WorldModel = "models/weapons/bat/w.mdl"')
+# pictures the lists leave out: an icon the Lua names, a material it names without an ending, the icon of a class
+w('lua/weapons/weapon_axe.lua', b'SWEP.IconOverride = "vgui/hud/knife.png"\nSWEP.WepSelectIcon = Material("vgui/wep_baton")\nSWEP.Other = "vgui/nowhere.png"')
+w('materials/flat/weapon_axe.png'); w('materials/entities/some_other_class.png')
 w('materials/dump/models/weapons/bat/w.mdl', mdl('models/weapons/bat/',['wood'])); w('materials/dump/models/weapons/bat/w.dx90.vtx')
 w('materials/dump/materials/models/weapons/bat/wood.vmt', b'"x" { "$basetexture" "models/weapons/bat/wood" }'); w('materials/dump/materials/models/weapons/bat/wood.vtf')
 w('materials/flat/hit.wav'); w('materials/other/sounds/swing.wav'); w('materials/flat/weapon_bat.png'); w('materials/flat/unused.png')
@@ -86,7 +89,8 @@ def gma(path, members):
     for i,(name,data) in enumerate(members): out+=struct.pack('<I',i+1)+name.encode()+b'\0'+struct.pack('<q',len(data))+struct.pack('<I',0)
     out+=struct.pack('<I',0)+b''.join(data for _n,data in members)
     open(path,'wb').write(out)
-gma(T+'/some_pack.gma', [('materials/vgui/hud/pipe.png',b'PNG pipe'),('lua/x.lua',b'-- x'),('sound/bat/far.wav',b'RIFF far'),('sound/bat/other.wav',b'no')])
+gma(T+'/some_pack.gma', [('materials/vgui/hud/pipe.png',b'PNG pipe'),('lua/x.lua',b'-- x'),('sound/bat/far.wav',b'RIFF far'),('sound/bat/other.wav',b'no'),('materials/vgui/hud/knife.png',b'PNG knife'),
+    ('materials/vgui/wep_baton.vmt',b'"UnlitGeneric" { "$basetexture" "vgui/wep_baton_tex" }'),('materials/vgui/wep_baton_tex.vtf',b'VTF')])
 os.makedirs(T+'/other_addon/materials/entities'); open(T+'/other_addon/materials/entities/Icon2.png','wb').write(b'PNG 2')
 r=subprocess.run([sys.executable,A+'/tools/clean_gunpack.py','--yes'],capture_output=True,text=True); print(r.stdout,r.stderr)
 taken=(open(A+'/materials/vgui/hud/pipe.png','rb').read()==b'PNG pipe' and open(A+'/sound/bat/far.wav','rb').read()==b'RIFF far'
@@ -94,7 +98,8 @@ taken=(open(A+'/materials/vgui/hud/pipe.png','rb').read()==b'PNG pipe' and open(
 print('taken from the game:',taken); first=first and taken
 got=sorted(rel for rel in (os.path.relpath(os.path.join(d,f),A).replace(os.sep,'/') for d,_,fs in os.walk(A) for f in fs) if rel.split('/')[0] in ('sound','materials','models'))
 want=sorted(['models/weapons/bat/w.mdl','models/weapons/bat/w.dx90.vtx','materials/models/weapons/bat/wood.vmt','materials/models/weapons/bat/wood.vtf',
-    'sound/bat/hit.wav','sound/bat/swing.wav','materials/entities/weapon_bat.png','materials/vgui/hud/pipe.png','materials/entities/icon2.png','sound/bat/far.wav','models/a/w.mdl','models/b/w.mdl','models/weapons/axe/w.dx90.vtx'])
+    'sound/bat/hit.wav','sound/bat/swing.wav','materials/entities/weapon_bat.png','materials/vgui/hud/pipe.png','materials/entities/icon2.png','sound/bat/far.wav',
+    'materials/entities/weapon_axe.png','materials/entities/some_other_class.png','materials/vgui/hud/knife.png','materials/vgui/wep_baton.vmt','materials/vgui/wep_baton_tex.vtf','models/a/w.mdl','models/b/w.mdl','models/weapons/axe/w.dx90.vtx'])
 print('ONLY GOT',sorted(set(got)-set(want))); print('ONLY WANT',sorted(set(want)-set(got)))
 print('OK' if got==want and first else 'FAILED')
 shutil.rmtree(TOP,ignore_errors=True)

@@ -479,7 +479,9 @@ def run(a):
     elif os.path.isfile(listed):
         names.read(listed)
         say(u'  имена из Lua Remorseim и Z-City (%s): файлов Lua %d' % (NAMES, names.files))
-    count = lua_of(addon, names, skip=here, everywhere=True)
+    own = Names()                                   # what the Lua of the addon itself names
+    count = lua_of(addon, own, skip=here, everywhere=True)
+    names.merge(own)
     if count:
         say(u'  Lua в самом аддоне (где бы он ни лежал, в том числе в materials): файлов %d' % count)
     parent = os.path.dirname(addon)
@@ -547,7 +549,36 @@ def run(a):
     found, brought, unsure, lacking, keep_stems, protected = [], [], [], [], set(), set()
     taken, in_game = [], []
     if listed_files is not None:
-        wanted_set = set(listed_files)
+        listed_set = set(listed_files)
+        # Pictures are content as well. The lists leave out what Z-City has - but an icon the
+        # Lua names is wanted here all the same, and so is the icon the spawn menu looks for by
+        # itself, materials/entities/<class>.png. pictures: named with their ending (missing ones
+        # are told); optional: a guess at the file (vgui/x -> vgui/x.png or .vmt, the class
+        # icons) - taken when it is found, not missed when it is not.
+        pictures, optional = set(), set()
+        for name in own.whole:
+            ext = os.path.splitext(name)[1]
+            base = name if name.startswith('materials/') else 'materials/' + name
+            if not _PATHLIKE.match(name) or '/' not in name:
+                continue
+            if ext in PICTURES:
+                pictures.add(base)
+            elif not ext and base.startswith(('materials/vgui/', 'materials/entities/')):
+                optional.update((base + '.png', base + '.vmt'))
+        for kind in ('weapons', 'entities'):
+            try:
+                classes = os.listdir(os.path.join(addon, 'lua', kind))
+            except OSError:
+                classes = []
+            for entry in classes:
+                optional.add('materials/entities/%s.png' % os.path.splitext(entry)[0].lower())
+        pictures -= listed_set
+        optional -= listed_set | pictures
+        # (the icons of the spawn menu are never unused)
+        names.begin.update(('entities/', 'vgui/entities/'))
+        lua_whole = Names()
+        lua_whole.whole = own.whole
+        wanted_set = listed_set | pictures | optional
         for want in listed_files:
             if os.path.splitext(want)[1] in MODEL_PARTS + ('.mdl',):
                 keep_stems.add(stem_of(want))
@@ -573,7 +604,8 @@ def run(a):
             by_folder.setdefault(rel.rsplit('/', 1)[0], []).append(rel)
         pool = {}                                   # key -> [(where it lies now (for the score), disk path, game path or None)]
         for rel, full in files.items():
-            if not belongs(rel):
+            # (not a file that is wanted where it lies: listed there, or named there by the Lua)
+            if not belongs(rel) and not named(rel, lua_whole):
                 pool.setdefault(key_of(rel.rsplit('/', 1)[1]), []).append((rel, full, rel))
         for rel in stray:
             pool.setdefault(key_of(rel.rsplit('/', 1)[-1]), []).append((rel.lower(), on_disk[rel], None))
@@ -671,19 +703,26 @@ def run(a):
                         brought.append((c[1], dest))
                     except (OSError, IOError):
                         failed.append(dest)
-            else:
+            elif want not in optional:
                 lacking.append(want)
 
         # ... and in the game itself: its folders, the other addons, the archives of the workshop
         # (.gma - the icons and the rest are taken out of them; nothing else is unpacked)
-        if lacking and not a.no_game and game_files is not None:
+        maybe = [want for want in sorted(optional) if not here_already(want)]
+        game = None
+        if (lacking or maybe) and not a.no_game and game_files is not None:
             game = game_files.find(addon=addon, given=a.game)
             if game is None:
                 say(u'  Игра не найдена — недостающее в ней не искалось. Перетащите папку GarrysMod на clean_gunpack.bat.')
             else:
-                say(u'  Игра: %s — ищу в ней недостающие файлы списка (%d) ...' % (game.root, len(lacking)))
-                ask = {}                            # the name looked for -> the listed file it is for
-                for want in lacking:
+                say(u'  Игра: %s — ищу в ней недостающие файлы (по списку и картинки из Lua: %d, возможные иконки: %d) ...' % (
+                    game.root, len(lacking), len(maybe)))
+
+        def from_game(wants):
+            """looks the wanted files up in the game and brings them; -> the set of those that are there now"""
+            if True:
+                ask = {}                            # the name looked for -> the wanted file it is for
+                for want in wants:
                     if is_vtx(want):
                         for kind in ('.dx90.vtx', '.dx80.vtx', '.sw.vtx', '.vtx'):
                             ask[want[:-4] + kind] = want
@@ -699,6 +738,9 @@ def run(a):
                         got.add(ask[name])
                     elif name in seen.archive:
                         by_archive.setdefault(seen.archive[name], set()).add(name)
+                    elif kind == game_files.LOOSE and ask[name] not in listed_set:
+                        in_game.append(ask[name])           # (in the folder of the game itself: it is shown from there)
+                        got.add(ask[name])
                     else:
                         base = {game_files.LOOSE: inner, game_files.DOWNLOAD: os.path.join(inner, 'download')}.get(
                             kind, os.path.join(inner, 'addons', label if isinstance(label, str) else ''))
@@ -738,11 +780,24 @@ def run(a):
                             got.add(ask[name])
                         except (OSError, IOError):
                             failed.append(name)
-                lacking[:] = [want for want in lacking if want not in got]
                 if seen.cut:
                     say(u'  (поиск в игре прерван по времени: просмотрено не всё — запустите ещё раз)')
                 if seen.unread:
                     say(u'  (архивов, которые не удалось прочитать: %d)' % len(seen.unread))
+                return got
+
+        if game is not None:
+            before = len(taken)
+            got = from_game(lacking + maybe)
+            lacking[:] = [want for want in lacking if want not in got]
+            # (a material that came needs its textures: those are asked for as well)
+            if not a.dry_run:
+                more = set()
+                for _source, name in taken[before:]:
+                    if name.endswith('.vmt') and name in files:
+                        more.update(need for need in needs_of_material(files[name]) if need not in files)
+                if more:
+                    from_game(sorted(more))
 
     # ---- 2. what is used
     used, wanted = used_files(files, names, keep_stems)
@@ -791,8 +846,10 @@ def run(a):
     report.append(u'Есть в самой игре (в аддон не кладётся): %d' % len(in_game))
     report += [u'  ' + rel for rel in in_game]
     if listed_files is not None:
-        report.append(u'Файлы списка, которых нет нигде в аддоне: %d' % len(lacking))
-        report += [u'  ' + rel for rel in lacking]
+        report.append(u'Файлы списка, которых нет ни в аддоне, ни в игре: %d' % len([w for w in lacking if w in listed_set]))
+        report += [u'  ' + rel for rel in lacking if rel in listed_set]
+        report.append(u'Картинки, которые называет Lua аддона (в списке их нет), которых нет ни в аддоне, ни в игре: %d' % len([w for w in lacking if w not in listed_set]))
+        report += [u'  ' + rel for rel in lacking if rel not in listed_set]
         report.append(u'Файлы списка, для которых нашлось несколько РАЗНЫХ файлов с таким именем (не тронуты): %d' % len(unsure))
         report += [u'  ' + rel for rel in unsure]
     report.append(u'Не тронуто: %d' % len(stray))
@@ -814,9 +871,13 @@ def run(a):
             say(u'ВНИМАНИЕ: отчёт записать не удалось')
 
     if listed_files is not None:
+        lacking_listed = [want for want in lacking if want in listed_set]
+        lacking_pictures = [want for want in lacking if want not in listed_set]
+        unsure_listed = [want for want in unsure if want in listed_set]
         say(u'  по списку аддона: файлов %d, на месте %d, не хватает %d%s' % (
-            len(set(listed_files)), len(set(listed_files)) - len(lacking) - len(unsure), len(lacking),
-            (u', неясных (несколько разных файлов с одним именем) %d' % len(unsure)) if unsure else u''))
+            len(listed_set), len(listed_set) - len(lacking_listed) - len(unsure_listed), len(lacking_listed),
+            (u', неясных (несколько разных файлов с одним именем) %d' % len(unsure_listed)) if unsure_listed else u''))
+        say(u'  картинки, которые называет Lua аддона сверх списка: %d, не хватает %d' % (len(pictures), len(lacking_pictures)))
         if lacking:
             say(u'  Чего не хватает — в отчёте: этих файлов нет ни в аддоне, ни в игре, ни в аддонах мастерской на этом')
             say(u'  компьютере. Подпишитесь на аддон, в котором они есть, или перетащите на clean_gunpack.bat папку с ними.')
