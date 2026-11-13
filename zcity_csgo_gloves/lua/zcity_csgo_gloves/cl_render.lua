@@ -67,10 +67,13 @@ local cvWholeHands = CreateClientConVar("zcg_whole_hands", "1", true, false,
 
 -- A T-shirt (short sleeves) under a CS:GO glove. The bare arm of such a body is one piece with
 -- the hand: no material of it is ever hidden, and shrinking the bone of the hand takes the
--- forearm away with it on the models of the Appearance Mod. So only the fingers go.
+-- whole tree of bones below the wrist takes the forearm away with it on the models of the
+-- Appearance Mod. So the bone of the hand and the finger bones go, and every other bone below
+-- the wrist (helpers, which may carry the forearm) is left exactly as it stands.
 local cvTshirt = CreateClientConVar("zcg_tshirt_hand", "1", true, false,
 	"CS:GO gloves with a T-shirt (short sleeves): 0 = the hand of the model is left as it is (it may show through the glove), "
-	.. "1 = only its fingers are shrunk away, the arm stays (default), 2 = the whole hand is shrunk (takes the forearm away on some models).", 0, 2)
+	.. "1 = the hand and its fingers are shrunk away, no other bone is touched (default), "
+	.. "2 = every bone below the wrist is shrunk (takes the forearm away on some models), 3 = only the fingers.", 0, 3)
 
 -- how the bones of the hands are treated: 0 never shrunk, 1 on every model, 3 only without a hands material
 local function boneMode()
@@ -461,8 +464,9 @@ local function shrinkHands(ent, state)
 	-- those that are fingers by their names: a helper bone there may carry the forearm)
 	local onlyNamed = false
 	if shortSleeves(ent) then
-		fingersOnly = cvTshirt:GetInt() ~= 2
-		onlyNamed = fingersOnly
+		local how = cvTshirt:GetInt()
+		fingersOnly = how == 3
+		onlyNamed = how ~= 2
 		if onlyNamed and not info.fingers then
 			info.fingers = {}
 			for _, tree in ipairs(info.trees) do
