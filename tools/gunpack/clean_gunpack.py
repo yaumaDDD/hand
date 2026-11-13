@@ -13,6 +13,12 @@ path .. "open.ogg": every file that begins / ends that way stays) - or when a us
 it: a model its .vvd / .vtx / .phy / .ani, its materials, the models and sounds named inside
 it; a material its textures.
 
+An addon that lists the files it needs (tools/models.txt, materials.txt, sounds.txt - the
+Remorseim gun pack does) is sorted by those lists: a listed file that is not at its place is
+looked for by its name among everything that was thrown into the addon (and in the folders
+dropped on the .bat, from which it is copied) and put where the list wants it; used is what
+the lists and the Lua of the addon itself name, and pictures (.png .jpg) are judged as well.
+
 Steps: 1. files in numbered, nested or wrong folders (sound1, pack/materials, everything thrown
 into materials: materials/sound/..., materials/models/x.mdl ...) go to their place
 (an exact copy of a file that is there already is deleted with the rest); 2. the list of what
@@ -28,6 +34,7 @@ import argparse
 import io
 import os
 import re
+import shutil
 import struct
 import sys
 import zipfile
@@ -36,6 +43,8 @@ ROOTS = ('sound', 'materials', 'models')
 SOUNDS = ('.wav', '.mp3', '.ogg')
 MODEL_PARTS = ('.vvd', '.vtx', '.phy', '.ani')
 KINDS = SOUNDS + ('.vmt', '.vtf', '.mdl') + MODEL_PARTS
+PICTURES = ('.png', '.jpg', '.jpeg')     # judged only in an addon that lists its files
+LISTS = ('models.txt', 'materials.txt', 'sounds.txt')   # tools/*.txt of the addon: the files it needs
 TEXTS = ('.lua', '.txt', '.json', '.vmt', '.cfg', '.res')
 NAMES = 'gunpack_names.txt'
 REPORT = 'clean_gunpack_report.txt'
@@ -199,13 +208,13 @@ def root_of(name):
     ext = os.path.splitext(name)[1].lower()
     if ext in SOUNDS:
         return 'sound'
-    return 'materials' if ext in ('.vmt', '.vtf') else 'models'
+    return 'materials' if ext in ('.vmt', '.vtf') + PICTURES else 'models'
 
 
 def game_path(rel):
-    """Where a file belongs. A file that lies in its own folder of the game stays there
-    (sound/a.wav, materials/models/x.vmt). Otherwise the last folder above it that is named like
-    its folder of the game counts (numbered or not):
+    """Where a file belongs: the last folder above it that is named like its folder of the game
+    counts, numbered or not (sound/a.wav and materials/models/x.vmt stay where they are):
+        materials/dump/materials/models/x.vmt -> materials/models/x.vmt
         materials1/models/x.vmt -> materials/models/x.vmt     pack/sound/a.wav -> sound/a.wav
         materials/pack/sound/weapons/a.wav -> sound/weapons/a.wav
         materials/models/weapons/w.mdl -> models/weapons/w.mdl
@@ -213,11 +222,6 @@ def game_path(rel):
     below that one (materials/weapons/a.wav -> sound/weapons/a.wav). None: no place is known."""
     parts = rel.split('/')
     root = root_of(parts[-1])
-    if parts[0].lower() == root and len(parts) > 1:
-        # (a numbered folder of the same kind right below it was thrown in whole: materials/materials2/...)
-        inner = _ROOT_PART.match(parts[1]) if len(parts) > 2 else None
-        if not (inner and inner.group(1).lower() == root and parts[1].lower() != root):
-            return '/'.join([root] + parts[1:]).lower()
     for i in range(len(parts) - 2, -1, -1):
         found = _ROOT_PART.match(parts[i])
         if found and found.group(1).lower() == root:
@@ -227,7 +231,29 @@ def game_path(rel):
     return None
 
 
-def walk(addon):
+def read_lists(addon):
+    """the files the addon says it needs (tools/models.txt, materials.txt, sounds.txt: a path a
+    line, as below garrysmod/) -> list of paths, lower case; None when it has no such lists"""
+    out, any_list = [], False
+    for name in LISTS:
+        path = os.path.join(addon, 'tools', name)
+        if not os.path.isfile(path):
+            continue
+        any_list = True
+        with open(path, 'rb') as f:
+            data = f.read()
+        for line in data.decode('utf-8-sig', 'replace').splitlines():
+            line = tidy(line)
+            if line and not line.startswith('#') and line.split('/')[0] in ROOTS and '.' in line.rsplit('/', 1)[-1]:
+                out.append(line)
+    return out if any_list else None
+
+
+def is_vtx(rel):
+    return rel.endswith('.vtx')
+
+
+def walk(addon, kinds=KINDS):
     """{path below the addon, lower case: path on the disk as it is spelled} of the judged files"""
     out = {}
     top = long_path(addon)
@@ -235,9 +261,9 @@ def walk(addon):
         below = os.path.relpath(base, top).replace(os.sep, '/')
         below = '' if below == '.' else below + '/'
         if not below:
-            dirs[:] = [d for d in dirs if d.lower() not in ('lua', 'gamemodes', '.git', 'clean_gunpack')]
+            dirs[:] = [d for d in dirs if d.lower() not in ('lua', 'gamemodes', '.git', 'clean_gunpack', 'tools', 'build')]
         for name in files:
-            if os.path.splitext(name)[1].lower() in KINDS:
+            if os.path.splitext(name)[1].lower() in kinds:
                 out[below + name] = os.path.join(base, name)
     return out
 
@@ -326,8 +352,9 @@ def named(rel, names):
     return False
 
 
-def used_files(files, names):
-    """files: {game path: disk path}. -> (set of the used game paths, set of wanted paths that are missing)"""
+def used_files(files, names, keep_stems=()):
+    """files: {game path: disk path}. -> (set of the used game paths, set of wanted paths that are missing)
+    keep_stems: models (path without the ending) whose parts stay even without their .mdl"""
     used, wanted, queue = set(), set(), []
     stems = {}
     for rel in files:
@@ -344,6 +371,8 @@ def used_files(files, names):
 
     for rel in files:
         if os.path.splitext(rel)[1] not in MODEL_PARTS and named(rel, names):
+            keep(rel)
+        elif keep_stems and os.path.splitext(rel)[1] in MODEL_PARTS and stem_of(rel) in keep_stems:
             keep(rel)
     while queue:
         rel = queue.pop()
@@ -405,7 +434,9 @@ def move(src, addon, rel, dry):
 def run(a):
     here = os.path.dirname(os.path.abspath(__file__))
     addon = os.path.abspath(a.addon or os.path.dirname(here))
-    if not any(os.path.isdir(os.path.join(addon, root)) for root in ROOTS) and not walk(addon):
+    listed_files = read_lists(addon)
+    kinds = KINDS + PICTURES if listed_files is not None else KINDS
+    if not any(os.path.isdir(os.path.join(addon, root)) for root in ROOTS) and not walk(addon, kinds):
         say(u'В папке %s нет папок sound, materials, models — положите clean_gunpack.bat и папку' % addon)
         say(u'clean_gunpack в папку аддона с контентом ган-пака (рядом с sound / materials / models).')
         return 1
@@ -414,7 +445,14 @@ def run(a):
     # ---- what the Lua names
     names = Names()
     listed = os.path.join(here, NAMES)
-    if os.path.isfile(listed):
+    if listed_files is not None:
+        # The addon says itself which files it needs: that list and its own Lua decide, nothing else.
+        names.whole.update(listed_files)
+        names.files += 1
+        a.no_neighbours = True
+        say(u'  списки самого аддона (tools/models.txt, materials.txt, sounds.txt): файлов %d' % len(listed_files))
+        say(u'  нужным считается то, что в этих списках и в Lua аддона, и то, что этим файлам нужно')
+    elif os.path.isfile(listed):
         names.read(listed)
         say(u'  имена из Lua Remorseim и Z-City (%s): файлов Lua %d' % (NAMES, names.files))
     count = lua_of(addon, names, skip=here, everywhere=True)
@@ -433,7 +471,9 @@ def run(a):
                 count += lua_of(os.path.join(game, folder), names)
         say(u'  Lua других аддонов в %s и самой игры: файлов %d' % (parent, count))
     for extra in a.lua:
-        if os.path.isdir(extra):
+        if os.path.isdir(extra) and listed_files is not None:
+            say(u'  %s: отсюда берутся недостающие файлы списка' % extra)
+        elif os.path.isdir(extra):
             say(u'  %s: файлов %d' % (extra, lua_of(extra, names)))
         elif zipfile.is_zipfile(extra):
             say(u'  %s: файлов %d' % (extra, lua_of_zip(extra, names)))
@@ -445,7 +485,7 @@ def run(a):
 
     report = [u'clean_gunpack: %s' % addon, u'']
     # ---- 1. to their places
-    on_disk = walk(addon)
+    on_disk = walk(addon, kinds)
     files, moved, doubles, stray, failed = {}, [], [], [], []
     for rel in sorted(on_disk):
         full = on_disk[rel]
@@ -472,10 +512,141 @@ def run(a):
         else:
             failed.append(rel)
 
-    # ---- 2. what is used
-    used, wanted = used_files(files, names)
+    # ---- 1b. an addon with lists: a listed file that is not at its place is looked for by its
+    # name - among the files of the addon that are not listed themselves, then in the dropped folders
+    found, brought, unsure, lacking, keep_stems, protected = [], [], [], [], set(), set()
+    if listed_files is not None:
+        wanted_set = set(listed_files)
+        for want in listed_files:
+            if os.path.splitext(want)[1] in MODEL_PARTS + ('.mdl',):
+                keep_stems.add(stem_of(want))
 
-    unused = sorted(rel for rel in files if rel not in used)
+        def here_already(want):
+            if want in files:
+                return True
+            if is_vtx(want):
+                stem = stem_of(want) + '.'
+                return any(rel.startswith(stem) and is_vtx(rel) for rel in by_folder.get(want.rsplit('/', 1)[0], ()))
+            return False
+
+        def key_of(name):
+            """what a file is looked for by: its name; a .vtx by the name of its model (x.dx90.vtx for x.vtx)"""
+            name = name.lower()
+            return name.split('.')[0] + '.vtx' if name.endswith('.vtx') else name
+
+        def belongs(rel):
+            return rel in wanted_set or (is_vtx(rel) and stem_of(rel) + '.vtx' in wanted_set)
+
+        by_folder = {}
+        for rel in files:
+            by_folder.setdefault(rel.rsplit('/', 1)[0], []).append(rel)
+        pool = {}                                   # key -> [(where it lies now (for the score), disk path, game path or None)]
+        for rel, full in files.items():
+            if not belongs(rel):
+                pool.setdefault(key_of(rel.rsplit('/', 1)[1]), []).append((rel, full, rel))
+        for rel in stray:
+            pool.setdefault(key_of(rel.rsplit('/', 1)[-1]), []).append((rel.lower(), on_disk[rel], None))
+        outside = None
+
+        def score(have, want):
+            a_parts, b_parts = have.split('/')[:-1], want.split('/')[:-1]
+            n = 0
+            while n < len(a_parts) and n < len(b_parts) and a_parts[-1 - n] == b_parts[-1 - n]:
+                n += 1
+            return n
+
+        def best(candidates, want):
+            """the candidates that fit best; one, or several that are the same file"""
+            if not candidates:
+                return None, False
+            top = max(score(c[0], want) for c in candidates)
+            fit = [c for c in candidates if score(c[0], want) == top]
+            # (the .vtx of one model in one folder - x.dx90.vtx, x.sw.vtx - are one find, not a choice)
+            folders = sorted(set(c[0].rsplit('/', 1)[0] for c in fit))
+            if len(folders) > 1:
+                first = [c for c in fit if c[0].rsplit('/', 1)[0] == folders[0]]
+                for folder_name in folders[1:]:
+                    other = dict((c[0].rsplit('/', 1)[1], c) for c in fit if c[0].rsplit('/', 1)[0] == folder_name)
+                    if len(other) != len(first) or not all(
+                            c[0].rsplit('/', 1)[1] in other and same(c[1], other[c[0].rsplit('/', 1)[1]][1]) for c in first):
+                        return None, True
+                fit = first
+            return fit, False
+
+        asked = {}                                  # key -> how many listed files of that name are not at their place
+        for want in wanted_set:
+            if not here_already(want):
+                key = key_of(want.rsplit('/', 1)[1])
+                asked[key] = asked.get(key, 0) + 1
+
+        for want in sorted(wanted_set):
+            if here_already(want):
+                continue
+            folder, base = want.rsplit('/', 1)
+            fit, torn = best(pool.get(key_of(base), []), want)
+            # (several listed files of this name are missing and no folder of the find says which
+            # of them it is: w.mdl of which weapon? - it is not guessed)
+            if fit and asked.get(key_of(base), 0) > 1 and score(fit[0][0], want) == 0:
+                fit, torn = None, True
+            if torn:
+                # (several different files of that name: none is moved - and none is deleted)
+                unsure.append(want)
+                protected.update(c[2] for c in pool[key_of(base)] if c[2] is not None)
+                continue
+            if fit:
+                # (every .vtx of the model goes along: x.dx90.vtx, x.dx80.vtx, x.sw.vtx)
+                group = [c for c in pool[key_of(base)] if c[0].rsplit('/', 1)[0] == fit[0][0].rsplit('/', 1)[0]] if is_vtx(want) else fit[:1]
+                for c in group:
+                    dest = folder + '/' + c[0].rsplit('/', 1)[1]
+                    if dest in files:
+                        continue
+                    if move(c[1], addon, dest, a.dry_run):
+                        if c[2] is not None:
+                            files.pop(c[2], None)
+                        elif c[0] in [s.lower() for s in stray]:
+                            stray[:] = [s for s in stray if s.lower() != c[0]]
+                        files[dest] = c[1] if a.dry_run else long_path(os.path.join(addon, *dest.split('/')))
+                        by_folder.setdefault(folder, []).append(dest)
+                        found.append((c[0], dest))
+                    else:
+                        failed.append(c[0])
+                pool[key_of(base)] = [c for c in pool[key_of(base)] if c not in group]
+                continue
+            # ... in the folders that were dropped on the .bat
+            if outside is None:
+                outside = {}
+                for extra in a.lua:
+                    if os.path.isdir(extra):
+                        top = long_path(extra)
+                        for base_dir, _dirs, names_here in os.walk(top):
+                            for name in names_here:
+                                if os.path.splitext(name)[1].lower() in kinds:
+                                    rel = os.path.relpath(os.path.join(base_dir, name), top).replace(os.sep, '/').lower()
+                                    outside.setdefault(key_of(name), []).append((rel, os.path.join(base_dir, name), None))
+            fit, torn = best(outside.get(key_of(base), []), want)
+            if torn:
+                unsure.append(want)
+            elif fit:
+                group = [c for c in outside[key_of(base)] if c[0].rsplit('/', 1)[0] == fit[0][0].rsplit('/', 1)[0]] if is_vtx(want) else fit[:1]
+                for c in group:
+                    dest = folder + '/' + c[0].rsplit('/', 1)[-1]
+                    target = long_path(os.path.join(addon, *dest.split('/')))
+                    try:
+                        if not a.dry_run:
+                            os.makedirs(os.path.dirname(target), exist_ok=True)
+                            shutil.copy2(c[1], target)
+                        files[dest] = c[1] if a.dry_run else target
+                        by_folder.setdefault(folder, []).append(dest)
+                        brought.append((c[1], dest))
+                    except (OSError, IOError):
+                        failed.append(dest)
+            else:
+                lacking.append(want)
+
+    # ---- 2. what is used
+    used, wanted = used_files(files, names, keep_stems)
+
+    unused = sorted(rel for rel in files if rel not in used and rel not in protected)
     size = 0
     for rel in unused:
         try:
@@ -492,6 +663,12 @@ def run(a):
     say(u'Файлов sound / materials / models: %d' % len(on_disk))
     if moved:
         say(u'  переложено на своё место (из папок с номерами и вложенных): %d' % len(moved))
+    if found:
+        say(u'  найдено по имени и переложено туда, где их ждёт список аддона: %d' % len(found))
+    if brought:
+        say(u'  скопировано из перетащенных папок: %d' % len(brought))
+    if protected:
+        say(u'  оставлено как есть — несколько разных файлов с именем из списка, какой нужен, неясно: %d' % len(protected))
     if stray:
         say(u'  не тронуто (лежат не в sound / materials / models или место занято другим файлом): %d' % len(stray))
     say(u'  используется: %d' % len(used))
@@ -499,6 +676,15 @@ def run(a):
 
     report.append(u'Переложено на своё место: %d' % len(moved))
     report += [u'  %s -> %s' % pair for pair in moved]
+    report.append(u'Найдено по имени: %d' % len(found))
+    report += [u'  %s -> %s' % pair for pair in found]
+    report.append(u'Скопировано из перетащенных папок: %d' % len(brought))
+    report += [u'  %s -> %s' % pair for pair in brought]
+    if listed_files is not None:
+        report.append(u'Файлы списка, которых нет нигде в аддоне: %d' % len(lacking))
+        report += [u'  ' + rel for rel in lacking]
+        report.append(u'Файлы списка, для которых нашлось несколько РАЗНЫХ файлов с таким именем (не тронуты): %d' % len(unsure))
+        report += [u'  ' + rel for rel in unsure]
     report.append(u'Не тронуто: %d' % len(stray))
     report += [u'  ' + rel for rel in stray]
     missing = sorted(w for w in wanted if os.path.splitext(w)[1] in ('.mdl',) + SOUNDS and w.split('/')[0] in ROOTS)
@@ -517,6 +703,13 @@ def run(a):
         except (OSError, IOError):
             say(u'ВНИМАНИЕ: отчёт записать не удалось')
 
+    if listed_files is not None:
+        say(u'  по списку аддона: файлов %d, на месте %d, не хватает %d%s' % (
+            len(set(listed_files)), len(set(listed_files)) - len(lacking) - len(unsure), len(lacking),
+            (u', неясных (несколько разных файлов с одним именем) %d' % len(unsure)) if unsure else u''))
+        if lacking:
+            say(u'  Чего не хватает — в отчёте. Эти файлы берутся из игры и мастерской: ИщиКонтент.bat, пункт 1,')
+            say(u'  или перетащите на clean_gunpack.bat папку, где они лежат.')
     todo = [files[rel] for rel in unused] + [full for _rel, full in doubles]
     if not todo:
         say(u'Лишнего нет — удалять нечего.')

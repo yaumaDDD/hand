@@ -64,5 +64,26 @@ models/weapons/in_mat/v_gun.mdl models/weapons/in_mat/v_gun.vvd materials/models
 sound/weapons/in_mat/shot.wav sound/weapons/in_mat/loose.wav'''.split())
 print('ONLY GOT',sorted(set(got)-set(want))); print('ONLY WANT',sorted(set(want)-set(got)))
 print('OK' if got==want else 'FAILED')
+first=got==want
+
+# ---- an addon that lists its files (tools/*.txt), with everything thrown into materials
+A=T+'/listed'
+os.makedirs(A+'/tools')
+for f in ('clean_gunpack.py','gunpack_names.txt'): shutil.copy(os.path.join(HERE,'gunpack',f),A+'/tools/')
+open(A+'/tools/models.txt','w').write('models\\Weapons\\bat\\w.mdl\nmodels\\weapons\\bat\\w.vtx\nmodels\\weapons\\axe\\w.mdl\nmodels\\weapons\\axe\\w.vtx\nmodels\\gone\\x.mdl\n')
+open(A+'/tools/materials.txt','w').write('materials\\entities\\weapon_bat.png\n')
+open(A+'/tools/sounds.txt','w').write('sound\\bat\\hit.wav\nsound\\bat\\swing.wav\n')
+w('lua/weapons/weapon_bat.lua', b'SWEP.WorldModel = "models/weapons/bat/w.mdl"')
+w('materials/dump/models/weapons/bat/w.mdl', mdl('models/weapons/bat/',['wood'])); w('materials/dump/models/weapons/bat/w.dx90.vtx')
+w('materials/dump/materials/models/weapons/bat/wood.vmt', b'"x" { "$basetexture" "models/weapons/bat/wood" }'); w('materials/dump/materials/models/weapons/bat/wood.vtf')
+w('materials/flat/hit.wav'); w('materials/other/sounds/swing.wav'); w('materials/flat/weapon_bat.png'); w('materials/flat/unused.png')
+w('materials/a/w.mdl', b'IDSTa'); w('materials/b/w.mdl', b'IDSTb')     # two different w.mdl with no folder to tell: not guessed, not deleted
+w('materials/axe/w.dx90.vtx'); w('materials/junk/j.vtf'); w('sound/junk.wav')
+r=subprocess.run([sys.executable,A+'/tools/clean_gunpack.py','--yes'],capture_output=True,text=True); print(r.stdout,r.stderr)
+got=sorted(rel for rel in (os.path.relpath(os.path.join(d,f),A).replace(os.sep,'/') for d,_,fs in os.walk(A) for f in fs) if rel.split('/')[0] in ('sound','materials','models'))
+want=sorted(['models/weapons/bat/w.mdl','models/weapons/bat/w.dx90.vtx','materials/models/weapons/bat/wood.vmt','materials/models/weapons/bat/wood.vtf',
+    'sound/bat/hit.wav','sound/bat/swing.wav','materials/entities/weapon_bat.png','models/a/w.mdl','models/b/w.mdl','models/weapons/axe/w.dx90.vtx'])
+print('ONLY GOT',sorted(set(got)-set(want))); print('ONLY WANT',sorted(set(want)-set(got)))
+print('OK' if got==want and first else 'FAILED')
 shutil.rmtree(TOP,ignore_errors=True)
-sys.exit(0 if got==want else 1)
+sys.exit(0 if got==want and first else 1)

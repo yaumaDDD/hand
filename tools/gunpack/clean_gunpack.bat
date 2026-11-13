@@ -18,6 +18,7 @@ rem this file only finds a Python to run it with, and fetches a portable one whe
 setlocal
 set "HERE=%~dp0"
 set "TOOL=%HERE%clean_gunpack\clean_gunpack.py"
+if not exist "%TOOL%" set "TOOL=%HERE%tools\clean_gunpack.py"
 if not exist "%TOOL%" goto notool
 if defined ZCG_PORTABLE_PYTHON goto portable
 
