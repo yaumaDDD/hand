@@ -2073,6 +2073,49 @@ return function(testdir, luaroot)
 		eq(drawnHands(nina), "whole", "no glove: nothing is shrunk")
 	end
 
+	-- 2.15.1: a glove of Z-City itself - this addon keeps out of it altogether
+	do
+		local STOCK = "models/zcg_test/stock_gloves.mdl"
+		M.files[STOCK] = true
+		M.models[STOCK] = { materials = M.models[Z.MALE].materials, bones = M.models[Z.MALE].bones, bodygroups = {
+			{ "HANDS", { "hands", "reggloves_FIN_M", "wingloves_FIN_M" } },
+		} }
+		local olga = M.newPlayer("olga", STOCK)
+		olga.tpik = Z.tpik
+		olga.nw.zcg_glove = "moto_5"
+		frame() Z.draw(olga)
+		eq(ZCG.StockGlove(olga), false, "bare hands in the body group: no glove of Z-City")
+		eq(olga:GetSubMaterial(HANDS_SLOT), "null", "a CS:GO glove over bare hands: they are hidden")
+		local worn = ZCG.States[olga].mdl
+		local draws = worn.draws
+
+		-- the state is lost while the hands are hidden (it is forgotten after a while): they come back all the same
+		olga.nw.zcg_glove = "none"
+		ZCG.States[olga] = nil
+		frame() Z.draw(olga)
+		eq(olga:GetSubMaterial(HANDS_SLOT), "", "no CS:GO glove: the hands are visible again, state or no state")
+		eq(olga.zcg_hidden_slots, nil, "(nothing is noted as hidden any more)")
+
+		-- the glove of Z-City is on the model while the CS:GO glove is still networked
+		olga.nw.zcg_glove = "moto_5"
+		frame() Z.draw(olga)
+		eq(olga:GetSubMaterial(HANDS_SLOT), "null", "(the CS:GO glove again)")
+		olga:SetBodygroup(0, 1)
+		eq(ZCG.StockGlove(olga), true, "another part than the bare hands: a glove of Z-City")
+		local state = ZCG.States[olga]
+		local before = state.mdl and state.mdl.draws
+		frame() Z.draw(olga)
+		eq(olga:GetSubMaterial(HANDS_SLOT), "", "a glove of Z-City: the hands are not hidden")
+		eq(state.mdl and state.mdl.draws, before, "a glove of Z-City: no CS:GO glove is drawn over it")
+		eq(drawnHands(olga), "whole", "a glove of Z-City: nothing is shrunk")
+		olga:SetBodygroup(0, 0)
+		frame() Z.draw(olga)
+		eq(olga:GetSubMaterial(HANDS_SLOT), "null", "bare hands again: the CS:GO glove is back")
+		check(worn ~= nil and draws ~= nil, "(the glove had a model)")
+		olga.nw.zcg_glove = "none"
+		frame() Z.draw(olga)
+	end
+
 	eq(#M.errors, 0, "no errors at the end: " .. table.concat(M.errors, " | "))
 	return checks, failures
 end

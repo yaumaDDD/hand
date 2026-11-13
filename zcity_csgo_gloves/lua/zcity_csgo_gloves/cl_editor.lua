@@ -57,7 +57,11 @@ end
 local function gloveOn(main, ent)
 	if not IsValid(ent) then return nil end
 	local variant = editorVariant(main)
-	if not variant or not ZCG.HasModel(variant.model) then return nil end
+	if not variant or not ZCG.HasModel(variant.model) then
+		-- (a glove of Z-City or none: whatever this addon hid on the model is given back)
+		ZCG.GiveBack(ent)
+		return nil
+	end
 	local state = ZCG.States[ent]
 	if not state or not state.drawn then return nil end
 	return variant, state
@@ -68,9 +72,15 @@ local function editorLayout(main, ent)
 	local variant = gloveOn(main, ent)
 	if not variant then return end
 	local slot, _, _, more = ZCG.Wearing(ent, variant)
-	if slot then ent:SetSubMaterial(slot, ZCG.HideMaterial()) end
+	if slot then
+		ent:SetSubMaterial(slot, ZCG.HideMaterial())
+		ZCG.NoteHidden(ent, slot)
+	end
 	-- (every other material that lies on the hands alone; the editor resets them all each frame)
-	for _, other in ipairs(more or {}) do ent:SetSubMaterial(other, ZCG.HideMaterial()) end
+	for _, other in ipairs(more or {}) do
+		ent:SetSubMaterial(other, ZCG.HideMaterial())
+		ZCG.NoteHidden(ent, other)
+	end
 end
 
 -- runs right before the model is drawn: it gets the bones of this frame with the hands shrunk

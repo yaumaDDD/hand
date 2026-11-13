@@ -584,6 +584,34 @@ local function removeModel(state)
 	state.drawn = false
 end
 
+-- Every slot this addon ever made invisible is noted on the entity itself (not only in its
+-- state, which is forgotten after a while): ZCG.GiveBack makes all of them visible again, state
+-- or no state. It is what happens when the wearer has no CS:GO glove - Z-City's own gloves and
+-- bare hands are left to Z-City entirely.
+local function noteHidden(ent, slot)
+	local noted = ent.zcg_hidden_slots
+	if not noted then
+		noted = {}
+		ent.zcg_hidden_slots = noted
+	end
+	noted[slot] = true
+end
+ZCG.NoteHidden = noteHidden
+
+function ZCG.GiveBack(ent)
+	local noted = IsValid(ent) and ent.zcg_hidden_slots
+	if not noted then return 0 end
+	ent.zcg_hidden_slots = nil
+	local invisible, back = ZCG.HideMaterial(), 0
+	for slot in pairs(noted) do
+		if ent:GetSubMaterial(slot) == invisible then
+			ent:SetSubMaterial(slot, nil)
+			back = back + 1
+		end
+	end
+	return back
+end
+
 -- Give the hands back. The value is only touched while it still is our "invisible" material:
 -- when the server changed it in the meantime, the new value has already replaced ours.
 local function unhideMore(ent, state)
@@ -624,6 +652,7 @@ local function hideMore(ent, state, slots, main)
 				more = more or {}
 				more[slot] = current
 				ent:SetSubMaterial(slot, invisible)
+				noteHidden(ent, slot)
 			end
 		end
 	end
@@ -659,6 +688,7 @@ local function hide(ent, state, slot)
 	if current ~= invisible then
 		state.hide = { slot = slot, old = current }
 		ent:SetSubMaterial(slot, invisible)
+		noteHidden(ent, slot)
 	end
 end
 
@@ -1057,6 +1087,48 @@ function ZCG.GloveOf(ent)
 	return ZCG.ByID[id]
 end
 
+-- Does the entity wear a glove of Z-City itself? (its body group HANDS shows another part than
+-- the bare hands, which is what a CS:GO glove is worn over.) Then nothing of this addon applies
+-- to it, whatever was networked: no CS:GO glove is drawn, no hand is hidden or shrunk.
+-- Only said when the model has the bare part under the name Z-City gives it and shows another.
+local stockGroups = {} -- lower-case model path -> { id = body group, bare = index of the bare hands } or false
+
+function ZCG.StockGlove(ent)
+	if not ent.GetBodyGroups or not ent.GetBodygroup then return false end
+	local model = ent:GetModel()
+	if not isstring(model) then return false end
+	model = string.lower(model)
+	local known = stockGroups[model]
+	if known == nil then
+		known = false
+		local AP = hg and hg.Appearance
+		local lists = AP and AP.Bodygroups and AP.Bodygroups.HANDS
+		local bare = {}
+		for sex = 1, 2 do
+			local none = istable(lists) and istable(lists[sex]) and lists[sex]["None"]
+			if istable(none) and isstring(none[1]) then bare[string.lower(none[1])] = true end
+		end
+		if next(bare) == nil then bare["hands"] = true end
+		local groups = ent:GetBodyGroups()
+		if not istable(groups) or #groups == 0 then return false end -- (model not loaded yet: ask again)
+		for _, group in ipairs(groups) do
+			if isstring(group.name) and string.lower(group.name) == "hands" and istable(group.submodels) then
+				for index = 0, #group.submodels do
+					local name = group.submodels[index]
+					if isstring(name) and bare[string.lower(name)] then
+						known = { id = group.id, bare = index }
+						break
+					end
+				end
+				break
+			end
+		end
+		stockGroups[model] = known
+	end
+	if not known then return false end
+	return ent:GetBodygroup(known.id) ~= known.bare
+end
+
 local function armsGone(ent)
 	local organism = ent.new_organism or ent.organism
 	return istable(organism) and organism.larmamputated and organism.rarmamputated
@@ -1101,6 +1173,8 @@ local function drawHook(ent)
 	local state = states[ent]
 	local variant = cvEnable:GetBool() and ZCG.GloveOf(ent) or nil
 	if variant and armsGone(ent) then variant = nil end
+	-- (a glove of Z-City itself: this addon keeps out of it altogether)
+	if variant and ZCG.StockGlove(ent) then variant = nil end
 
 	if not variant then
 		if state then
@@ -1108,6 +1182,7 @@ local function drawHook(ent)
 			unhide(ent, state)
 			forgetHands(state)
 		end
+		ZCG.GiveBack(ent)
 		return
 	end
 

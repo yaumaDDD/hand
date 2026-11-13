@@ -164,6 +164,8 @@ function ZCG.FixBodygroups(ent, appearance)
 		list = istable(list) and list[sex]
 		local data = variant ~= nil and istable(list) and list[variant]
 		local wanted = istable(data) and data[1]
+		-- (the gloves are Z-City's own business: its gloves work the way they do without this addon)
+		if isstring(group.name) and string.lower(group.name) == "hands" then wanted = nil end
 		if isstring(wanted) and istable(group.submodels) then
 			local exact, found = false, nil
 			local want = loose(wanted)
