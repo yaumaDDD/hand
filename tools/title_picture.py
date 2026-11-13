@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 S = 4  # supersampling
 RED, WHITE = (222, 32, 28, 255), (245, 245, 245, 255)
-PURE, BLACK = (255, 255, 255, 255), (12, 12, 12, 255)  # the logo of Remorse: white on black
+PURE, BLACK = (12, 12, 12, 255), (255, 255, 255, 255)  # the jumping word: black letters, white edge
 
 
 def line(font, parts, tracking, squash=0.72, slant=0.22):
