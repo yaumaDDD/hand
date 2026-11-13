@@ -132,9 +132,9 @@ def main():
         script = os.path.join(addon, build_addon.SORT_TOOL_DIR, 'sort_content.py')
         names = sorted(os.listdir(os.path.dirname(script)))
         check(names == sorted(build_addon.SORT_TOOL + ('stock_names.txt',)), 'the shipped folder holds the scripts and the list: %s' % names)
-        env = dict(os.environ, PYTHONIOENCODING='utf-8', ZCG_KEEP_UNUSED='1')     # (sorting is what is tested here)
+        env = dict(os.environ, PYTHONIOENCODING='utf-8')
         env.pop('PYTHONPATH', None)
-        done = subprocess.run([sys.executable, '-I', '-B', script, '--keep-unused'], cwd=tmp, env=env, **quiet)
+        done = subprocess.run([sys.executable, '-I', '-B', script], cwd=tmp, env=env, **quiet)
         judge('the shipped script', addon, want, done)
         text = done.stdout.decode('utf-8', 'replace')
         check(u'\u0413\u043e\u0442\u043e\u0432\u043e' in text, 'it tells in Russian that it is done')
@@ -150,7 +150,7 @@ def main():
               % (listed, 'run' if real else 'not run here: written by hand'))
         check(real == os.path.isfile(os.path.join(addon, 'lua', build_addon.BOUND_LUA)),
               'where the Lua was run the build leaves the list of what it adds for the game (and only there)')
-        done = subprocess.run([sys.executable, '-I', '-B', script, '--keep-unused'], cwd=tmp, env=env, **quiet)
+        done = subprocess.run([sys.executable, '-I', '-B', script], cwd=tmp, env=env, **quiet)
         got, report = result(addon)
         text = done.stdout.decode('utf-8', 'replace')
         check(done.returncode == 0 and sorted(got) == T.TABLE_SORTED,
@@ -165,7 +165,7 @@ def main():
             addon = os.path.join(home, u'\u0430\u0434\u0434\u043e\u043d\u044b', L.ADDON_DIRNAME)
             want, handed = shipped_thrown(addon, how, os.path.join(home, u'\u043d\u0430\u0448\u0451\u043b \u043a\u043e\u043d\u0442\u0435\u043d\u0442'))
             script = os.path.join(addon, build_addon.SORT_TOOL_DIR, 'sort_content.py')
-            done = subprocess.run([sys.executable, '-I', '-B', script, '--keep-unused'] + handed, cwd=tmp, env=env, **quiet)
+            done = subprocess.run([sys.executable, '-I', '-B', script] + handed, cwd=tmp, env=env, **quiet)
             got, report = result(addon)
             check(done.returncode == 0 and sorted(got) == sorted(want),
                   'the shipped script, numbered folders %s: every file is at its place; only in one of the two: %s'
@@ -186,7 +186,7 @@ def main():
         T.write(os.path.join(game, 'garrysmod', 'garrysmod_dir.vpk'), T.a_vpk(['materials/models/gate/gone.vmt'], version=2))
         T.write(os.path.join(game, 'garrysmod', 'addons', 'pack.gma'), T.a_gma('A Pack', ['materials/models/gate/other.vmt']))
         script = os.path.join(addon, build_addon.SORT_TOOL_DIR, 'sort_content.py')
-        done = subprocess.run([sys.executable, '-I', '-B', script, '--keep-unused'], cwd=tmp, env=seeking, **quiet)
+        done = subprocess.run([sys.executable, '-I', '-B', script], cwd=tmp, env=seeking, **quiet)
         judge('the shipped script in the addons folder of a game', addon, want, done)
         text = done.stdout.decode('utf-8', 'replace')
         _got, report = result(addon)
@@ -199,7 +199,7 @@ def main():
         addon = os.path.join(tmp, u'\u0440\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b', L.ADDON_DIRNAME)
         want = shipped(addon)
         script = os.path.join(addon, build_addon.SORT_TOOL_DIR, 'sort_content.py')
-        done = subprocess.run([sys.executable, '-I', '-B', script, '--keep-unused'], cwd=tmp, env=seeking, **quiet)
+        done = subprocess.run([sys.executable, '-I', '-B', script], cwd=tmp, env=seeking, **quiet)
         judge('the shipped script, looking for the game of this computer', addon, want, done)
         text = done.stdout.decode('utf-8', 'replace')
         said = [line for line in text.splitlines() if line.startswith(u'\u0418\u0433\u0440\u0430 \u043d\u0430 \u044d\u0442\u043e\u043c \u043a\u043e\u043c\u043f\u044c\u044e\u0442\u0435\u0440\u0435')]
@@ -209,7 +209,7 @@ def main():
         if os.name != 'nt':
             print('  (not on Windows: sort_content.bat itself is not run)')
         else:
-            env = dict(os.environ, ZCG_NO_PAUSE='1', PYTHONIOENCODING='utf-8', ZCG_KEEP_UNUSED='1')
+            env = dict(os.environ, ZCG_NO_PAUSE='1', PYTHONIOENCODING='utf-8')
             # ---- the batch file and numbered folders: thrown into the addon, then handed over
             for number, how in enumerate(T.THROWN):
                 home = os.path.join(tmp, u'bat (%d)' % number)

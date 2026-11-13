@@ -11,9 +11,8 @@ The game finds a material or a model only at the exact path that the Lua, a mode
 names; the files of clothing addons tend to arrive a folder off, or in folders of their own. This
 script reads the names out of the Lua of the addon (lua/...), finds every file by its name -
 tools/place_content.py does that, the same code the build of the addon uses - and moves it to its
-place. No file of the addon is overwritten. At the end the content that the clothes do not use - and that
-is no clothing - is deleted (clean_content.py; --keep-unused: it stays, what has no place is moved
-to the folder _not_used). Everything is written down in sort_content_report.txt.
+place. Nothing is deleted and no file of the addon is overwritten: what cannot be used is moved to
+the folder _not_used, and everything is written down in sort_content_report.txt.
 
 The content may be thrown in the way it was collected - the materials folder of one addon, of the
 next one ... as materials1, materials2, models1 ... - into the materials folder, into the models
@@ -55,7 +54,6 @@ import place_content as P  # noqa: E402
 import content_report  # noqa: E402
 import game_files  # noqa: E402
 import fill_content  # noqa: E402
-import clean_content  # noqa: E402
 
 STAGE = '_sorting'        # files on their way (with a journal, so that a run that was cut off is finished)
 ASIDE = '_not_used'       # files of the addon that have no place in it
@@ -1192,9 +1190,6 @@ def main(argv=None):
                         help='do not copy the files the clothes need out of the addon archives (.gma) of the game')
     parser.add_argument('--no-found', action='store_true',
                         help='do not write the list of the materials nobody names (content without Lua) for the game')
-    parser.add_argument('--keep-unused', action='store_true',
-                        help='do not delete the content that the clothes do not use (props, weapons, models nobody '
-                             'wears ...; see clean_content.py)')
     parser.add_argument('--no-switch', action='store_true',
                         help='keep the version of Appearance Mod the addon has, whatever the content turns out to be '
                              '(by default the Lua of the version the content belongs to is put in place)')
@@ -1202,8 +1197,6 @@ def main(argv=None):
                         help='put the Lua of this version in place, whatever the content says: its title or a part '
                              'of it, e.g. --use-version legacy')
     args = parser.parse_args(argv)
-    if os.environ.get('ZCG_KEEP_UNUSED'):       # (the same as --keep-unused, for whoever starts the .bat)
-        args.keep_unused = True
     return run(args)
 
 
@@ -1521,21 +1514,6 @@ def run(args, switched=None, filled=None):
                         f.write(u'\r\n' + u'\r\n'.join(now) + u'\r\n')
                     for line in fill_content.short(got):
                         say(line)
-            if not args.keep_unused:
-                # What the clothes do not use is deleted (clean_content.py) - before the list of
-                # the materials nobody names is written: what is gone is not listed.
-                if names.listed is None or names.not_run:
-                    cleaned = clean_content.Result()
-                    cleaned.skipped = (u'нет списка имён, найденных запуском Lua (%s), — без него не видно всего, что нужно одежде.'
-                                       % list_content.RUN_LIST)
-                else:
-                    say(u'Удаляю контент, который не относится к одежде и не используется ...')
-                    cleaned = clean_content.clean(addon, set(named) | set(names.spare) | set(stock), L.is_own_content, ASIDE)
-                say()
-                for line in clean_content.short(cleaned):
-                    say(line)
-                with io.open(long_path(listing), 'a', encoding='utf-8') as f:
-                    f.write(u'\r\n' + u'\r\n'.join(clean_content.lines(cleaned)) + u'\r\n')
             if not args.no_found:
                 # what nobody names is written down for the game
                 taken = set(named) | set(names.spare) | set(stock)

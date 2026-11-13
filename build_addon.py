@@ -713,7 +713,7 @@ def write_bound(path, by_file, titles=None, left_out=()):
 # does here: it runs these scripts, which the build puts next to it
 SORT_TOOL_DIR = 'sort_content'
 SORT_TOOL = ('sort_content.py', 'place_content.py', 'content_report.py', 'list_content.py', 'glua.py',
-             'zcg_layout.py', 'vmt.py', 'game_files.py', 'fill_content.py', 'clean_content.py')
+             'zcg_layout.py', 'vmt.py', 'game_files.py', 'fill_content.py')
 
 
 def step_sort_tool(out, ran=None):
