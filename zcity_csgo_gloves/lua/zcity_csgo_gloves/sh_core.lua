@@ -50,6 +50,8 @@ ZCG.cvFixFaces = CreateConVar("zcg_fix_faces", "0", FLAGS,
 	.. "purple and black squares - on a computer that has the content of the menu as a whole; 2 = on any computer; "
 	.. "0 = the faces stay as the clothing Lua made them. Set it on the server. zcg_content tells how many there are.", 0, 2)
 
+ZCG.cvClothes = CreateConVar("zcg_fix_clothes", "0", FLAGS,
+	"1: in the game the server puts on the clothes (jacket, trousers, shoes) of models that name their parts differently. 0: the clothes are left to Z-City alone (default).")
 ZCG.cvGloves = CreateConVar("zcg_fix_gloves", "0", FLAGS,
 	"1: the gloves of Z-City itself are put on by this addon on models that name their parts differently (reggloves_FIN_M.smd). 0: left to Z-City alone.")
 ZCG.cvBodies = CreateConVar("zcg_fix_bodies", "1", FLAGS,
@@ -185,7 +187,7 @@ end
 
 -- puts on the bodies chosen in the appearance table that Z-City could not put on by exact name.
 -- Returns how many body groups were set.
-function ZCG.FixBodygroups(ent, appearance)
+function ZCG.FixBodygroups(ent, appearance, handsOnly)
 	if not ZCG.cvBodies:GetBool() then return 0 end
 	local AP = hg and hg.Appearance
 	local catalog = AP and AP.Bodygroups
@@ -205,6 +207,8 @@ function ZCG.FixBodygroups(ent, appearance)
 	for _, group in ipairs(hands) do groups[#groups + 1] = group end
 	for _, group in ipairs(groups) do
 		local variant = insensitive(chosen, group.name)
+		-- (handsOnly: the server in the game - the clothes are Z-City's own business there)
+		if handsOnly and not (isstring(group.name) and string.lower(group.name) == "hands") then variant = nil end
 		local list = insensitive(catalog, group.name)
 		list = istable(list) and list[sex]
 		local data = variant ~= nil and istable(list) and list[variant]

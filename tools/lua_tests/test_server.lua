@@ -182,6 +182,11 @@ return function(testdir, luaroot)
 		AP.Bodygroups.pants = { [1] = { ["Wide"] = { "pants_wide_m" } } }
 		AP.Bodygroups.shoes = { [1] = { ["Sneakers"] = { "shoes_02_m" } } }
 		local leg = M.newPlayer("leg", LEG)
+		-- (2.17.3) as the addon comes, the clothes are left to Z-City: nothing is put on
+		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "T-Shirt", pants = "Wide", shoes = "Sneakers" } }
+		M.advance(0.5)
+		eq(leg:GetBodygroup(0), 0, "zcg_fix_clothes 0: the server leaves the clothes as Z-City put them on")
+		M.setConVar("zcg_fix_clothes", 1)
 		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "T-Shirt", pants = "Wide", shoes = "Sneakers" } }
 		leg:SetBodygroup(1, 1) -- (Z-City did this one itself: exact names)
 		M.advance(0.5)

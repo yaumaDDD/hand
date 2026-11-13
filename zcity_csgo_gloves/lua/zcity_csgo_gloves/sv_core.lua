@@ -58,13 +58,16 @@ function ZCG.UpdatePlayer(ply)
 	-- Bodies of the menu on models that name them differently (ZCG.FixBodygroups, sh_core.lua):
 	-- once for each time Z-City applies an appearance (it makes a new table then), and only while
 	-- the player wears the model of that appearance - a player class dresses its model itself.
+	-- In the game only the hands under a CS:GO glove are this addon's business: the clothes, the
+	-- hands of Z-City and its gloves stay exactly as Z-City put them on (zcg_fix_clothes 1 and
+	-- zcg_fix_gloves 1 ask for more).
 	local appearance = ply.CurAppearance
 	if istable(appearance) and (ply.zcg_bodies ~= appearance or ply.zcg_bodies_model ~= ply:GetModel()) then
 		ply.zcg_bodies, ply.zcg_bodies_model = appearance, ply:GetModel()
 		local entry = ZCG.AppearanceModel(appearance.AModel)
 		local wanted = entry and entry.mdl
 		if isstring(wanted) and isstring(ply:GetModel()) and string.lower(wanted) == string.lower(ply:GetModel()) then
-			ZCG.FixBodygroups(ply, appearance)
+			ZCG.FixBodygroups(ply, appearance, not ZCG.cvClothes:GetBool())
 		end
 	end
 

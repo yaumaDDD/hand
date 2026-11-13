@@ -1312,6 +1312,16 @@ local function drawHook(ent)
 			forgetHands(state)
 		end
 		ZCG.GiveBack(ent)
+		-- No CS:GO glove: nothing of this entity may be left invisible by this addon, whatever
+		-- was lost on the way (a state forgotten, a model changed). Looked at once a second.
+		local now = RealTime()
+		if (ent.zcg_swept or 0) <= now then
+			ent.zcg_swept = now + 1
+			local invisible = ZCG.HideMaterial()
+			for index = 0, 31 do
+				if ent:GetSubMaterial(index) == invisible then ent:SetSubMaterial(index, nil) end
+			end
+		end
 		return
 	end
 
