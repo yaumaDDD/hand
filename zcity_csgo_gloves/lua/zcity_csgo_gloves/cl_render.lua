@@ -1482,6 +1482,12 @@ concommand.Add("zcg_finger_tint", function(_, _, args)
 end, nil, "CS:GO gloves: try a colour for the skin of the glove fingers (this client only). zcg_finger_tint <r> <g> <b>")
 
 concommand.Add("zcg_debug", function()
+	-- (everything that is printed goes to data/zcg_debug.txt as well: a file is easier to send)
+	local lines, say = {}, print
+	local print = function(text)
+		lines[#lines + 1] = tostring(text)
+		say(text)
+	end
 	local me = LocalPlayer()
 	local ent = me
 	local target = me:GetEyeTrace().Entity
@@ -1644,5 +1650,32 @@ concommand.Add("zcg_debug", function()
 	if state and variant then
 		state.probe = true
 		print("  (the hand bones are printed when this entity is drawn the next time)")
+	end
+
+	-- every part of every body group, and what lies on every material slot right now
+	print("  all the bodies of the model (the one that is on is marked):")
+	for _, group in ipairs(ent.GetBodyGroups and ent:GetBodyGroups() or {}) do
+		local value = ent:GetBodygroup(group.id)
+		local parts = {}
+		if istable(group.submodels) then
+			for index = 0, #group.submodels do
+				parts[#parts + 1] = (index == value and ">" or "") .. index .. ":" .. tostring(group.submodels[index])
+			end
+		end
+		print("    [" .. tostring(group.id) .. "] " .. tostring(group.name) .. " = " .. table.concat(parts, "  "))
+	end
+	print("  materials put on the slots (Entity:GetSubMaterial):")
+	for i = 0, 31 do
+		local name = ent.GetSubMaterial and ent:GetSubMaterial(i) or ""
+		if isstring(name) and name ~= "" then print("    [" .. i .. "] " .. name) end
+	end
+	print("  glove asked by the server \"" .. tostring(ent.GetNWString and ent:GetNWString("zcg_glove", "") or "?")
+		.. "\", a glove of Z-City is on " .. tostring(ZCG.StockGlove(ent))
+		.. ", jacket \"" .. tostring(ZCG.JacketOf(ent)) .. "\", short sleeves " .. tostring(shortSleeves(ent) == true)
+		.. ", zcg_fix_bodies " .. ZCG.cvBodies:GetString() .. ", zcg_fix_gloves " .. ZCG.cvGloves:GetString()
+		.. ", zcg_whole_hands " .. cvWholeHands:GetString())
+	if file and file.Write then
+		file.Write("zcg_debug.txt", table.concat(lines, "\n"))
+		say("[CS:GO Gloves] all of this is in garrysmod/data/zcg_debug.txt as well")
 	end
 end, nil, "CS:GO gloves: print what the addon knows about you or the player / ragdoll you look at.")

@@ -50,6 +50,8 @@ ZCG.cvFixFaces = CreateConVar("zcg_fix_faces", "0", FLAGS,
 	.. "purple and black squares - on a computer that has the content of the menu as a whole; 2 = on any computer; "
 	.. "0 = the faces stay as the clothing Lua made them. Set it on the server. zcg_content tells how many there are.", 0, 2)
 
+ZCG.cvGloves = CreateConVar("zcg_fix_gloves", "0", FLAGS,
+	"1: the gloves of Z-City itself are put on by this addon on models that name their parts differently (reggloves_FIN_M.smd). 0: left to Z-City alone.")
 ZCG.cvBodies = CreateConVar("zcg_fix_bodies", "1", FLAGS,
 	"Appearance menu: 1 = a jacket / T-shirt / trousers / shoes chosen in the menu is also put on a model that calls "
 	.. "the same part a little differently (the models of the LEGACY version and other added ones); 0 = only by exact name, as Z-City does.", 0, 1)
@@ -213,7 +215,8 @@ function ZCG.FixBodygroups(ent, appearance)
 		-- (without it there are no arms).
 		if isstring(group.name) and string.lower(group.name) == "hands" then
 			if not (istable(data) and data.ZCG) then
-				wanted = nil
+				-- (zcg_fix_gloves 1: the part is looked up by its loose name, as for the clothes)
+				if not ZCG.cvGloves:GetBool() then wanted = nil end
 			elseif ZCG.ShortSleevesByName(ent) then
 				local arms = ZCG.ArmsPart(group)
 				if arms then
