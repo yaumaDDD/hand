@@ -14,8 +14,11 @@ rem models, materials and textures below materials, and the numbered folders go 
 rem Afterwards it tells what it went through - how many folders, how deep - goes through the
 rem two folders once more, and tells what they hold and which files are missing for real.
 rem
-rem Close the game first: it keeps the files it uses open. Nothing is deleted - see the README,
-rem "sort_content.bat". The work is done by sort_content\sort_content.py; this file only finds
+rem Close the game first: it keeps the files it uses open. At the end the content that the
+rem clothes do not use and that is no clothing (props, weapons, models nobody wears ...) is
+rem DELETED, and so is the folder _not_used; sort_content_report.txt lists what went.
+rem   sort_content.bat --keep-unused     deletes nothing
+rem See the README, "sort_content.bat". The work is done by sort_content\sort_content.py; this file only finds
 rem a Python to run it with, and fetches a portable one from python.org when there is none.
 setlocal
 set "HERE=%~dp0"

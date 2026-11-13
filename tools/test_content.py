@@ -1132,7 +1132,7 @@ def sort(*args, **kw):
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         code = sort_content.main(list(args) + ([] if kw.get('fill') else ['--no-fill']) + ([] if kw.get('found') else ['--no-found'])
-                                 + ([] if kw.get('take') else ['--no-take']))
+                                 + ([] if kw.get('take') else ['--no-take']) + ([] if kw.get('clean') else ['--keep-unused']))
     return code, out.getvalue()
 
 
@@ -2825,6 +2825,82 @@ def test_found(tmp):
     os.remove(os.path.join(root, 'materials/models/faces/van_facemap_new.vmt'))
     code, said = sort('--addon', root, '--no-game', found=True)
     check(code == 0 and not os.path.isfile(path) and u'Контент без Lua' not in said, 'with nothing left to list the file goes away')
+
+
+def test_cleaning(tmp):
+    """Content that the clothes do not use and that is no clothing is deleted (clean_content.py)."""
+    import clean_content
+    root = os.path.join(tmp, 'cleaning', 'zcity_csgo_gloves')
+    lua = 'hg.Appearance.Clothes[1].epl = "models/gate/epl"\nAppAddModel("Guy", "models/pack/guy.mdl")'
+    keep = {
+        'lua/autorun/clothes.lua': lua,
+        # named by the Lua, with what it needs
+        'materials/models/gate/epl.vmt': material('models/gate/epl', bumpmap='models/gate/epl_n'),
+        'materials/models/gate/epl.vtf': texture('epl'), 'materials/models/gate/epl_n.vtf': texture('epl_n'),
+        'models/pack/guy.mdl': model(['models/pack/skins/'], ['body'], 'pack/guy.mdl') + b'models/pack/guy_anims.mdl\x00',
+        'models/pack/guy.vvd': b'vvd', 'models/pack/guy.dx90.vtx': b'vtx', 'models/pack/guy.phy': b'phy',
+        'models/pack/guy_anims.mdl': model([], [], 'pack/guy_anims.mdl'), 'models/pack/guy_anims.ani': b'ani',
+        'materials/models/pack/skins/body.vmt': '"Patch"\n{\n\t"include" "materials/models/pack/skins/base.vmt"\n}\n',
+        'materials/models/pack/skins/base.vmt': material('models/pack/skins/base'),
+        'materials/models/pack/skins/base.vtf': texture('base'),
+        # nobody names them, but they are clothing: the folder of clothes, a face, a sheet
+        'materials/models/gate/extra.vmt': material('models/gate/extra'), 'materials/models/gate/extra.vtf': texture('extra'),
+        'materials/models/faces/van_facemap_new.vmt': material('models/faces/van_new'), 'materials/models/faces/van_new.vtf': texture('van'),
+        'materials/models/humans/male/group09/sheet_77.vmt': material('models/humans/male/group09/sheet_77'),
+        'materials/models/humans/male/group09/sheet_77.vtf': texture('sheet'),
+        # the addon's own, and what is no file of the game
+        'materials/zcity_csgo_gloves/own.vmt': material('zcity_csgo_gloves/own'), 'materials/zcity_csgo_gloves/own.vtf': texture('own'),
+        'materials/models/props/readme.txt': 'a note',
+    }
+    junk = {
+        'materials/models/props/crate.vmt': material('models/props/crate'), 'materials/models/props/crate.vtf': texture('crate'),
+        'materials/models/gate/orphan.vtf': texture('orphan'),
+        'models/props/crate.mdl': model(['models/props/'], ['crate'], 'props/crate.mdl'), 'models/props/crate.vvd': b'vvd',
+        'models/props/crate.dx90.vtx': b'vtx', 'models/weapons/w_gun.mdl': model(['models/weapons/'], ['gun'], 'weapons/w_gun.mdl'),
+        'materials/models/weapons/gun.vmt': material('models/weapons/gun'), 'materials/models/weapons/gun.vtf': texture('gun'),
+        'materials/maps/deep/a/b/sky.vtf': texture('sky'),
+        '_not_used/materials/old/thing.vmt': material('old/thing'),
+    }
+    for rel, data in list(keep.items()) + list(junk.items()):
+        write(os.path.join(root, rel), data)
+
+    def there():
+        out = set()
+        for top in ('materials', 'models', '_not_used'):
+            for rel, _full in sort_content.walk_files(os.path.join(root, top)):
+                out.add(top + '/' + rel)
+        return out
+    content = set(rel for rel in keep if not rel.startswith('lua/'))
+
+    # without the list of the names found by running the Lua nothing is deleted
+    code, said = sort('--addon', root, '--no-game', clean=True)
+    check(code == 0 and there() == content | set(junk) and u'Лишний контент не удалялся' in said,
+          'no list of names: nothing is deleted, and it is said why')
+
+    names = ['materials/models/gate/epl.vmt', 'models/pack/guy.mdl']
+    dry = clean_content.clean(root, names, L.is_own_content, dry=True)
+    check(sorted(rel for rel, _size in dry.deleted) == sorted(junk) and there() == content | set(junk),
+          'a dry run names what would go and deletes nothing: %s' % sorted(set(rel for rel, _ in dry.deleted) ^ set(junk)))
+
+    listed = os.path.join(root, 'sort_content', list_content.RUN_LIST)
+    os.makedirs(os.path.dirname(listed), exist_ok=True)
+    list_content.write_run_list(listed, names, {'autorun/clothes.lua': lua})
+    code, said = sort('--addon', root, '--no-game', '--names-list', listed, '--keep-unused')
+    check(code == 0 and there() == content | set(junk), '--keep-unused: everything stays')
+    code, said = sort('--addon', root, '--no-game', '--names-list', listed, clean=True, found=True)
+    left = there()
+    check(code == 0 and left == content, 'what the clothes do not use is deleted, the rest stays; differs: %s' % sorted(left ^ content))
+    check(not os.path.isdir(os.path.join(root, 'materials', 'maps')) and not os.path.isdir(os.path.join(root, '_not_used'))
+          and os.path.isdir(os.path.join(root, 'materials', 'models', 'props')),
+          'folders that are empty then go away; one that still holds a note stays')
+    check(u'Удалён контент' in said and u'файлов %d' % len(junk) in said and said.rstrip().splitlines()[-1].startswith(u'Готово'),
+          'and it is said how much went: %s' % [line for line in said.splitlines() if u'далён' in line])
+    report = build_addon.read_bytes(os.path.join(root, sort_content.REPORT)).decode('utf-8')
+    check(u'materials/models/props/ — файлов: 2' in report and u'models/weapons/ — файлов: 1' in report, 'the report lists it by folder')
+    found = build_addon.read_bytes(os.path.join(root, sort_content.FOUND_LUA)).decode('utf-8')
+    check('models/props/crate' not in found and 'models/gate/extra' in found, 'what is gone is not listed for the game, what stays is')
+    code, said = sort('--addon', root, '--no-game', '--names-list', listed, clean=True, found=True)
+    check(code == 0 and there() == content and u'Лишнего контента нет' in said, 'a second run finds nothing more to delete')
 
 
 def test_missing_by_pack(tmp):
@@ -4701,6 +4777,7 @@ def main():
         test_switching_versions(tmp)
         test_filling(tmp)
         test_found(tmp)
+        test_cleaning(tmp)
         test_take(tmp)
         test_numbered_folders_of_the_owner(tmp)
         test_thrown_in_folders(tmp)
