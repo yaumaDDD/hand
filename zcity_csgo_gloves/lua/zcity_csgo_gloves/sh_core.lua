@@ -145,6 +145,42 @@ function ZCG.LegacyParts(part, ent, appearance)
 	return out, has
 end
 
+-- Short sleeves by the name of a body that is worn ("sheet_tshirt_m"): the arms are bare. With
+-- such a body this addon leaves the wearer alone altogether - nothing of the arms or hands is
+-- hidden, shrunk or exchanged; a CS:GO glove is only drawn over the hand.
+local SHORT = { "tshirt", "t_shirt", "t%-shirt", "shortsleeve", "short_sleeve", "sleeveless", "tanktop", "tank_top", "topless", "shirtless", "naked" }
+function ZCG.ShortSleevesByName(ent)
+	for _, group in ipairs(ent.GetBodyGroups and ent:GetBodyGroups() or {}) do
+		local value = ent:GetBodygroup(group.id) or 0
+		local name = istable(group.submodels) and group.submodels[value]
+		-- (not the hands: "handsfortshirt" there is what a T-shirt gets, not what makes one)
+		if isstring(name) and not (isstring(group.name) and string.lower(group.name) == "hands") then
+			name = string.lower(name)
+			for _, word in ipairs(SHORT) do
+				if string.find(name, word) then return true end
+			end
+		end
+	end
+	return false
+end
+
+-- The older models keep the bare arms of a T-shirt as a part of the body group HANDS
+-- ("handsfortshirt", in the menu "T-Shirt Hands"): with any other part of that group - the hands
+-- alone, a glove - there are no arms under the short sleeves. Returns the index of such a part.
+function ZCG.ArmsPart(group)
+	if not istable(group) or not istable(group.submodels) then return nil end
+	for index = 0, #group.submodels do
+		local name = group.submodels[index]
+		if isstring(name) then
+			name = string.lower(name)
+			for _, word in ipairs(SHORT) do
+				if string.find(name, word) then return index end
+			end
+		end
+	end
+	return nil
+end
+
 -- puts on the bodies chosen in the appearance table that Z-City could not put on by exact name.
 -- Returns how many body groups were set.
 function ZCG.FixBodygroups(ent, appearance)
@@ -158,14 +194,32 @@ function ZCG.FixBodygroups(ent, appearance)
 	local sex = entry and entry.sex and 2 or 1
 
 	local set = 0
+	-- (the hands last: whether they are touched depends on the jacket that is on by then)
+	local groups, hands = {}, {}
 	for _, group in ipairs(ent:GetBodyGroups() or {}) do
+		local isHands = isstring(group.name) and string.lower(group.name) == "hands"
+		if isHands then hands[#hands + 1] = group else groups[#groups + 1] = group end
+	end
+	for _, group in ipairs(hands) do groups[#groups + 1] = group end
+	for _, group in ipairs(groups) do
 		local variant = insensitive(chosen, group.name)
 		local list = insensitive(catalog, group.name)
 		list = istable(list) and list[sex]
 		local data = variant ~= nil and istable(list) and list[variant]
 		local wanted = istable(data) and data[1]
 		-- (HANDS as well: the models of the Appearance Mod name the glove parts "reggloves_FIN_M.smd"
-		-- where Z-City asks for "reggloves_FIN_M", so Z-City itself never puts its gloves on them)
+		-- where Z-City asks for "reggloves_FIN_M", so Z-City itself never puts its gloves on them.
+		-- Not with short sleeves: there the hands stay exactly as Z-City left them.)
+		if isstring(group.name) and string.lower(group.name) == "hands" and ZCG.ShortSleevesByName(ent) then
+			wanted = nil
+			-- (... or, on a model that has them as a part of HANDS, the bare arms of a T-shirt:
+			-- whatever glove was chosen, without that part there are no arms at all)
+			local arms = ZCG.ArmsPart(group)
+			if arms and ent:GetBodygroup(group.id) ~= arms then
+				ent:SetBodygroup(group.id, arms)
+				set = set + 1
+			end
+		end
 		if isstring(wanted) and istable(group.submodels) then
 			local exact, found = false, nil
 			local want = loose(wanted)

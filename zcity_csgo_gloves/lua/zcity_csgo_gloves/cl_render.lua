@@ -259,20 +259,7 @@ end
 -- Short sleeves by the name of a body that is worn ("sheet_tshirt_m"): the surest sign there is,
 -- it does not depend on the mesh being read. With such a body the arms are bare, nothing of
 -- them is hidden by a material.
-local SHORT = { "tshirt", "t_shirt", "t%-shirt", "shortsleeve", "short_sleeve", "sleeveless", "tanktop", "tank_top", "topless", "shirtless", "naked" }
-local function shortSleeves(ent)
-	for _, group in ipairs(ent.GetBodyGroups and ent:GetBodyGroups() or {}) do
-		local value = ent:GetBodygroup(group.id) or 0
-		local name = istable(group.submodels) and group.submodels[value]
-		if isstring(name) then
-			name = string.lower(name)
-			for _, word in ipairs(SHORT) do
-				if string.find(name, word) then return true end
-			end
-		end
-	end
-	return false
-end
+local shortSleeves = ZCG.ShortSleevesByName -- (sh_core.lua)
 
 -- A hand under a sleeve is the hand and a short piece of the wrist. A bare arm goes on up the
 -- forearm: vertices far from the hand (further than REACH times the size of the hand) or on bones
@@ -1220,7 +1207,7 @@ function ZCG.StockGlove(ent)
 					local name = group.submodels[index]
 					-- (the models of the Appearance Mod call the part "hands.smd")
 					if isstring(name) and bare[(string.gsub(string.lower(name), "%.smd$", ""))] then
-						known = { id = group.id, bare = index }
+						known = { id = group.id, bare = index, arms = ZCG.ArmsPart(group) }
 						break
 					end
 				end
@@ -1230,7 +1217,9 @@ function ZCG.StockGlove(ent)
 		stockGroups[model] = known
 	end
 	if not known then return false end
-	return ent:GetBodygroup(known.id) ~= known.bare
+	local shown = ent:GetBodygroup(known.id)
+	-- (the bare arms of a T-shirt are no glove either)
+	return shown ~= known.bare and shown ~= known.arms
 end
 
 local function armsGone(ent)
@@ -1249,6 +1238,9 @@ end
 -- when it can hide the hands: two sets of fingers in one glove would be worse than either.
 function ZCG.Wearing(ent, variant)
 	if not ZCG.HidesHands(variant) then return nil, false, false end
+	-- A T-shirt (short sleeves): the wearer is left as it is - no material hidden, no bone shrunk.
+	-- The glove is drawn over the hand and that is all.
+	if shortSleeves(ent) then return nil, false, false end
 	if variant.fingerless and not (ZCG.FingerMaterial() and ZCG.ArmRemoved(variant.model)) then return nil, false, false end
 
 	local slot = ZCG.HandsSlot(ent)

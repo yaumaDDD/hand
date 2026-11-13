@@ -174,7 +174,7 @@ return function(testdir, luaroot)
 			{ "Sheet", { "sheet_m.smd", "sheet_tshirt.smd", "sheet_hood_m.smd" } },
 			{ "pants", { "pants_m", "pants_wide_m" } },
 			{ "shoes", { "shoes_m", "shoes_02_f" } },
-			{ "hands", { "hands.smd", "reggloves_FIN_M.smd" } },
+			{ "hands", { "hands.smd", "reggloves_FIN_M.smd", "handsfortshirt.smd" } },
 		} }
 		AP.PlayerModels[1]["Legacy Guy"] = { mdl = LEG, submatSlots = {}, sex = false }
 		local kept = { sheet = AP.Bodygroups.sheet, pants = AP.Bodygroups.pants, shoes = AP.Bodygroups.shoes }
@@ -204,14 +204,26 @@ return function(testdir, luaroot)
 		M.advance(0.5)
 		eq(leg:GetBodygroup(0), 2, "zcg_fix_bodies 1 again: the hoodie is on")
 		-- (2.15.2) a glove of Z-City on a model that names its part with ".smd": Z-City cannot put it on
-		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { HANDS = "Gloves" } }
+		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "Hoodie", HANDS = "Gloves" } }
 		M.advance(0.5)
 		eq(leg:GetBodygroup(3), 1, "the glove of Z-City goes on a model that calls it reggloves_FIN_M.smd")
 		eq(leg:GetNWString("zcg_glove"), "none", "and no CS:GO glove with it")
-		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { HANDS = "CS:GO Moto 05" } }
+		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "Hoodie", HANDS = "CS:GO Moto 05" } }
 		M.advance(0.5)
 		eq(leg:GetBodygroup(3), 0, "a CS:GO glove: the bare hands are back under it")
 		eq(leg:GetNWString("zcg_glove"), "moto_5", "and the CS:GO glove is told")
+		-- (2.16.1) a T-shirt on a model that keeps its bare arms as a part of HANDS: that part, whatever glove
+		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "T-Shirt", HANDS = "CS:GO Moto 05" } }
+		M.advance(0.5)
+		eq(leg:GetBodygroup(0), 1, "the T-shirt is on")
+		eq(leg:GetBodygroup(3), 2, "a T-shirt and a CS:GO glove: the arms of the T-shirt are on")
+		eq(leg:GetNWString("zcg_glove"), "moto_5", "... and the glove is drawn over them")
+		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "T-Shirt", HANDS = "Gloves" } }
+		M.advance(0.5)
+		eq(leg:GetBodygroup(3), 2, "a T-shirt and a glove of Z-City: the arms stay")
+		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "Hoodie", HANDS = "Gloves" } }
+		M.advance(0.5)
+		eq(leg:GetBodygroup(3), 1, "long sleeves again: the glove of Z-City")
 		leg:SetModel(Z.COMBINE)
 		leg.CurAppearance = { AModel = "Legacy Guy", ABodygroups = { sheet = "T-Shirt" } }
 		M.advance(0.5)
