@@ -142,6 +142,11 @@ def main():
         judge('the shipped script', addon, want, done)
         text = done.stdout.decode('utf-8', 'replace')
         check(u'\u0413\u043e\u0442\u043e\u0432\u043e' in text, 'it tells in Russian that it is done')
+        done = subprocess.run([sys.executable, '-I', '-B', script, '--keep-unused', '--publish'], cwd=tmp, env=env, **quiet)
+        text = done.stdout.decode('utf-8', 'replace')
+        check(done.returncode == 0 and u'\u041f\u041e\u0414\u0413\u041e\u0422\u041e\u0412\u041a\u0410 \u041a \u041c\u0410\u0421\u0422\u0415\u0420\u0421\u041a\u041e\u0419' in text,
+              '--publish: the note for the Workshop is printed')
+        check(os.path.isfile(os.path.join(addon, 'addon.json')), '--publish: addon.json is written when the addon has none')
 
         # ---- names that only running the Lua shows: the build leaves them beside the script
         addon = os.path.join(tmp, u'names (1)', 'addons', L.ADDON_DIRNAME)

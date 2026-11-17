@@ -1188,6 +1188,8 @@ def main(argv=None):
                              '(copies of renamed files, see fill_content.py)')
     parser.add_argument('--fill-namesakes', action='store_true',
                         help='also fill a name the Lua gives with the only file of that name from ANOTHER folder')
+    parser.add_argument('--publish', action='store_true',
+                        help='after the run: check the addon is ready for the Workshop and say how to publish it')
     parser.add_argument('--own-only', action='store_true',
                         help='work with the folders of the addon itself and nothing else: the game, the workshop, '
                              'the other addons and the folders dropped on the bat are not touched at all')
@@ -1418,6 +1420,32 @@ def take_from_game(addon, found, needed):
             lines.append(u'  «%s» (%s) — файлов: %d' % (title or os.path.basename(archive), os.path.basename(archive), len(written)))
             lines += [u'      ' + name for name in written]
     return count, lines
+
+
+def publish_note(addon, report, dry):
+    """the verdict and the recipe for the Workshop: the item has to carry the whole addon, because
+    a client can take content only from the Workshop (or its own disk), never from the owner's PC"""
+    say()
+    say(u'ПОДГОТОВКА К МАСТЕРСКОЙ')
+    missing = len(report.missing_named) + len(report.missing_materials) + len(report.missing_textures)
+    if missing == 0:
+        say(u'  Все файлы, которые называют луа аддона, лежат внутри аддона: игрокам хватит одного предмета мастерской.')
+    else:
+        say(u'  Внутри аддона не хватает файлов: %d (каких именно - в sort_content_report.txt).' % missing)
+        say(u'  У игроков эти вещи будут фиолетовыми или ERROR, пока файлов нет в аддоне: положите materials и')
+        say(u'  models тех паков, которых не хватает, в папку аддона (можно как есть, можно нумерованными папками)')
+        say(u'  и запустите батник ещё раз - он их разложит и включит в меню.')
+    aj = os.path.join(addon, 'addon.json')
+    if not os.path.isfile(aj):
+        if not dry:
+            with open(aj, 'w', encoding='utf-8') as f:
+                f.write(u'{\n\t"title": "Z-City CS:GO Gloves",\n\t"type": "ServerContent",\n\t"tags": [ "roleplay", "build" ]\n}\n')
+        say(u'  Записан addon.json - его читает окно публикации мастерской.')
+    say(u'  Публиковать в мастерскую нужно САМУ папку аддона, в которой лежат lua, materials, models и addon.json:')
+    say(u'  %s' % addon)
+    say(u'  В игре: Workshop -> Publish (или обновление предмета) -> выбрать именно эту папку, не родительскую')
+    say(u'  и не папку lua внутри неё: из-за лишнего уровня у игроков не загрузится ни один луа.')
+    say(u'  После публикации: перезапустить сервер, поставить zcg_workshop_id <id предмета>, игрокам - перезапустить игру.')
 
 
 def run(args, switched=None, filled=None):
@@ -1655,6 +1683,8 @@ def run(args, switched=None, filled=None):
                 say(u'Строчки меню: строк, которые луа паков кладёт в таблицы внешности, — %d. Они записаны в %s:' % (len(baked), BAKED_LUA))
                 say(u'  игра поставит их в меню сама, даже если луа пака не загрузится или встанет не в тот порядок.')
                 say(u'  Этот файл нужен и на сервере (копируйте папку аддона целиком).')
+            if args.publish:
+                publish_note(addon, report, args.dry_run)
             if other and other[0]['title'] in names.held:
                 say(u'Файлы разложены. Но контент — от «%s», а в аддоне стоит Lua «%s» (см. «ВНИМАНИЕ» выше) — так вы просили.'
                     % (other[0]['title'], other[0]['instead']))
