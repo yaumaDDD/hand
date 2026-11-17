@@ -1188,6 +1188,9 @@ def main(argv=None):
                              '(copies of renamed files, see fill_content.py)')
     parser.add_argument('--fill-namesakes', action='store_true',
                         help='also fill a name the Lua gives with the only file of that name from ANOTHER folder')
+    parser.add_argument('--own-only', action='store_true',
+                        help='work with the folders of the addon itself and nothing else: the game, the workshop, '
+                             'the other addons and the folders dropped on the bat are not touched at all')
     parser.add_argument('--no-take', action='store_true',
                         help='do not copy the files the clothes need out of the addon archives (.gma) of the game')
     parser.add_argument('--no-found', action='store_true',
@@ -1419,6 +1422,9 @@ def take_from_game(addon, found, needed):
 
 def run(args, switched=None, filled=None):
     """switched: the title of the version this very run has put in place before it started over"""
+    if getattr(args, 'own_only', False):
+        args.no_game, args.no_take, args.sources = True, True, []
+        say(u'Источник — только папки самого аддона: игра, воркшоп, соседние аддоны и перетащенные папки не трогаются.')
     temp = tempfile.mkdtemp(prefix='zcg_sort_')
     try:
         addon = find_addon(args.addon)

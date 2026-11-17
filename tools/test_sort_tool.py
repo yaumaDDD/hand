@@ -178,6 +178,23 @@ def main():
             if done.returncode != 0 or got != want:
                 show('the shipped script, numbered folders %s' % how, done)
 
+        # ---- --own-only: the folders dropped on the script give it nothing at all
+        home = os.path.join(tmp, u'only the own folders')
+        addon = os.path.join(home, u'аддоны', L.ADDON_DIRNAME)
+        _want, handed = shipped_thrown(addon, sorted(T.THROWN)[0], os.path.join(home, u'нашёл контент'))
+        script = os.path.join(addon, build_addon.SORT_TOOL_DIR, 'sort_content.py')
+        done0 = subprocess.run([sys.executable, '-I', '-B', script, '--keep-unused'], cwd=tmp, env=env, **quiet)
+        got0, _report = result(addon)
+        done = subprocess.run([sys.executable, '-I', '-B', script, '--keep-unused', '--own-only'] + handed,
+                              cwd=tmp, env=env, **quiet)
+        got, report = result(addon)
+        check(done0.returncode == 0 and done.returncode == 0 and got == got0,
+              '--own-only: the folders dropped on the script give it nothing (%s)' % sorted(set(got) ^ set(got0)))
+        check(u'только папки самого аддона' in (done.stdout or b'').decode('utf-8', 'replace'),
+              '--own-only: it says that only the addon\'s own folders are the source')
+        if done.returncode != 0 or got != got0:
+            show('--own-only', done)
+
         # ---- the game: what the addon lacks is looked for in the game it lies in
         # (the tests keep the tool away from a game that is installed here: ZCG_GAME, see
         # test_content.py - these two runs are the ones that look for it the way the owner's will)
