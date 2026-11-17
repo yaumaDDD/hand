@@ -119,9 +119,14 @@ local function addFolder(dir, added)
 	end
 end
 
+local cvWorkshop = CreateConVar("zcg_workshop_id", "", { FCVAR_ARCHIVE },
+	"The Workshop id of this addon: with it the server tells every client to take the addon from Steam, not from the server's own files.")
+
 local function setupContent()
-	if Config.WorkshopID then
-		resource.AddWorkshop(tostring(Config.WorkshopID))
+	local wsid = Config.WorkshopID
+	if (wsid == nil or wsid == "") and cvWorkshop:GetString() ~= "" then wsid = cvWorkshop:GetString() end
+	if wsid then
+		resource.AddWorkshop(tostring(wsid))
 	end
 
 	local firstModel = ZCG.Variants[1].model
@@ -150,7 +155,7 @@ local function setupContent()
 		end
 	end
 
-	if not installed and not Config.WorkshopID then
+	if not installed and not wsid then
 		ZCG.Print("the glove models are not installed on the server (" .. firstModel .. "). "
 			.. "That is fine as long as every player has the addon content.")
 	end

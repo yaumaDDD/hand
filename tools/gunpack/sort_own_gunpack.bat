@@ -8,10 +8,9 @@ rem                   из списков пака (tools/models.txt, sounds.txt
 rem                   аддона. Игра, воркшоп (.gma), соседние аддоны и другие папки компа НЕ
 rem                   трогаются вовсе; перетащенные на батник папки игнорируются.
 rem   sort_own_gunpack.bat --dry-run    ничего не меняет, только пишет список
-rem   sort_own_gunpack.bat --keep       раскладывает, ничего не удаляя
+rem   ничего не удаляет вовсе: всё, что закинуто в аддон, остаётся
 rem
-rem Без --keep в конце удаляется то, что не использует ни один луа (после Enter): как в
-rem clean_gunpack.bat, но источник один - папки аддона. Отчёт - clean_gunpack_report.txt.
+rem Источник один - папки самого аддона, как в sort_own.bat для одежды. Отчёт - clean_gunpack_report.txt.
 rem Работает clean_gunpack\clean_gunpack.py с ключом --own-only; этот файл только ищет, чем её
 rem запустить, и передаёт ей лишь ключи с "--".
 setlocal EnableDelayedExpansion
@@ -61,15 +60,15 @@ popd
 if not exist "%PYDIR%\python.exe" goto nopython
 
 :runportable
-"%PYDIR%\python.exe" -B "%TOOL%" --own-only !ARGS!
+"%PYDIR%\python.exe" -B "%TOOL%" --own-only --keep !ARGS!
 goto done
 
 :withpy
-py -3 -B "%TOOL%" --own-only !ARGS!
+py -3 -B "%TOOL%" --own-only --keep !ARGS!
 goto done
 
 :withpython
-python -B "%TOOL%" --own-only !ARGS!
+python -B "%TOOL%" --own-only --keep !ARGS!
 goto done
 
 :done

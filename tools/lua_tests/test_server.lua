@@ -490,6 +490,10 @@ return function(testdir, luaroot)
 	eq(#resource.files, 0, "FastDL without content adds nothing")
 	eq(#util.precached, 0, "no precache without content")
 	check(#M.log >= 1, "a note is printed when the content is missing")
+	M.setConVar("zcg_workshop_id", "123456")
+	reload({})
+	eq(resource.workshop[#resource.workshop], "123456", "zcg_workshop_id: the server points the clients to the Workshop copy of the addon")
+	M.setConVar("zcg_workshop_id", "")
 
 	-- ---------------------------------------------------------------- the lines of the menu as data (2.17.5)
 	local AP2 = hg.Appearance
