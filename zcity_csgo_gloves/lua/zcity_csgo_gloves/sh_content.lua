@@ -1173,7 +1173,11 @@ else
 			for file in pairs(ZCG.BoundWanted()) do wanted[#wanted + 1] = file end
 			table.sort(wanted)
 			net.Start("zcg_client_content")
-			net.WriteString(ZCG.Version .. "  missing: " .. (#wanted > 0 and table.concat(wanted, ", ") or "none"))
+			local errs = ZCGloves.LoadErrors or {}
+			net.WriteString(ZCG.Version
+				.. "  missing: " .. (#wanted > 0 and table.concat(wanted, ", ") or "none")
+				.. "  load errors: " .. (#errs > 0 and table.concat(errs, " | ") or "none")
+				.. "  cs:go gloves: " .. tostring(#(ZCG.Variants or {})))
 			net.SendToServer()
 		end)
 	end)

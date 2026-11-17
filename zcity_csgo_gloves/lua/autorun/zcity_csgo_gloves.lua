@@ -5,26 +5,38 @@
 if SERVER then AddCSLuaFile() end
 
 ZCGloves = ZCGloves or {}
-ZCGloves.Version = "2.17.7"
+ZCGloves.Version = "2.17.8"
 
 local DIR = "zcity_csgo_gloves/"
 
-local function shared(name)
+-- One broken file must not take the rest of the addon down with it: what fell over is named in
+-- ZCGloves.LoadErrors, in the console, and in the report the client sends to the server
+-- (zcg_clients), so a client that lacks half of the addon says why by itself.
+local function load(name, realm)
+	if realm == "server" then
+		if SERVER then
+			local ok, err = pcall(include, DIR .. name)
+			if not ok then
+				ZCGloves.LoadErrors = ZCGloves.LoadErrors or {}
+				ZCGloves.LoadErrors[#ZCGloves.LoadErrors + 1] = name .. ": " .. tostring(err)
+				print("[CS:GO Gloves] " .. name .. " did not load: " .. tostring(err))
+			end
+		end
+		return
+	end
 	if SERVER then AddCSLuaFile(DIR .. name) end
-	include(DIR .. name)
-end
-
-local function client(name)
-	if SERVER then
-		AddCSLuaFile(DIR .. name)
-	else
-		include(DIR .. name)
+	if realm == "client" and SERVER then return end
+	local ok, err = pcall(include, DIR .. name)
+	if not ok then
+		ZCGloves.LoadErrors = ZCGloves.LoadErrors or {}
+		ZCGloves.LoadErrors[#ZCGloves.LoadErrors + 1] = name .. ": " .. tostring(err)
+		print("[CS:GO Gloves] " .. name .. " did not load: " .. tostring(err))
 	end
 end
 
-local function server(name)
-	if SERVER then include(DIR .. name) end
-end
+local function shared(name) load(name, "shared") end
+local function client(name) load(name, "client") end
+local function server(name) load(name, "server") end
 
 shared("sh_config.lua")
 shared("sh_data.lua")

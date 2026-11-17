@@ -38,6 +38,7 @@ return function(testdir, luaroot)
 	include("autorun/zcity_csgo_gloves.lua")
 	local ZCG = ZCGloves
 	check(ZCG ~= nil, "ZCGloves table exists")
+	eq(ZCGloves.LoadErrors, nil, "every file of the addon loaded: " .. tostring(ZCGloves.LoadErrors and ZCGloves.LoadErrors[1] or ""))
 	eq(#ZCG.Variants, 81, "number of gloves")
 	eq(#ZCG.Families, 11, "number of glove families")
 	eq(ZCG.Ready, nil, "not registered while Z-City is missing")
