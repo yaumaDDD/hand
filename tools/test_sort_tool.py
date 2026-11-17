@@ -148,6 +148,38 @@ def main():
               '--publish: the note for the Workshop is printed')
         check(os.path.isfile(os.path.join(addon, 'addon.json')), '--publish: addon.json is written when the addon has none')
 
+        # ---- --use-not-used: nothing of the addon goes into _not_used, and what lies there is distributed
+        aside = [('_not_used/materials/models/weapons/v_models/arms/csgo_gloves/aside_sport.vtf', 'materials/models/weapons/v_models/arms/csgo_gloves/aside_sport.vtf'),
+                 ('_not_used/models/zcity_csgo_gloves/aside_sport.mdl', 'models/zcity_csgo_gloves/aside_sport.mdl'),
+                 ('_not_used/sound/weapons/aside_swing.wav', 'sound/weapons/aside_swing.wav')]
+        for where, _then in aside:
+            path = os.path.join(addon, where.replace('/', os.sep))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'wb') as f:
+                f.write(b'aside')
+        with open(os.path.join(addon, '_not_used', 'a note.txt'), 'wb') as f:
+            f.write(b'note')
+        lonely = os.path.join(addon, 'materials', 'props', 'nobody_names_it')
+        os.makedirs(lonely, exist_ok=True)
+        with open(os.path.join(lonely, 'lonely.vmt'), 'wb') as f:
+            f.write(b'VertexLitGeneric {}')
+        done = subprocess.run([sys.executable, '-I', '-B', script, '--own-only', '--keep-unused', '--use-not-used'],
+                              cwd=tmp, env=env, **quiet)
+        text = done.stdout.decode('utf-8', 'replace')
+        check(done.returncode == 0, '--use-not-used: exit code %s' % done.returncode)
+        for _where, then in aside:
+            check(os.path.isfile(os.path.join(addon, then.replace('/', os.sep))),
+                  '--use-not-used: %s is back in the addon at its own path' % then)
+        check(not os.path.isdir(os.path.join(addon, '_not_used', 'materials')),
+              '--use-not-used: the emptied folders of _not_used are gone')
+        check(os.path.isfile(os.path.join(addon, '_not_used', 'a note.txt')),
+              '--use-not-used: a note is not content and stays aside')
+        check(os.path.isfile(os.path.join(lonely, 'lonely.vmt')),
+              '--use-not-used: a file no Lua of the addon names stays in the addon')
+        check(u'\u041f\u0430\u043f\u043a\u0430 _not_used \u0440\u0430\u0437\u043b\u043e\u0436\u0435\u043d\u0430' in text,
+              '--use-not-used: it says in Russian that _not_used has been distributed')
+        shutil.rmtree(os.path.join(addon, '_not_used'), ignore_errors=True)
+
         # ---- names that only running the Lua shows: the build leaves them beside the script
         addon = os.path.join(tmp, u'names (1)', 'addons', L.ADDON_DIRNAME)
         real, listed = shipped_with_names(addon)

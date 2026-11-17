@@ -6,7 +6,9 @@ rem   двойной клик    раскладывает контент адд�
 rem                   аддона, пишет sh_found.lua и sh_baked.lua для игры, НИЧЕГО не удаляет,
 rem                   создаёт addon.json, если его нет, и в конце говорит, готов ли аддон к
 rem                   мастерской и как именно его публиковать. Игра, воркшоп, соседние аддоны и
-rem                   перетащенные папки не трогаются.
+rem                   перетащенные папки не трогаются. Папка _not_used тоже раскладывается:
+rem                   файлы, которых не называет ни один Lua аддона, возвращаются на свои пути
+rem                   в аддоне - игра ищет файл по точному пути, и у скачавшего предмет будет всё.
 rem   publish_addon.bat --dry-run    ничего не меняет, только проверяет и рассказывает
 rem
 rem Публиковать в мастерскую нужно саму папку аддона (ту, в которой lua, materials, models и
@@ -57,15 +59,15 @@ popd
 if not exist "%PYDIR%\python.exe" goto nopython
 
 :runportable
-"%PYDIR%\python.exe" -B "%TOOL%" --own-only --keep-unused --publish !ARGS!
+"%PYDIR%\python.exe" -B "%TOOL%" --own-only --keep-unused --use-not-used --publish !ARGS!
 goto done
 
 :withpy
-py -3 -B "%TOOL%" --own-only --keep-unused --publish !ARGS!
+py -3 -B "%TOOL%" --own-only --keep-unused --use-not-used --publish !ARGS!
 goto done
 
 :withpython
-python -B "%TOOL%" --own-only --keep-unused --publish !ARGS!
+python -B "%TOOL%" --own-only --keep-unused --use-not-used --publish !ARGS!
 goto done
 
 :done

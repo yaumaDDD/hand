@@ -604,6 +604,76 @@ def plan(addon, items, lower_case, extra, report, along=(), real=()):
     return job
 
 
+def no_aside(job, real=()):
+    """--use-not-used: nothing of the addon is put into _not_used. The game finds a file by its exact
+    path and knows nothing of the names a Lua of the addon happens to have, so a file no Lua names
+    still belongs to the addon - and to whatever the addon is published as. It stays where it lies
+    (a numbered folder is a content root of its own, the game reads materials3 as it reads materials).
+    Returns how many files were kept that would have gone aside."""
+    if not job.aside:
+        return 0
+    gone = set(now for now, _reason in job.aside)
+
+    def stay(shown, dest, reason):
+        if shown in gone and dest and dest.startswith(ASIDE + '/'):
+            return (shown, shown, KEPT)
+        return (shown, dest, reason)
+
+    job.fate = [stay(shown, dest, reason) for shown, dest, reason in job.fate]
+    for now, _reason in job.aside:
+        folder = numbered_folder(now, real)
+        if folder is not None and folder in job.numbered:
+            entry = job.numbered[folder]
+            entry[1] += 1             # (it lies at a place the game reads: counted as one)
+            entry[2] -= 1
+    job.stay += len(job.aside)
+    kept = len(job.aside)
+    job.aside = []
+    return kept
+
+
+BACK_ROOTS = tuple(root for root in L.CONTENT_ROOTS if root != 'lua')   # (sound and particles as well)
+
+
+def restore_aside(addon, dry=False):
+    """--use-not-used: what an earlier run put into _not_used goes back into the addon, at the exact
+    path it was taken from - that is where the game looks for it, and that is what a client gets from
+    whatever the addon is published as. A path that is taken already is left alone (the file that lies
+    there is the same file or the one that was chosen of two). Returns (restored, left, [(root, n)])."""
+    aside = os.path.join(addon, ASIDE)
+    if not os.path.isdir(deep(aside)):
+        return 0, 0, []
+    moved, left = 0, 0
+    roots = collections.Counter()
+    back = tuple(root for root in L.CONTENT_ROOTS if root != 'lua')   # (sound and particles as well)
+    for rel, full in walk_files(aside):
+        rel = rel.replace('\\', '/')
+        top = rel.split('/', 1)[0].lower()
+        if top not in back:
+            left += 1               # (a note, a report: not content the game looks for)
+            continue
+        target = os.path.join(addon, rel)
+        if os.path.lexists(long_path(target)):
+            left += 1
+            continue
+        if not dry:
+            try:
+                os.makedirs(long_path(os.path.dirname(target)), exist_ok=True)
+                os.replace(long_path(full), long_path(target))
+            except OSError:
+                left += 1
+                continue
+        moved += 1
+        roots[top] += 1
+    if not dry:
+        prune(aside)                  # (the folders it emptied)
+        try:
+            os.rmdir(deep(aside))     # (only when nothing is left in it)
+        except OSError:
+            pass
+    return moved, left, sorted(roots.items())
+
+
 def free_name(path):
     if not os.path.lexists(long_path(path)):
         return path
@@ -1200,6 +1270,10 @@ def main(argv=None):
     parser.add_argument('--keep-unused', action='store_true',
                         help='do not delete the content that the clothes do not use (props, weapons, models nobody '
                              'wears ...; see clean_content.py)')
+    parser.add_argument('--use-not-used', action='store_true',
+                        help='distribute everything: no file of the addon goes into _not_used, and what an earlier run '
+                             'put there goes back at the exact path it was taken from - the game finds a file by its '
+                             'path, not by the names a Lua of the addon happens to have')
     parser.add_argument('--no-switch', action='store_true',
                         help='keep the version of Appearance Mod the addon has, whatever the content turns out to be '
                              '(by default the Lua of the version the content belongs to is put in place)')
@@ -1209,6 +1283,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if os.environ.get('ZCG_KEEP_UNUSED'):       # (the same as --keep-unused, for whoever starts the .bat)
         args.keep_unused = True
+    if os.environ.get('ZCG_USE_NOT_USED'):      # (the same as --use-not-used, for whoever starts the .bat)
+        args.use_not_used = True
     return run(args)
 
 
@@ -1441,6 +1517,8 @@ def publish_note(addon, report, dry):
             with open(aj, 'w', encoding='utf-8') as f:
                 f.write(u'{\n\t"title": "Z-City CS:GO Gloves",\n\t"type": "ServerContent",\n\t"tags": [ "roleplay", "build" ]\n}\n')
         say(u'  Записан addon.json - его читает окно публикации мастерской.')
+    say(u'  Файлы, которые никто из Lua аддона не называет, остаются в аддоне и раскладываются по своим путям:')
+    say(u'  игра находит файл по точному пути, поэтому у того, кто скачает предмет, будет всё, что лежит в папке.')
     say(u'  Публиковать в мастерскую нужно САМУ папку аддона, в которой лежат lua, materials, models и addon.json:')
     say(u'  %s' % addon)
     say(u'  В игре: Workshop -> Publish (или обновление предмета) -> выбрать именно эту папку, не родительскую')
@@ -1498,6 +1576,11 @@ def run(args, switched=None, filled=None):
         say(u'Ищу каждому файлу место (папок: %d, файлов: %d) ...' % (seen.folders, len(items)))
         report = P.place(items, named, L.is_own_content, set(names.spare))
         job = plan(addon, items, lower_case, extra, report, along, real)
+        if args.use_not_used:
+            kept = no_aside(job, real)
+            if kept:
+                say(u'Оставлено в аддоне файлов, которые прежняя версия убрала бы в %s: %d (игра находит файл по его'
+                    u' пути, а не по именам из Lua — значит, они нужны аддону и тем, кто его скачает).' % (ASIDE, kept))
 
         problems = []
         if not args.dry_run and (job.moves or job.aside or job.copies):
@@ -1655,6 +1738,21 @@ def run(args, switched=None, filled=None):
                     say(line)
                 with io.open(long_path(listing), 'a', encoding='utf-8') as f:
                     f.write(u'\r\n' + u'\r\n'.join(clean_content.lines(cleaned)) + u'\r\n')
+            if args.use_not_used:
+                # Everything that an earlier run put into _not_used goes back into the addon: that is
+                # where the game looks for it, and where whoever downloads the addon gets it from.
+                back, stayed, per_root = restore_aside(addon, args.dry_run)
+                if back or stayed:
+                    say()
+                    say(u'Папка %s разложена%s: файлов вернулось на свои пути в аддоне: %d%s%s.'
+                        % (ASIDE, u' (пробный запуск: ничего не тронуто)' if args.dry_run else u'',
+                           back,
+                           u' (' + u', '.join(u'%s: %d' % pair for pair in per_root) + u')' if per_root else u'',
+                           u'; осталось там: %d (их место занято тем же файлом или это не контент игры)' % stayed
+                           if stayed else u''))
+                if not args.dry_run and back:
+                    with io.open(long_path(listing), 'a', encoding='utf-8') as f:
+                        f.write(u'\r\nИз папки %s в аддон возвращено файлов: %d\r\n' % (ASIDE, back))
             if not args.no_found:
                 # what nobody names is written down for the game
                 taken = set(named) | set(names.spare) | set(stock)

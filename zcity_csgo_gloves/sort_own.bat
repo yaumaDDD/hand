@@ -8,7 +8,8 @@ rem                   имена копиями файлов из самого �
 rem                   для игры. Игра, воркшоп (.gma), соседние аддоны и другие папки компа НЕ
 rem                   трогаются вовсе; перетащенные на батник папки игнорируются.
 rem   sort_own.bat --dry-run        ничего не меняет, только пишет список
-rem   ничего не удаляет вовсе: всё, что закинуто в аддон, остаётся и попадает в меню
+rem   ничего не удаляет и ничего не откладывает: папка _not_used тоже раскладывается по своим
+rem   путям в аддоне - игра ищет файл по точному пути, а не по именам из Lua
 rem
 rem Закройте игру перед запуском: она держит открытыми свои файлы. Отчёт - в
 rem sort_content_report.txt. Работает sort_content\sort_content.py с ключом --own-only;
@@ -59,15 +60,15 @@ popd
 if not exist "%PYDIR%\python.exe" goto nopython
 
 :runportable
-"%PYDIR%\python.exe" -B "%TOOL%" --own-only --keep-unused !ARGS!
+"%PYDIR%\python.exe" -B "%TOOL%" --own-only --keep-unused --use-not-used !ARGS!
 goto done
 
 :withpy
-py -3 -B "%TOOL%" --own-only --keep-unused !ARGS!
+py -3 -B "%TOOL%" --own-only --keep-unused --use-not-used !ARGS!
 goto done
 
 :withpython
-python -B "%TOOL%" --own-only --keep-unused !ARGS!
+python -B "%TOOL%" --own-only --keep-unused --use-not-used !ARGS!
 goto done
 
 :done
