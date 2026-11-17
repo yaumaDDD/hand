@@ -491,6 +491,28 @@ return function(testdir, luaroot)
 	eq(#util.precached, 0, "no precache without content")
 	check(#M.log >= 1, "a note is printed when the content is missing")
 
+	-- ---------------------------------------------------------------- the lines of the menu as data (2.17.5)
+	local AP2 = hg.Appearance
+	AP2.Clothes = AP2.Clothes or { [1] = {}, [2] = {} }
+	AP2.FacemapsSlots = AP2.FacemapsSlots or {}
+	AP2.FacemapsSlots["models/slav/m/slot"] = {}
+	local keptBaked = ZCGloves.Baked
+	ZCGloves.Baked = {
+		{ "Clothes/1/Baked 01", "baked/material" },
+		{ "Clothes/2/Baked 02", "baked/material_f" },
+		{ "FacemapsSlots/models/slav/m/slot/baked face", "baked/face" },
+		{ "Clothes/1/Client Only", "baked/only", 2 },
+		{ "Clothes/1/Server Only", "baked/only_s", 1 },
+	}
+	eq(ZCGloves.ApplyBaked(), 4, "baked: the lines stand in the tables, the client-only one waits")
+	eq(AP2.Clothes[1]["Baked 01"], "baked/material", "baked: a line of clothes is in its table")
+	eq(AP2.Clothes[2]["Baked 02"], "baked/material_f", "baked: the female line is in hers")
+	eq(AP2.FacemapsSlots["models/slav/m/slot"]["baked face"], "baked/face", "baked: a face goes into the slot it names")
+	eq(AP2.Clothes[1]["Client Only"], nil, "baked: a line of the clients only is not put in on the server")
+	eq(AP2.Clothes[1]["Server Only"], "baked/only_s", "baked: a line of the server only is put in on the server")
+	eq(ZCGloves.ApplyBaked(), 0, "baked: a second pass puts nothing again")
+	ZCGloves.Baked = keptBaked
+
 	-- ---------------------------------------------------------------- content lines lost on the way (2.17.4)
 	local AP = hg.Appearance
 	AP.Clothes = AP.Clothes or { [1] = {}, [2] = {} }
@@ -514,6 +536,23 @@ return function(testdir, luaroot)
 	eq(AP.Clothes[1]["Heal Me"], "heal/material", "heal: the missing line stands in the table")
 	eq(ZCGloves.HealBound(), 0, "heal: nothing to heal once every line is there")
 	eq(ran, 1, "heal: a pack with all its lines is not run again")
+	-- a pack whose Lua falls over is tried once in two minutes, not on every pass of the watch
+	local fell = 0
+	include = function(f)
+		if f ~= "autorun/test_pack.lua" then return realInclude(f) end
+		fell = fell + 1
+		error("the pack fell over")
+	end
+	AP.Clothes[1]["Heal Me"] = nil
+	M.advance(130)   -- (the cooldown of the earlier successful try has to be over)
+	ZCGloves.HealBound()
+	eq(fell, 1, "heal: a pack that falls over is tried")
+	ZCGloves.HealBound()
+	eq(fell, 1, "heal: and not tried again on the next pass")
+	M.advance(130)
+	ZCGloves.HealBound()
+	eq(fell, 2, "heal: two minutes later it is tried once more")
+	include = realInclude
 	ZCGloves.Bound = keptBound
 
 	eq(#M.errors, 0, "no errors at the end: " .. table.concat(M.errors, " | "))

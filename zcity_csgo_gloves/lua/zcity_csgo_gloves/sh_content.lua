@@ -1029,15 +1029,22 @@ function ZCG.BoundWanted()
 	return wanted
 end
 
+local healTried = {}
+
 function ZCG.HealBound()
 	local wanted = ZCG.BoundWanted()
 	local healed = 0
+	local now = RealTime and RealTime() or 0
 	for file in pairs(wanted) do
-		local ok, err = pcall(include, file)
-		if ok then
-			healed = healed + 1
-		else
-			ZCG.Print("could not run " .. file .. " again: " .. tostring(err))
+		-- a file that falls over is tried once in two minutes, not on every pass of the watch
+		if (healTried[file] or -999) <= now - 120 then
+			healTried[file] = now
+			local ok, err = pcall(include, file)
+			if ok then
+				healed = healed + 1
+			else
+				ZCG.Print("could not run " .. file .. " again: " .. tostring(err))
+			end
 		end
 	end
 	if healed > 0 then
@@ -1128,10 +1135,16 @@ function ZCG.ApplyBaked()
 	return put
 end
 
+-- The watch that keeps the menu whole for as long as the game runs, on the client and on the
+-- server: every ten seconds the lines of sh_baked.lua are put back into the tables, the merged
+-- versions of the packs add what only they have (sh_merge.lua), and a line that is still missing
+-- gets the Lua of its pack run again. Nothing here depends on the order the addons load in, on
+-- the Lua of the packs running at all, or on somebody making the tables anew afterwards.
 hook.Add("InitPostEntity", "zcg_heal", function()
-	timer.Create("zcg_heal", 7, 30, function()
-		local put = ZCG.ApplyBaked()
-		if ZCG.HealBound() == 0 and put == 0 then timer.Remove("zcg_heal") end
+	timer.Create("zcg_heal", 10, 0, function()
+		ZCG.ApplyBaked()
+		if ZCG.MergePass then pcall(ZCG.MergePass) end
+		ZCG.HealBound()
 	end)
 end)
 

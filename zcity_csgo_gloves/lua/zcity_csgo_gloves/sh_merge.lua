@@ -274,9 +274,9 @@ end
 ZCG.MergePass = pass
 
 hook.Add("InitPostEntity", "zcg_merge", function()
-	-- (after the loaded version has filled the tables on this very hook)
+	-- (after the loaded version has filled the tables on this very hook; the watch of
+	-- sh_content.lua keeps passing every ten seconds from there on)
 	for _, delay in ipairs({ 0, 1, 5, 15, 70 }) do timer.Simple(delay, pass) end
-	timer.Create("zcg_merge", 120, 0, pass)
 end)
 if cvars and cvars.AddChangeCallback then
 	cvars.AddChangeCallback("zcg_merge_versions", function() timer.Simple(0, pass) end, "zcg_merge")
