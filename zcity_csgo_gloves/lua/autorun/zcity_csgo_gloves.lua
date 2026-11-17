@@ -5,7 +5,7 @@
 if SERVER then AddCSLuaFile() end
 
 ZCGloves = ZCGloves or {}
-ZCGloves.Version = "2.17.3"
+ZCGloves.Version = "2.17.4"
 
 local DIR = "zcity_csgo_gloves/"
 

@@ -491,6 +491,31 @@ return function(testdir, luaroot)
 	eq(#util.precached, 0, "no precache without content")
 	check(#M.log >= 1, "a note is printed when the content is missing")
 
+	-- ---------------------------------------------------------------- content lines lost on the way (2.17.4)
+	local AP = hg.Appearance
+	AP.Clothes = AP.Clothes or { [1] = {}, [2] = {} }
+	AP.Clothes[1]["Drill 01"] = "zcity_drill/players_sheet_02"
+	local keptBound = ZCGloves.Bound
+	ZCGloves.Bound = { ["autorun/test_pack.lua"] = {
+		{ "Clothes/1/Heal Me", "heal/material" },
+		{ "Clothes/1/Drill 01", "zcity_drill/players_sheet_02" },
+	} }
+	local ran = 0
+	local realInclude = include
+	include = function(f)
+		if f ~= "autorun/test_pack.lua" then return realInclude(f) end
+		ran = ran + 1
+		AP.Clothes[1]["Heal Me"] = "heal/material"
+	end
+	local healed = ZCGloves.HealBound()
+	include = realInclude
+	eq(ran, 1, "heal: the pack whose line is missing runs again")
+	eq(healed, 1, "heal: one file healed")
+	eq(AP.Clothes[1]["Heal Me"], "heal/material", "heal: the missing line stands in the table")
+	eq(ZCGloves.HealBound(), 0, "heal: nothing to heal once every line is there")
+	eq(ran, 1, "heal: a pack with all its lines is not run again")
+	ZCGloves.Bound = keptBound
+
 	eq(#M.errors, 0, "no errors at the end: " .. table.concat(M.errors, " | "))
 	return checks, failures
 end

@@ -1006,3 +1006,79 @@ else
 		end)
 	end)
 end
+
+-- The content lines a player's game lost on the way: the Lua of a pack did not run in time or
+-- fell over before putting them into the tables. ZCG.Bound holds what the packs put there when
+-- the addon was built; a line that is not in the tables now gets the Lua of its pack run once
+-- more, in whichever realm the tables live. Clothes, faces, accessories, player models - the
+-- bodygroups of merged/ have a pass of their own in sh_merge.lua.
+function ZCG.BoundWanted()
+	local bound = ZCG.Bound
+	local AP = istable(hg) and hg.Appearance
+	if not istable(bound) or not istable(AP) then return {} end
+	local there = {}
+	ZCG.ContentWalk(function(kind, path, who, entry) there[entry] = true end)
+	local wanted = {}
+	for file, entries in pairs(bound) do
+		if istable(entries) then
+			for _, one in ipairs(entries) do
+				if istable(one) and isstring(one[1]) and not there[one[1]] then wanted[file] = true end
+			end
+		end
+	end
+	return wanted
+end
+
+function ZCG.HealBound()
+	local wanted = ZCG.BoundWanted()
+	local healed = 0
+	for file in pairs(wanted) do
+		local ok, err = pcall(include, file)
+		if ok then
+			healed = healed + 1
+		else
+			ZCG.Print("could not run " .. file .. " again: " .. tostring(err))
+		end
+	end
+	if healed > 0 then
+		ZCG.Print(healed .. " content files run again - lines of the appearance menu were missing")
+	end
+	return healed, wanted
+end
+
+hook.Add("InitPostEntity", "zcg_heal", function()
+	timer.Create("zcg_heal", 7, 30, function()
+		if ZCG.HealBound() == 0 then timer.Remove("zcg_heal") end
+	end)
+end)
+
+-- What every player's client ends up with, into data/zcg_clients.txt of the server: the version
+-- of this addon there and the content files whose lines are still missing after the heal. A
+-- player with no line in that file has this addon on the client not at all - no Lua can help
+-- then, the files have to reach the player (the Workshop copy the server mounts).
+if SERVER then
+	if util.AddNetworkString then util.AddNetworkString("zcg_client_content") end
+	if net and net.Receive then
+		net.Receive("zcg_client_content", function(length, ply)
+			local line = os.date("%Y-%m-%d %H:%M:%S") .. "  " .. tostring(ply:Nick()) .. "  " .. net.ReadString()
+			local lines = string.Explode("\n", file.Read("zcg_clients.txt", "DATA") or "")
+			while #lines > 300 do table.remove(lines, 1) end
+			file.Write("zcg_clients.txt", table.concat(lines, "\n") .. line .. "\n")
+		end)
+	end
+	concommand.Add("zcg_clients", function()
+		print(file.Read("zcg_clients.txt", "DATA") or "no player reports yet")
+	end)
+else
+	hook.Add("InitPostEntity", "zcg_report", function()
+		timer.Simple(45, function()
+			if not (net and net.Start) then return end
+			local wanted = {}
+			for file in pairs(ZCG.BoundWanted()) do wanted[#wanted + 1] = file end
+			table.sort(wanted)
+			net.Start("zcg_client_content")
+			net.WriteString(ZCG.Version .. "  missing: " .. (#wanted > 0 and table.concat(wanted, ", ") or "none"))
+			net.SendToServer()
+		end)
+	end)
+end
