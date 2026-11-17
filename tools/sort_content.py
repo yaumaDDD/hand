@@ -1211,6 +1211,8 @@ def main(argv=None):
 # without its Lua. They are written down for the game, which puts them into the appearance menu
 # where its tables show that they belong (lua/zcity_csgo_gloves/sh_auto.lua).
 FOUND_LUA = 'lua/%s/sh_found.lua' % L.ADDON_DIRNAME
+BOUND_LUA = 'lua/%s/sh_bound.lua' % L.ADDON_DIRNAME
+BAKED_LUA = 'lua/%s/sh_baked.lua' % L.ADDON_DIRNAME
 
 
 def lua_string(text):
@@ -1248,6 +1250,89 @@ def found_materials(addon, taken):
         # (the plain name before "x (1)", the short path before the long one)
         found.append(sorted(rels, key=lambda rel: (len(rel), rel))[0][len('materials/'):-len('.vmt')])
     return sorted(found)
+
+
+def read_lua_string(line, at):
+    """The value of a Lua string literal as lua_string writes it, from the quote at `at`:
+    (the text in latin-1, where the literal ends) or (None, at) when there is no literal there."""
+    if at >= len(line) or line[at] != '"':
+        return None, at
+    out, at = [], at + 1
+    while at < len(line):
+        char = line[at]
+        if char == '"':
+            return ''.join(out), at + 1
+        if char == '\\':
+            at += 1
+            if at >= len(line):
+                break
+            if line[at] in '"\\':
+                out.append(line[at])
+            elif line[at].isdigit():
+                out.append(chr(int(line[at:at + 3], 8)))
+                at += 2
+            else:
+                out.append('\\' + line[at])
+        else:
+            out.append(char)
+        at += 1
+    return None, at
+
+
+def read_bound_entries(addon):
+    """[(entry of the tables, its value, side)] out of the list the build wrote (sh_bound.lua)."""
+    entries = []
+    path = os.path.join(addon, BOUND_LUA.replace('/', os.sep))
+    if not os.path.isfile(path):
+        return entries
+    with open(path, 'rb') as f:
+        for line in f.read().decode('latin-1').splitlines():
+            line = line.strip()
+            if not line.startswith('{ '):
+                continue
+            entry, at = read_lua_string(line, 2)
+            if entry is None or line[at:at + 2] != ', ':
+                continue
+            value, at = read_lua_string(line, at + 2)
+            if value is None:
+                continue
+            side, rest = None, line[at:].strip()
+            if rest.startswith(', '):
+                try:
+                    side = int(rest[2:].rstrip(' },'))
+                except ValueError:
+                    side = None
+            entries.append((entry, value, side))
+    return entries
+
+
+def write_baked(addon, entries):
+    """writes (or removes) the lines of the menu for the game; returns True when the file changed"""
+    path = os.path.join(addon, BAKED_LUA.replace('/', os.sep))
+    if not entries:
+        if os.path.isfile(path):
+            os.remove(path)
+            return True
+        return False
+    text = (u'-- Written by sort_content.bat: every line the Lua of the clothing packs puts into the\n'
+            u'-- appearance tables of Z-City, as data (the same list the build keeps in sh_bound.lua).\n'
+            u'-- The game puts the lines into the tables itself (sh_content.lua), whatever order the Lua of\n'
+            u'-- the packs loads in and whether it runs at all. Do not edit: the next run writes it anew.\n'
+            u'-- A third value: 1 = the line is for the server only, 2 = for the clients only.\n'
+            u'ZCGloves.Baked = {\n'
+            + u''.join(u'\t{ %s, %s%s },\n' % (lua_string(entry), lua_string(value),
+                                                 u'' if side is None else u', %d' % side)
+                       for entry, value, side in entries)
+            + u'}\n').encode('utf-8')
+    try:
+        with open(path, 'rb') as f:
+            if f.read() == text:
+                return False
+    except (OSError, IOError):
+        pass
+    with open(path, 'wb') as f:
+        f.write(text)
+    return True
 
 
 def write_found(addon, found):
@@ -1554,6 +1639,16 @@ def run(args, switched=None, filled=None):
                     say(u'  Они записаны в %s: игра сама добавит в меню внешности те, место которых' % FOUND_LUA)
                     say(u'  понятно, — лица (…_facemap…) к лицам их модели, одежду к одежде. Сколько добавлено и что нет —')
                     say(u'  покажут в игре zcg_content и zcg_found_list. Этот файл нужен и на сервере (копируйте папку целиком).')
+            baked = read_bound_entries(addon)
+            try:
+                write_baked(addon, baked)
+            except (OSError, IOError) as err:
+                say(u'ВНИМАНИЕ: не удалось записать %s: %s (закройте игру и запустите ещё раз).' % (BAKED_LUA, err))
+                baked = []
+            if baked:
+                say(u'Строчки меню: строк, которые луа паков кладёт в таблицы внешности, — %d. Они записаны в %s:' % (len(baked), BAKED_LUA))
+                say(u'  игра поставит их в меню сама, даже если луа пака не загрузится или встанет не в тот порядок.')
+                say(u'  Этот файл нужен и на сервере (копируйте папку аддона целиком).')
             if other and other[0]['title'] in names.held:
                 say(u'Файлы разложены. Но контент — от «%s», а в аддоне стоит Lua «%s» (см. «ВНИМАНИЕ» выше) — так вы просили.'
                     % (other[0]['title'], other[0]['instead']))

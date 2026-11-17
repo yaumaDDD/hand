@@ -82,6 +82,7 @@ def result(folder):
     report = got.pop(sort_content.REPORT, None)
     got.pop('lua/' + build_addon.BOUND_LUA, None)
     got.pop(sort_content.FOUND_LUA, None)       # (the list of materials nobody names, for the game)
+    got.pop(sort_content.BAKED_LUA, None)       # (the lines of the menu, for the game)
     for rel in list(got):
         if rel == BAT or rel.startswith(build_addon.SORT_TOOL_DIR + '/'):
             del got[rel]
@@ -110,6 +111,9 @@ def judge(label, folder, want, done):
           % (label, sorted(set(got) ^ set(want))))
     check(got == want, '%s: no file was changed' % label)
     check(report is not None and report.startswith(b'\xef\xbb\xbf'), '%s: the report is written' % label)
+    if os.path.isfile(os.path.join(folder, 'lua', build_addon.BOUND_LUA)):
+        check(os.path.isfile(os.path.join(folder, sort_content.BAKED_LUA)),
+              '%s: the lines of the menu are written beside the list of the build' % label)
     check(not any('__pycache__' in base for base, _dirs, _files in os.walk(folder)),
           '%s: Python leaves no cache folder in the addon' % label)
     text = (report or b'').decode('utf-8-sig', 'replace')

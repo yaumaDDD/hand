@@ -1046,9 +1046,92 @@ function ZCG.HealBound()
 	return healed, wanted
 end
 
+-- The lines sort_content.bat wrote from the list of the build (sh_baked.lua): the game puts them
+-- into the tables itself, whatever order the Lua of the packs loads in and whether it runs at
+-- all. A face goes into a slot the tables already know; a line whose place cannot be told stays
+-- to ZCG.HealBound, which runs the Lua of its pack again.
+local function baked_put(entry, value)
+	local AP = hg.Appearance
+	local head, rest = string.match(entry, "^([^/]+)/(.+)$")
+	if not head then return false end
+	if head == "Clothes" or head == "PlayerModels" then
+		local sex, name = string.match(rest, "^([12])/(.+)$")
+		sex = tonumber(sex)
+		if not sex then return false end
+		local where = head == "Clothes" and (AP.Clothes or {}) or (AP.PlayerModels or {})
+		where[sex] = where[sex] or {}
+		if head == "Clothes" then
+			if where[sex][name] ~= nil then return false end
+			where[sex][name] = value
+			AP.Clothes = where
+			return true
+		end
+		if where[sex][name] ~= nil then return false end
+		where[sex][name] = { mdl = value, sex = sex }
+		AP.PlayerModels = where
+		return true
+	end
+	if head == "Accessories" then
+		local id, field = string.match(rest, "^(.+)/([^/]+)$")
+		if not id or (field ~= "model" and field ~= "femmodel") then return false end
+		hg.Accessories = hg.Accessories or {}
+		hg.Accessories[id] = hg.Accessories[id] or {}
+		if hg.Accessories[id][field] ~= nil then return false end
+		hg.Accessories[id][field] = value
+		return true
+	end
+	if head == "FacemapsSlots" then
+		for slot, faces in pairs(AP.FacemapsSlots or {}) do
+			if isstring(slot) and istable(faces) and string.sub(rest, 1, #slot + 1) == slot .. "/" then
+				local name = string.sub(rest, #slot + 2)
+				if faces[name] ~= nil then return false end
+				faces[name] = value
+				return true
+			end
+		end
+	end
+	if head == "MultiFacemaps" then
+		for model, faces in pairs(AP.MultiFacemaps or {}) do
+			if isstring(model) and istable(faces) and string.sub(rest, 1, #model + 1) == model .. "/" then
+				local tail = string.sub(rest, #model + 2)
+				for slot in pairs(AP.FacemapsSlots or {}) do
+					if isstring(slot) and #tail > #slot + 1 and string.sub(tail, -(#slot + 1)) == "/" .. slot then
+						local name = string.sub(tail, 1, #tail - #slot - 1)
+						faces[name] = faces[name] or {}
+						if istable(faces[name]) and faces[name][slot] ~= nil then return false end
+						faces[name][slot] = value
+						return true
+					end
+				end
+			end
+		end
+	end
+	return false
+end
+
+function ZCG.ApplyBaked()
+	local baked = ZCG.Baked
+	local AP = istable(hg) and hg.Appearance
+	if not istable(baked) or not istable(AP) then return 0 end
+	local put = 0
+	for _, one in ipairs(baked) do
+		if istable(one) and isstring(one[1]) and isstring(one[2]) then
+			local side = tonumber(one[3])
+			if side == nil or (SERVER and side == 1) or (CLIENT and side == 2) then
+				if baked_put(one[1], one[2]) then put = put + 1 end
+			end
+		end
+	end
+	if put > 0 then
+		ZCG.Print(put .. " lines of the appearance menu put in from " .. "sh_baked.lua")
+	end
+	return put
+end
+
 hook.Add("InitPostEntity", "zcg_heal", function()
 	timer.Create("zcg_heal", 7, 30, function()
-		if ZCG.HealBound() == 0 then timer.Remove("zcg_heal") end
+		local put = ZCG.ApplyBaked()
+		if ZCG.HealBound() == 0 and put == 0 then timer.Remove("zcg_heal") end
 	end)
 end)
 

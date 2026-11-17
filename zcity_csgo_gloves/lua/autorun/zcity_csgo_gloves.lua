@@ -5,7 +5,7 @@
 if SERVER then AddCSLuaFile() end
 
 ZCGloves = ZCGloves or {}
-ZCGloves.Version = "2.17.4"
+ZCGloves.Version = "2.17.5"
 
 local DIR = "zcity_csgo_gloves/"
 
@@ -30,6 +30,9 @@ shared("sh_config.lua")
 shared("sh_data.lua")
 -- (the build writes this one when the addon carries the Lua of clothing packs: see sh_content.lua)
 if file.Exists(DIR .. "sh_bound.lua", "LUA") then shared("sh_bound.lua") end
+-- (sort_content.bat writes this one: the lines of the menu as data, which the addon puts into the
+-- tables itself whatever order the Lua of the packs loads in - see sh_content.lua)
+if file.Exists(DIR .. "sh_baked.lua", "LUA") then shared("sh_baked.lua") end
 shared("sh_core.lua")
 shared("sh_materials.lua")
 shared("sh_content.lua")
