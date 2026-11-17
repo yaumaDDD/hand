@@ -456,6 +456,8 @@ def move(src, addon, rel, dry):
 
 
 def run(a):
+    if getattr(a, 'own_only', False):
+        say(u'Источник — только папки самого аддона: игра, воркшоп, соседние аддоны и перетащенные папки не трогаются.')
     here = os.path.dirname(os.path.abspath(__file__))
     addon = os.path.abspath(a.addon or os.path.dirname(here))
     listed_files = read_lists(addon)
@@ -1017,9 +1019,14 @@ def main():
     ap.add_argument('--game', help='the folder GarrysMod (found by itself when the addon lies in it or Steam has it)')
     ap.add_argument('--no-game', action='store_true', help='do not look for missing listed files in the game')
     ap.add_argument('--no-neighbours', action='store_true', help='do not read the Lua of the other addons')
+    ap.add_argument('--own-only', action='store_true',
+                    help='work with the folders of the addon itself and nothing else: the game, the workshop, '
+                         'the other addons and the folders dropped on the bat are not touched at all')
     ap.add_argument('--write-names', metavar='OUT')
     ap.add_argument('lua', nargs='*')
     a = ap.parse_args()
+    if a.own_only:
+        a.no_game, a.no_neighbours, a.lua = True, True, []
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(errors='replace')

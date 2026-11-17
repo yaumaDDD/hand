@@ -107,6 +107,24 @@ want=sorted(['models/weapons/bat/w.mdl','models/weapons/bat/w.dx90.vtx','materia
     'sound/bat/hit.wav','sound/bat/swing.wav','materials/entities/weapon_bat.png','materials/vgui/hud/pipe.png','materials/entities/icon2.png','sound/bat/far.wav',
     'materials/entities/weapon_axe.png','materials/entities/some_other_class.png','materials/vgui/hud/hammer_i.vmt','materials/vgui/hud/hammer_tex.vtf','materials/vgui/hud/knife.png','materials/vgui/wep_baton.vmt','materials/vgui/wep_baton_tex.vtf','models/a/w.mdl','models/b/w.mdl','models/weapons/axe/w.dx90.vtx'])
 print('ONLY GOT',sorted(set(got)-set(want))); print('ONLY WANT',sorted(set(want)-set(got)))
-print('OK' if got==want and first else 'FAILED')
+# ---- --own-only: nothing is taken from the folders dropped on the script, nor from the game
+A=T+'/ownonly'
+os.makedirs(A+'/tools')
+for f in ('clean_gunpack.py','gunpack_names.txt'): shutil.copy(os.path.join(HERE,'gunpack',f),A+'/tools/')
+open(A+'/tools/models.txt','w').write('models\\weapons\\bat\\w.mdl\n')
+open(A+'/tools/sounds.txt','w').write('sound\\bat\\hit.wav\nsound\\bat\\swing.wav\n')
+def w2(p,d=b'x'):
+    p=os.path.join(A,p); os.makedirs(os.path.dirname(p),exist_ok=True); open(p,'wb').write(d)
+w2('materials/dump/models/weapons/bat/w.mdl', mdl('models/weapons/bat/',['wood']))
+w2('materials/flat/hit.wav', b'RIFF hit')
+outside=T+'/outside content'
+os.makedirs(outside+'/sound/bat', exist_ok=True)
+open(outside+'/sound/bat/swing.wav','wb').write(b'RIFF swing')
+r=subprocess.run([sys.executable,A+'/tools/clean_gunpack.py','--yes','--own-only',outside],capture_output=True,text=True)
+print(r.stdout[-400:],r.stderr)
+own=r.returncode==0 and os.path.isfile(A+'/models/weapons/bat/w.mdl') and os.path.isfile(A+'/sound/bat/hit.wav') \
+    and not os.path.isfile(A+'/sound/bat/swing.wav') and u'только папки самого аддона' in r.stdout
+print('own-only:',own)
+print('OK' if got==want and first and own else 'FAILED')
 shutil.rmtree(TOP,ignore_errors=True)
-sys.exit(0 if got==want and first else 1)
+sys.exit(0 if got==want and first and own else 1)
