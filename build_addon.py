@@ -48,6 +48,7 @@ import lua_names  # noqa: E402
 import place_content  # noqa: E402
 import content_report  # noqa: E402
 import catalog  # noqa: E402
+import sort_content  # noqa: E402
 
 # reduced versions of the oversized textures (tools/optimize_textures.py), in the addon layout;
 # the second archive came with the Driver and Specialist gloves, the third with Sport
@@ -785,6 +786,32 @@ def step_sort_tool(out, ran=None):
     return len(SORT_TOOL), len(stock), listed
 
 
+# The list of the materials nobody names (lua/<addon>/sh_found.lua). sort_content.bat writes it on
+# the computer of the owner; the build writes it here as well, because a copy of the addon from the
+# Workshop is mounted as an archive whose folders the game cannot list - there the addon cannot look
+# for such materials itself (sh_auto.lua, ZCG.ScanContent) and works from the list it was given.
+FOUND_LUA = sort_content.FOUND_LUA
+
+
+def step_found(out, content, named, ran):
+    """The materials below materials/ that no Lua and no model names, written into the addon for the
+    game - the same list, by the same rule, as the one sort_content.bat writes (taken: what the Lua
+    of the packs names, what a pack left out names, what Z-City names itself, and the materials of
+    the models). Returns (how many are listed, whether the file was written)."""
+    taken = set(named)
+    for entry in ran.get('left_out', ()) or ():
+        taken |= entry['names']
+    taken |= list_content.stock_names()
+    if ran.get('result') is not None:
+        taken |= ran['result'].stock
+    for _model, _name, group, there in getattr(content, 'model_materials', ()):
+        taken.update(group)
+        if there:
+            taken.add(there)
+    loose = sort_content.found_materials(out, taken)
+    return len(loose), sort_content.write_found(out, loose, tool=u'build_addon.py')
+
+
 # Two versions together. The version of a pack that is left out has the same Lua files as the one
 # that is taken, so the game cannot load it - but its table file can be run by the addon itself,
 # in a box, and what it adds be put into the menu next to what the loaded version made
@@ -1396,6 +1423,12 @@ def main():
         scripts, stock, listed = step_sort_tool(out, ran)
         print('  sort_content.bat: %d scripts, %d names of Z-City itself that it leaves alone%s'
               % (scripts, stock, '' if listed is None else ", %d names the addon's Lua gives when it is run" % listed))
+        loose, wrote_found = step_found(out, content, named, ran)
+        if loose:
+            print('  content without Lua: %d materials nobody names are listed for the game in lua/%s%s'
+                  % (loose, FOUND_LUA, '' if wrote_found else ' (unchanged)'))
+        elif wrote_found:
+            print('  content without Lua: none, lua/%s is gone' % FOUND_LUA)
         foreign = [dest for dest, _item in content.placed]
         for entry in sources:
             counts = entry['counts']

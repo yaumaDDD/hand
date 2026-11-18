@@ -1416,17 +1416,18 @@ def write_baked(addon, entries):
     return True
 
 
-def write_found(addon, found):
-    """writes (or removes) the list for the game; returns True when the file was changed"""
+def write_found(addon, found, tool=u'sort_content.bat'):
+    """writes (or removes) the list for the game; returns True when the file was changed. `tool` is
+    who writes it: sort_content.bat on the computer of the owner, build_addon.py in the build"""
     path = os.path.join(addon, FOUND_LUA.replace('/', os.sep))
     if not found:
         if os.path.isfile(path):
             os.remove(path)
             return True
         return False
-    text = (u'-- Written by sort_content.bat: materials that lie in this addon and that no Lua and no model names.\n'
-            u'-- The game puts them into the appearance menu where they belong (sh_auto.lua; zcg_found_content 0 = not).\n'
-            u'-- Do not edit: the next run of sort_content.bat writes the file anew. The server needs the same file.\n'
+    text = (u'-- Written by %s: materials that lie in this addon and that no Lua and no model names.\n' % tool
+            + u'-- The game puts them into the appearance menu where they belong (sh_auto.lua; zcg_found_content 0 = not).\n'
+            u'-- Do not edit: the next run writes the file anew. The server needs the same file.\n'
             u'ZCGloves.Found = {\n' + u''.join(u'\t%s,\n' % lua_string(name) for name in found) + u'}\n').encode('utf-8')
     try:
         with open(path, 'rb') as f:

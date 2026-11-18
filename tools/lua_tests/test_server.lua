@@ -43,8 +43,9 @@ return function(testdir, luaroot)
 	eq(#ZCG.Families, 11, "number of glove families")
 	eq(ZCG.Ready, nil, "not registered at the moment it loads")
 	-- the own appearance system of the addon (lua/zcity_csgo_gloves/own/) sends its files too:
-	-- the catalog, the shared engine, the render, the files of the client and its menu
-	eq(#M.csfiles, 15, "files sent to clients")
+	-- the catalog, the shared engine, the render, the files of the client and its menu - and the API
+	-- the clothing packs call by name (sh_register.lua)
+	eq(#M.csfiles, 16, "files sent to clients")
 	local ownHands = table.Count(hg.Appearance.Bodygroups.HANDS[1])
 	check(ownHands >= 8, "the hands of the addon's own catalog are in the menu tables: " .. ownHands)
 	eq(#util.precached, 13, "precached models")

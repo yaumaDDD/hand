@@ -11,7 +11,7 @@
 
 ZCO = ZCO or {}
 
-ZCO.Version = "2.18.1"
+ZCO.Version = "2.19.0"
 ZCO.Name = "Z-City Own Appearance"
 ZCO.Catalog = ZCO.Catalog or {}
 ZCO.CatalogCounts = ZCO.CatalogCounts or {}
@@ -22,7 +22,9 @@ ZCO.MALE, ZCO.FEMALE = 1, 2
 ZCO.SLOTS = { "main", "pants", "boots", "hands" }
 -- how many accessories one player wears at most, and one per place
 ZCO.MAX_ATTACHMENTS = 3
-ZCO.PLACEMENTS = { "head", "face", "eyes", "torso", "arm", "back", "belt", "leg", "neck", "ear" }
+-- the places the accessories of Z-City are worn on, in the order the menus list them; an accessory
+-- whose pack forgot the field is listed under "none" (sh_auto.lua fills the field in where it can)
+ZCO.PLACEMENTS = { "head", "face", "ears", "spine", "torso", "none" }
 -- the bodygroups of the clothes, in the order of the menu (HANDS is where the gloves are)
 ZCO.GROUPS = { "HANDS", "sheet", "pants", "shoes", "TORSO", "LEGS" }
 
@@ -607,6 +609,14 @@ function ZCO.Harvest()
 				if one then take(catalog.Clothes[sex], name, one) end
 			end
 		end
+		-- the description the menu shows under a piece of clothing (a pack writes it next to it)
+		catalog.ClothesDesc = catalog.ClothesDesc or {}
+		for name, entry in pairs(appearance.ClothesDesc or {}) do
+			if type(entry) == "table" then
+				local desc, link = text(entry.desc), text(entry.link)
+				if desc or link then take(catalog.ClothesDesc, name, { desc = desc, link = link }) end
+			end
+		end
 		catalog.Bodygroups = catalog.Bodygroups or {}
 		for group, by_sex in pairs(appearance.Bodygroups or {}) do
 			catalog.Bodygroups[group] = catalog.Bodygroups[group] or {}
@@ -677,6 +687,10 @@ end
 --- that has one of its own) its tables are left as they are - only what it does not have is added,
 --- and only the functions that are missing are defined: nothing of anybody else's is broken.
 function ZCO.Install()
+	-- the decision about the tables of the game is made here, and nothing else has to put content
+	-- in them before it is made: what sh_auto.lua finds in this addon would look like the content
+	-- of an appearance system of somebody else's, and the catalog would stay out of the tables.
+	ZCO.Decided = true
 	ZCO.Harvest()
 	hg = hg or {}
 	local appearance = hg.Appearance
@@ -684,12 +698,24 @@ function ZCO.Install()
 	hg.Appearance = appearance or {}
 	appearance = hg.Appearance
 
-	-- somebody else's appearance system: its tables are its own, the catalog stays ours
+	-- somebody else's appearance system: its tables are its own, the catalog stays ours. (Entries a
+	-- clothing pack made by calling this addon - sh_register.lua - are not such a system: that is
+	-- content which arrived, and the catalog belongs next to it. Neither are the gloves of this
+	-- addon, which stand in the same tables and mark every entry of theirs.)
 	local theirs = not made and (next(appearance.PlayerModels or {}) ~= nil
 		or next((appearance.PlayerModels or {})[1] or {}) ~= nil
 		or next((appearance.Clothes or {})[1] or {}) ~= nil
 		or next(appearance.FacemapsSlots or {}) ~= nil
 		or next(appearance.Bodygroups or {}) ~= nil)
+	if theirs and ZCGloves and type(ZCGloves.RegisteredOnly) == "function"
+		and ZCGloves.RegisteredOnly(appearance) then
+		theirs = false
+	end
+	-- The decision is made once: this is called again and again (sv_own.lua, and the catalog looked
+	-- at anew), and from the first call on the tables hold our own catalog as well - taken for the
+	-- content of somebody else's, the catalog would never be written into them again.
+	if theirs and ZCO.Ours then theirs = false end
+	ZCO.Ours = not theirs
 	ZCO.Theirs = theirs and true or false
 	if theirs then
 		ZCO.Installed = true
@@ -809,7 +835,10 @@ function ZCO.Install()
 	end
 
 	ZCO.Installed = true
-	ZCO.MadeTables = made
+	-- the tables were filled here: an appearance system of somebody else's returns above. (That a
+	-- clothing pack started a table by calling this addon - sh_register.lua - does not make it
+	-- somebody else's: the catalog is there next to the content of the pack, and zco_status says so.)
+	ZCO.MadeTables = true
 	return ZCO.Define()
 end
 

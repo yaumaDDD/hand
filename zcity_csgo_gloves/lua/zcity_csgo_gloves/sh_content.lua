@@ -946,7 +946,9 @@ function ZCG.ContentReport(out)
 	end
 	ZCG.BoundReport(out)
 	if ZCG.MergeReport then ZCG.MergeReport(out) end
+	if ZCG.RegisterReport then ZCG.RegisterReport(out) end
 	if ZCG.FoundReport then ZCG.FoundReport(out) end
+	if ZCG.AccessoryReport then ZCG.AccessoryReport(out) end
 	return #missing
 end
 
@@ -1142,9 +1144,13 @@ end
 -- the Lua of the packs running at all, or on somebody making the tables anew afterwards.
 hook.Add("InitPostEntity", "zcg_heal", function()
 	timer.Create("zcg_heal", 10, 0, function()
+		-- what the Lua of the packs put into the tables by calling this addon (sh_register.lua):
+		-- a table made anew since loses it, and the call is remembered well enough to be made again
+		if ZCG.ReplayRegistered then pcall(ZCG.ReplayRegistered) end
 		ZCG.ApplyBaked()
 		if ZCG.MergePass then pcall(ZCG.MergePass) end
 		ZCG.HealBound()
+		if ZCG.FoundPass then pcall(ZCG.FoundPass) end
 	end)
 end)
 

@@ -103,9 +103,19 @@ function ZCO.Menu.Items(category, appearance)
 				end
 			end
 		elseif category == "attach" then
-			local places = {}
-			for place in pairs(ZCO.Placements()) do places[#places + 1] = place end
-			table.sort(places)
+			-- the places in the order of ZCO.PLACEMENTS, a place nobody knows of after them
+			local have, places = ZCO.Placements(), {}
+			for _, place in ipairs(ZCO.PLACEMENTS) do
+				if have[place] then places[#places + 1] = place end
+			end
+			local rest = {}
+			for place in pairs(have) do
+				local known = false
+				for _, one in ipairs(ZCO.PLACEMENTS) do if one == place then known = true end end
+				if not known then rest[#rest + 1] = place end
+			end
+			table.sort(rest)
+			for _, place in ipairs(rest) do places[#places + 1] = place end
 			for _, place in ipairs(places) do
 				local names = {}
 				for name, data in pairs(ZCO.AccessoriesByPlacement(place)) do

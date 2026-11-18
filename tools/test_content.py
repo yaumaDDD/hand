@@ -2043,6 +2043,49 @@ def test_the_build_takes_lua(tmp):
               'two versions of one Lua file stop the build, and it names both archives: %s' % err)
 
 
+def test_the_build_writes_the_found_list(tmp):
+    """The build writes the list of the materials nobody names (lua/<addon>/sh_found.lua) - the same
+    list sort_content.bat writes on the computer of the owner. A copy of the addon from the Workshop
+    is mounted as an archive whose folders the game cannot list, so there the addon cannot look for
+    such materials itself (sh_auto.lua, ZCG.ScanContent) and works from the list it was given."""
+    repo = os.path.join(tmp, 'a repository of found')
+    lua = u'hg.Appearance.Clothes[1].named = "models/gate/named"\n'
+
+    def vmt(texture):
+        return u'"VertexLitGeneric"\n{\n\t"$basetexture" "%s"\n}\n' % texture
+
+    os.makedirs(repo, exist_ok=True)
+    with zipfile.ZipFile(os.path.join(repo, 'a pack.zip'), 'w') as z:
+        z.writestr('pack/addon.json', '{"title": "A Pack"}')
+        z.writestr('pack/lua/' + TABLE_LUA, lua.encode('utf-8'))
+        for name, texture in (('models/gate/named', 'models/gate/named_color'),
+                              ('models/humans/male/group01/loose_sheet', 'models/humans/male/group01/loose_color'),
+                              ('models/humans/male/group01/LOOSE_SHEET', 'models/humans/male/group01/loose_color'),
+                              ('zcity_csgo_gloves/icons/own', 'zcity_csgo_gloves/icons/own')):
+            z.writestr('pack/materials/%s.vmt' % name, vmt(texture).encode('utf-8'))
+            z.writestr('pack/materials/%s.vtf' % texture, b'a texture')
+    out = os.path.join(tmp, 'built found')
+    real = build_addon.HERE
+    build_addon.HERE = repo
+    try:
+        _sources, content, named, ran = build_addon.step_dropins(None, os.path.join(tmp, 'unpacked found'), out)
+        listed, wrote = build_addon.step_found(out, content, named, ran)
+    finally:
+        build_addon.HERE = real
+    path = os.path.join(out, build_addon.FOUND_LUA.replace('/', os.sep))
+    check(wrote and os.path.isfile(path), 'the build writes the list of the materials nobody names')
+    text = io.open(path, encoding='utf-8').read() if os.path.isfile(path) else u''
+    check('models/humans/male/group01/loose_sheet' in text,
+          'a material no Lua and no model names is on it: %s' % text[-200:])
+    check('models/gate/named' not in text, '... and one the Lua of the pack names is not')
+    check('zcity_csgo_gloves/icons/own' not in text, '... nor a material of the addon itself')
+    check(listed == 1, 'the build says how many are listed: %d' % listed)
+    check('build_addon.py' in text, 'and the file says who wrote it')
+    check(build_addon.step_found(out, content, named, ran) == (1, False), 'a second build writes the same file')
+    check(u'ZCGloves.Found = {' in text and text.rstrip().endswith('}'),
+          'the game reads it as the table it is: %s' % text[:120])
+
+
 def test_versions_of_a_pack(tmp):
     """Two versions of one addon bring the same Lua files and name the same models under two paths
     (models/zcity/m/male_10.mdl in one, models/slav/m/male_10.mdl in the other). The addon has
@@ -4773,6 +4816,7 @@ def main():
         test_missing_by_pack(tmp)
         test_namesakes_of_a_pack(tmp)
         test_the_build_takes_lua(tmp)
+        test_the_build_writes_the_found_list(tmp)
         test_versions_of_a_pack(tmp)
         test_switching_versions(tmp)
         test_filling(tmp)

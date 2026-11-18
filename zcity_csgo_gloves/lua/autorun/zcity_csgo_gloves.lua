@@ -5,7 +5,7 @@
 if SERVER then AddCSLuaFile() end
 
 ZCGloves = ZCGloves or {}
-ZCGloves.Version = "2.18.1"
+ZCGloves.Version = "2.19.0"
 
 local DIR = "zcity_csgo_gloves/"
 
@@ -38,6 +38,10 @@ local function shared(name) load(name, "shared") end
 local function client(name) load(name, "client") end
 local function server(name) load(name, "server") end
 
+-- (lua/autorun/!zcity_csgo_gloves.lua loads this one first, before the Lua of the clothing packs:
+-- it is the API they call by name. Here it is loaded again for a build that has no "!" file - the
+-- file itself can be run as often as anything likes.)
+shared("sh_register.lua")
 shared("sh_config.lua")
 shared("sh_data.lua")
 -- (the build writes this one when the addon carries the Lua of clothing packs: see sh_content.lua)
