@@ -180,6 +180,56 @@ def main():
               '--use-not-used: it says in Russian that _not_used has been distributed')
         shutil.rmtree(os.path.join(addon, '_not_used'), ignore_errors=True)
 
+        # ---- a pack put beside materials/ instead of into it: the game reads content from the two
+        addon = os.path.join(tmp, 'beside', 'addons', L.ADDON_DIRNAME)
+        want = shipped(addon)
+        script = os.path.join(addon, build_addon.SORT_TOOL_DIR, 'sort_content.py')
+        pack = os.path.join(addon, u'мой пак')
+        for rel, data in [('materials/models/gate/gone.vmt', T.material('models/gate/gone')),
+                          ('materials/models/gate/gone.vtf', T.texture('gone')),
+                          ('models/zcband/band_team.mdl', b'model')]:
+            path = os.path.join(pack, rel.replace('/', os.sep))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'wb') as f:
+                f.write(data if isinstance(data, bytes) else data.encode('utf-8'))
+        with open(os.path.join(pack, 'read me.txt'), 'wb') as f:
+            f.write(b'note')
+        done = subprocess.run([sys.executable, '-I', '-B', script, '--own-only', '--keep-unused'],
+                              cwd=tmp, env=env, **quiet)
+        text = done.stdout.decode('utf-8', 'replace')
+        got, _report = result(addon)
+        check(done.returncode == 0, 'a pack beside materials/: exit code %s' % done.returncode)
+        check(all(rel in got for rel in ('materials/models/gate/gone.vmt', 'materials/models/gate/gone.vtf',
+                                         'models/zcband/band_team.mdl')),
+              'a pack beside materials/: its content is in the two folders the game reads, without being handed '
+              'over: %s' % sorted(got)[:8])
+        check(not any(rel.startswith(u'мой пак/materials') or rel.startswith(u'мой пак/models') for rel in got),
+              'a pack beside materials/: no content is left where the game does not look')
+        own = [rel for rel in got if L.is_own_content(rel)]
+        check(own and all(rel in want and got[rel] == want[rel] for rel in own),
+              'a pack beside materials/: its own content (the gloves) is not touched: %s' % sorted(own))
+        check(u'Папки аддона, в которые игра не смотрит' in text and u'«мой пак» — файлов: 3' in text,
+              'a pack beside materials/: it says in Russian that such a folder was taken apart: %r' % text[:700])
+        check(u'весь контент аддона — в materials и models' in text and u'из них своих (перчаток) %d' % len(own) in text
+              and u'ВНИМАНИЕ: вне materials и models' not in text,
+              'a pack beside materials/: and that all the content of the addon is in the two: %r' % text[-900:])
+        check(os.path.isfile(os.path.join(pack, 'read me.txt')) and u'«мой пак» — файлов: 1' in text,
+              'a pack beside materials/: a note is no content - it stays and keeps its folder, and that is told: %r'
+              % text[-900:])
+
+        # a folder that holds nothing but content is gone once it is emptied
+        second = os.path.join(addon, u'ещё пак', 'materials', 'models', 'gate')
+        os.makedirs(second, exist_ok=True)
+        with open(os.path.join(second, 'extra.vmt'), 'wb') as f:
+            f.write(T.material('models/gate/extra').encode('utf-8'))
+        done = subprocess.run([sys.executable, '-I', '-B', script, '--own-only', '--keep-unused'],
+                              cwd=tmp, env=env, **quiet)
+        text = done.stdout.decode('utf-8', 'replace')
+        got, _report = result(addon)
+        check(done.returncode == 0 and not os.path.isdir(os.path.join(addon, u'ещё пак'))
+              and 'materials/models/gate/extra.vmt' in got,
+              'a folder of content only is emptied and removed: %s' % sorted(got)[-4:])
+
         # ---- names that only running the Lua shows: the build leaves them beside the script
         addon = os.path.join(tmp, u'names (1)', 'addons', L.ADDON_DIRNAME)
         real, listed = shipped_with_names(addon)

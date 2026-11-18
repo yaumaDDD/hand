@@ -313,6 +313,7 @@ end
 ZCG.Outside = ZCG.Outside or nil       -- the list of the last look, false where there is no folder
 ZCG.OutsideOurs = ZCG.OutsideOurs or 0 -- how many of the files are in the folder of this addon
 ZCG.OutsideCut = ZCG.OutsideCut or false
+ZCG.OwnCount = ZCG.OwnCount or nil     -- { files below its materials/, below its models/, cut }
 local MAX_OWN_FILES, MAX_OWN_SECONDS = 4000, 3
 
 --- the files the tables name that the game has, but not in the folder of this addon:
@@ -356,6 +357,46 @@ function ZCG.OutsideContent(force)
 	return list, ours
 end
 
+--- how many files this addon carries in the two folders the game reads content from - its own
+--- materials/ and models/. The game looks for a material or a model in the materials/ and models/
+--- of every addon it has mounted and nowhere else, so those two are where everything this addon
+--- needs has to lie: sort_content.bat puts it there (out of the folders and archives of the addon,
+--- of what was dropped onto it, and, when it was asked, of the archives of the game), and the Lua
+--- of this addon looks for its files there. Returns the two counts and whether the count had to
+--- stop; false where the addon is mounted as an archive and the game does not list its folders.
+function ZCG.OwnFiles(force)
+	if istable(ZCG.OwnCount) and not force then return ZCG.OwnCount[1], ZCG.OwnCount[2], ZCG.OwnCount[3] end
+	if ZCG.OwnCount == false and not force then return false end
+	local ok, folder = pcall(ZCG.FindAddonFolder)
+	if not ok or not isstring(folder) or folder == "" then
+		ZCG.OwnCount = false
+		return false
+	end
+	local stop = SysTime() + MAX_OWN_SECONDS
+	local folders, cut, counts = 0, false, {}
+	for _, root in ipairs({ "materials", "models" }) do
+		local total, stack = 0, { folder .. "/" .. root }
+		while #stack > 0 do
+			local dir = table.remove(stack)
+			folders = folders + 1
+			-- (the budget of the ownership check: it is folders here and files there, and both are
+			-- counts of what is walked, so one number serves for the two)
+			if folders > MAX_OWN_FILES or SysTime() > stop then
+				cut = true
+				break
+			end
+			local okFind, files, dirs = pcall(file.Find, dir .. "/*", "GAME")
+			if okFind then
+				total = total + #(files or {})
+				for _, name in ipairs(dirs or {}) do stack[#stack + 1] = dir .. "/" .. name end
+			end
+		end
+		counts[root] = total
+	end
+	ZCG.OwnCount = { counts.materials or 0, counts.models or 0, cut }
+	return ZCG.OwnCount[1], ZCG.OwnCount[2], cut
+end
+
 --- the lines for zcg_content
 function ZCG.OutsideReport(out)
 	local outside, ours = ZCG.OutsideContent()
@@ -366,6 +407,12 @@ function ZCG.OutsideReport(out)
 			.. " folder in garrysmod/addons is checked (zcg_own_content 0 switches the check off)")
 		return
 	end
+	local mine, his, cutOwn = ZCG.OwnFiles()
+	if mine then
+		out("  what this addon carries in the two folders the game reads content from: " .. mine .. " files below its"
+			.. " own materials/, " .. his .. " below its own models/"
+			.. (cutOwn and " (not every folder was gone through: the count has the budget of the check)" or ""))
+	end
 	if #outside == 0 then
 		out("  the content of the menu lies in the folder of this addon: " .. ours .. " files the tables name and the"
 			.. " game has are its own - nothing here depends on another addon being on the server")
@@ -373,9 +420,10 @@ function ZCG.OutsideReport(out)
 		out("  " .. #outside .. " files the tables name are NOT in the folder of this addon (" .. ours
 			.. " are): the game finds them in another addon, in a copy from the Workshop it has mounted, or among its"
 			.. " own files - and they are gone when that addon is taken off the server or a player has not got it")
-		out("  sort_content.bat in the folder of this addon copies what the clothes need into it (out of the archives"
-			.. " of the game and of the Workshop, and out of any folder or archive dropped onto it); zcg_outside names"
-			.. " every file")
+		out("  sort_content.bat in the folder of this addon puts them into those two folders: what the clothes need it"
+			.. " copies out of the archives of the game and of the Workshop and takes out of any folder or archive"
+			.. " dropped onto it - and out of a folder of the addon that lies beside materials/ and models/, which the"
+			.. " game does not read, by itself. zcg_outside names every file")
 		for i = 1, math.min(#outside, 6) do out("    " .. outside[i]) end
 		if #outside > 6 then out("    ... and " .. (#outside - 6) .. " more") end
 	end
@@ -399,6 +447,11 @@ concommand.Add("zcg_outside" .. (CLIENT and "_cl" or ""), function(ply)
 	end
 	print("[CS:GO Gloves] files of the appearance menu: " .. ours .. " in the folder of this addon, " .. #outside
 		.. " the game has somewhere else")
+	local mine, his = ZCG.OwnFiles(true)
+	if mine then
+		print("[CS:GO Gloves] what this addon carries in the two folders the game reads content from: " .. mine
+			.. " files below its own materials/, " .. his .. " below its own models/")
+	end
 	for i = 1, math.min(#outside, 400) do print("  " .. outside[i]) end
 	if #outside > 400 then print("  ... and " .. (#outside - 400) .. " more (the whole list is in data/zcg_content.txt)") end
 end, nil, "Name the files of the appearance menu that are not in the folder of this addon")
@@ -1027,8 +1080,9 @@ function ZCG.ContentReport(out)
 		out("  " .. unseen .. " of them lie in the folder of this addon outside of materials/ and models/ (" .. tostring(hidden)
 			.. " ...): the game does not look there")
 		out("  _not_used is where sort_content.bat puts a file it found no place for - its report, sort_content_report.txt,"
-			.. " says why; a folder called materials1, models 2 ...: start sort_content.bat, it goes through such folders"
-			.. " itself; any other folder: move it into the materials folder of the addon and start sort_content.bat")
+			.. " says why; any other folder of the addon - one called materials1, models 2 ..., or a pack put beside"
+			.. " materials/ - sort_content.bat goes through itself: the game reads content from materials/ and models/ of"
+			.. " the addon alone, so what is in such a folder goes there")
 	end
 	if elsewhere > 0 then
 		out("  " .. elsewhere .. " of them have a file of the same name in another folder (" .. tostring(example) .. " ...):"

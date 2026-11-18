@@ -26,6 +26,13 @@ by the names; a file of it that nothing names, in a folder nothing is known of, 
 folders put it (zcg_layout.merged_destination). What is neither - a note, a picture - moves
 along with its folder. A numbered folder that is empty then is removed.
 
+A folder of the addon that the game does not read at all - a pack somebody put beside materials/
+instead of into it - is gone through the same way, without being dragged onto the .bat first: its
+content goes below materials/ and models/ of the addon, and the folder is removed when nothing is
+left in it. Content of the addon lies in those two folders and nowhere else, and the run says so at
+the end: how many files are below them, how many of them are the addon's own (the gloves), and what
+is still outside.
+
 The text of the Lua does not show every name: some are put together while the Lua runs, some are
 written from inside the materials folder. There is no Lua to run here, so the build of the addon
 ran it and left the names beside this script (lua_names.txt, see list_content.py); they are looked
@@ -336,13 +343,12 @@ def beside(addon):
     return found
 
 
-def stray(addon):
-    """[(folder, content files in it)]: folders of the addon that hold materials or models and
-    that neither the game nor this tool looks into - a pack that was put beside materials/
-    instead of into it"""
+def unknown_folders(addon):
+    """[folder]: the folders of the addon that the game does not read and that are not a numbered
+    copy of materials/ (models/) - what somebody put beside the two instead of into them"""
     found = []
     try:
-        entries = sorted(os.listdir(addon))
+        entries = sorted(os.listdir(addon), key=P.natural)
     except OSError:
         return found
     for entry in entries:
@@ -350,7 +356,18 @@ def stray(addon):
         if entry.lower() in KNOWN_FOLDERS or entry.startswith('.') or not os.path.isdir(full) \
                 or L.numbered_root(entry):
             continue
-        count = sum(1 for rel, _full in walk_files(full) if P.kind_of(rel))
+        found.append(entry)
+    return found
+
+
+def stray(addon):
+    """[(folder, content files in it)]: the folders of unknown_folders() that hold materials or
+    models - a pack that was put beside materials/ instead of into it. The game sees nothing in
+    such a folder, so its content is taken in like the content of a folder dropped on the .bat:
+    below materials/ and models/ of the addon, by the same names and the same order."""
+    found = []
+    for entry in unknown_folders(addon):
+        count = sum(1 for rel, _full in walk_files(os.path.join(addon, entry)) if P.kind_of(rel))
         if count:
             found.append((entry, count))
     return found
@@ -451,9 +468,14 @@ def collect(addon, sources, temp, real=(), seen=None):
     # Of two of its own files for one place the one that lies there already stays.
     # A numbered folder beside materials/ ("materials3", put next to it instead of into it) is
     # gone through as if it lay in it.
-    mine = dict(name=name, kind='folder', no_place=[], content=0, other=0, lua=0, beside=beside(addon), archives=[])
+    # A folder of the addon the game does not read ("my pack", put beside materials/ instead of
+    # into it) is gone through as well: what lies in it is seen by nobody, and the two folders the
+    # game reads content from are materials/ and models/.
+    mine = dict(name=name, kind='folder', no_place=[], content=0, other=0, lua=0, beside=beside(addon),
+                apart=stray(addon), archives=[])
+    apart = dict((folder, True) for folder, _count in mine['apart'])
     files = []
-    for top, inside in [(top, None) for top in ROOTS] + mine['beside']:
+    for top, inside in [(top, None) for top in ROOTS] + mine['beside'] + [(folder, None) for folder in apart]:
         for rel, full in sorted(walk_files(os.path.join(addon, top), seen, top + '/')):
             rel = top + '/' + rel
             if L.is_own_content(rel):
@@ -463,8 +485,15 @@ def collect(addon, sources, temp, real=(), seen=None):
                 files.append((rel, full, rel if inside is None else inside + '/' + rel))
     trees = L.tree_roots((seen for rel, _full, seen in files if P.kind_of(rel)), real)
     for rel, full, seen in files:
-        if P.kind_of(rel):
+        kind = P.kind_of(rel)
+        if kind:
             default = L.dropin_destination(seen)
+            if default is None and rel.split('/', 1)[0] in apart and P.ROOT_OF.get(kind):
+                # A folder of the addon the game does not read, and no materials/ or models/ inside
+                # it to go by: the file is read as lying below the root its kind belongs to, at the
+                # path it has in that folder - the reading a numbered folder gets. It is a reading,
+                # not a fact: the names the Lua gives still win (place_content).
+                default = '%s/%s' % (P.ROOT_OF[kind], rel.split('/', 1)[1])
             item = P.Item(name, rel, full, default, order + (2 if default == rel else 1),
                           L.merged_destination(seen, real, trees=trees),
                           L.merged_destination(seen, real, mirror=True, trees=trees), L.numbered_folder(seen, real))
@@ -475,11 +504,12 @@ def collect(addon, sources, temp, real=(), seen=None):
         if L.ARCHIVE.search(rel):
             mine['archives'].append(rel)    # (nothing here opens it: it stays, and is told)
             continue
-        # (a note, a picture: it moves along with a numbered folder it lies in, and only then)
-        if numbered_folder(rel, real) is not None:
+        # (a note, a picture: it moves along with the folder it lies in - a numbered one, or one
+        # the game does not read at all, which is emptied and removed afterwards)
+        if numbered_folder(rel, real) is not None or rel.split('/', 1)[0] in apart:
             dest = L.merged_destination(seen, real)
             if dest is None or dest == seen.lower() or dest.split('/', 1)[0] not in ROOTS:
-                dest = None                 # right in the numbered folder, or no content at all: see plan
+                dest = None                 # right in its folder, or no content at all: see plan
             along.append((rel, dest))
         elif rel != rel.lower():
             lower_case.append((rel, rel.lower()))
@@ -576,8 +606,14 @@ def plan(addon, items, lower_case, extra, report, along=(), real=()):
     # place the later one has it)
     for now, then in sorted(along, key=lambda pair: P.by_folders(pair[0]), reverse=True):
         if then is None:
-            waiting[numbered_folder(now, real)].append(now)     # right in a numbered folder: nowhere to go
-            count(now)
+            folder = numbered_folder(now, real)
+            if folder is None:
+                # (a folder the game does not read: the file is no content and has no place, so it
+                # stays - and keeps that folder from being removed)
+                job.fate.append((now, now, KEPT))
+            else:
+                waiting[folder].append(now)     # right in a numbered folder: nowhere to go
+                count(now)
         elif then in taken or os.path.lexists(long_path(os.path.join(addon, then))):
             job.aside.append((now, NOT_CONTENT))
             job.fate.append((now, ASIDE + '/' + now, NOT_CONTENT))
@@ -733,8 +769,10 @@ def resume(addon):
     return len(pending)
 
 
-def apply(addon, job):
-    """does what the job says. Returns [(path, what went wrong)]"""
+def apply(addon, job, apart=()):
+    """does what the job says. apart: the folders of the addon the game does not read, whose content
+    has just been taken into materials/ and models/ - empty, they are removed.
+    Returns [(path, what went wrong)]"""
     problems = []
     stage = os.path.join(addon, STAGE)
     staged = []
@@ -764,6 +802,12 @@ def apply(addon, job):
                 os.rmdir(os.path.join(addon, top))
             except OSError:
                 pass
+        for top in apart:     # (a pack folder beside materials/: its content is in the two now)
+            prune(os.path.join(addon, top))
+            try:
+                os.rmdir(os.path.join(addon, top))
+            except OSError:
+                pass          # (something that is no content is left in it: it stays, and is told)
         finish(addon, staged, problems)
         os.remove(os.path.join(stage, 'journal.txt'))
         try:
@@ -795,14 +839,18 @@ def addon_version(addon):
     return found.group(1) if found else u''
 
 
-def verify(addon, real=()):
+def verify(addon, real=(), apart=()):
     """The materials and models folders of the addon as they are now, gone through once more -
     every folder below them: how many folders and files of which kind each of the two holds, the
     files that lie below the wrong one (a model below materials/, a material below models/), the
     numbered folders that still hold files, and how many files _not_used holds.
     Returns {'roots': {top: Seen}, 'wrong': [paths], 'numbered': {folder: files}, 'aside': files,
-    'unread': [(folder, why)]}."""
-    after = dict(roots=collections.OrderedDict(), wrong=[], numbered=collections.Counter(), aside=0, unread=[])
+    'unread': [(folder, why)], 'own': files of the addon itself among them, 'outside': {folder:
+    content files} for the folders of the addon that are not materials/ or models/, 'apart':
+    {folder: files} for those of apart (the folders the game does not read, whose content was taken
+    in) that are still there - what is not content keeps them}."""
+    after = dict(roots=collections.OrderedDict(), wrong=[], numbered=collections.Counter(), aside=0, unread=[],
+                 own=0, outside=collections.Counter(), apart=collections.Counter())
     for top in ROOTS:
         seen = Seen()
         for rel, _full in walk_files(os.path.join(addon, top), seen, top + '/'):
@@ -810,6 +858,7 @@ def verify(addon, real=()):
             kind = P.kind_of(rel) or 'other'
             seen.kinds[kind] += 1
             if L.is_own_content(rel):
+                after['own'] += 1        # (the gloves: they lie at the paths their models were compiled for)
                 continue
             if kind != 'other' and P.ROOT_OF[kind] != top:
                 after['wrong'].append(rel)
@@ -823,6 +872,28 @@ def verify(addon, real=()):
         if count:
             after['numbered'][top] += count
     after['aside'] = sum(1 for _pair in walk_files(os.path.join(addon, ASIDE))) if os.path.isdir(os.path.join(addon, ASIDE)) else 0
+    # The game reads content from materials/ and models/ of an addon and from nowhere else in it:
+    # what lies in another folder of the addon is seen by nobody (and the Lua of the addon looks
+    # for the files it needs in those two as well).
+    skip = set(ROOTS) | set((ASIDE, STAGE, 'sort_content'))
+    try:
+        entries = sorted(os.listdir(addon), key=P.natural)
+    except OSError:
+        entries = []
+    for entry in entries:
+        if entry in skip or entry.startswith('.') or not os.path.isdir(os.path.join(addon, entry)):
+            continue
+        for rel, _full in walk_files(os.path.join(addon, entry)):
+            if P.kind_of(rel):
+                after['outside'][entry] += 1
+    # (a folder the game does not read, whose content was just taken in, that is still there: what
+    # is left in it is no content, and that is what keeps it from being removed)
+    for entry in apart:
+        full = os.path.join(addon, entry)
+        if os.path.isdir(full):
+            count = sum(1 for _pair in walk_files(full))
+            if count:
+                after['apart'][entry] = count
     return after
 
 
@@ -852,6 +923,24 @@ def verify_lines(after):
     else:
         out.append(u'  папок с номерами (materials1, models2 …) не осталось: всё из них разложено')
     out.append(u'  в папке %s (не пригодилось, ничего не удалено): файлов %d' % (ASIDE, after['aside']))
+    outside = after.get('outside') or {}
+    total = sum(sum(one.kinds.values()) for one in after['roots'].values())
+    if outside:
+        out.append(u'  ВНИМАНИЕ: вне materials и models в папке аддона осталось файлов контента: %d (%s%s) — игра'
+                   % (sum(outside.values()), u', '.join(u'%s — %d' % pair for pair in sorted(outside.items())[:3]),
+                      u' …' if len(outside) > 3 else u''))
+        out.append(u'  их там не видит, и Lua аддона их там не ищет. Перетащите такую папку на sort_content.bat')
+        out.append(u'  или переложите её в materials аддона и запустите ещё раз.')
+    else:
+        out.append(u'  весь контент аддона — в materials и models: файлов %d, из них своих (перчаток) %d. Вне этих'
+                   % (total, after.get('own', 0)))
+        out.append(u'  двух папок контента нет: игра читает его только оттуда, и Lua аддона берёт его там же.')
+    left = after.get('apart') or {}
+    if left:
+        out.append(u'  папки аддона, в которые игра не смотрит, остались — в них то, что не материал и не модель'
+                   u' (%s%s): контент из них разложен, сами они игре не нужны'
+                   % (u', '.join(u'«%s» — файлов: %d' % pair for pair in sorted(left.items())[:3]),
+                      u' …' if len(left) > 3 else u''))
     out.append(u'  Подпапки внутри materials и models — так и должно быть: игра ищет файл по полному пути,')
     out.append(u'  а materials/models/… — это материалы моделей (по правилам игры они лежат в materials).')
     return out
@@ -951,15 +1040,14 @@ def summary(addon, names, brought, report, job, dry, problems, seen=None, check=
         out.append(u'  В этой сборке «%s». «%s» — другая версия того же аддона, её Lua в сборке нет:' % (taken, title))
         out.append(u'  в игре может быть только одна из двух. Файлы, которые называет только та версия (имён: %d),' % count)
         out.append(u'  игре с этой сборкой не нужны; в «не хватает» они не попадают.')
-    apart = stray(addon)
+    apart = brought[-1].get('apart') or []
     if apart:
-        out.append(u'ВНИМАНИЕ: в папке аддона есть папки с материалами и моделями, в которые не смотрит ни игра, ни')
-        out.append(u'  этот инструмент: %s%s.'
-                   % (u', '.join(u'«%s» (файлов: %d)' % pair for pair in apart[:5]),
-                      u' и ещё %d' % (len(apart) - 5) if len(apart) > 5 else u''))
-        out.append(u'  Если это одежда — перетащите такую папку на sort_content.bat или переложите её в папку')
-        out.append(u'  materials аддона и запустите ещё раз. (Папки с номерами — materials1, models 2 … — он')
-        out.append(u'  разбирает и рядом с materials; у этих папок другие имена.)')
+        out.append(u'Папки аддона, в которые игра не смотрит (%s%s), разобраны так же, как если бы их перетащили'
+                   % (u', '.join(u'«%s» — файлов: %d' % pair for pair in apart[:5]),
+                      u' …' if len(apart) > 5 else u''))
+        out.append(u'  на .bat: контент игра читает только из materials и models аддона, поэтому всё из таких папок')
+        out.append(u'  легло в них, а сами они убраны. (Что не контент — заметка, картинка без места, — осталось')
+        out.append(u'  и держит папку; это видно в проверке ниже.)')
     archives = brought[-1].get('archives') or []
     if archives:
         out.append(u'ВНИМАНИЕ: в папках materials и models аддона лежат архивы — %d (%s%s).'
@@ -1606,11 +1694,11 @@ def run(args, switched=None, filled=None):
         problems = []
         if not args.dry_run and (job.moves or job.aside or job.copies):
             say(u'Перекладываю ...')
-            problems = apply(addon, job)
+            problems = apply(addon, job, [folder for folder, _count in (brought[-1].get('apart') or [])])
         after = None
         if not args.dry_run:
             say(u'Проверяю: прохожу папки аддона ещё раз ...')
-            after = verify(addon, real)
+            after = verify(addon, real, [folder for folder, _count in (brought[-1].get('apart') or [])])
 
         # What has no file: looked for once more - by its file name alone, in every folder - and,
         # where the game is at hand, in the game.

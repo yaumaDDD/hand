@@ -2996,28 +2996,45 @@ def test_missing_by_pack(tmp):
     write(os.path.join(root, 'notes', 'todo.txt'), 'no content here')
     write(os.path.join(root, '.git', 'objects', 'x.vmt'), 'not a pack')
     write(os.path.join(root, sort_content.ASIDE, 'materials', 'old.vmt'), material('models/old'))
-    before = tree(os.path.join(root, 'the faces pack'))
     code, text = sort('--addon', root, '--names-list', listed)
-    warning = u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415: \u0432 \u043f\u0430\u043f\u043a\u0435 \u0430\u0434\u0434\u043e\u043d\u0430 \u0435\u0441\u0442\u044c \u043f\u0430\u043f\u043a\u0438'
-    check(code == 0 and warning in text and u'\u00abthe faces pack\u00bb (\u0444\u0430\u0439\u043b\u043e\u0432: 6)' in text,
-          'a folder with content beside materials/ is pointed at, with the number of its files: %r' % text[:900])
-    check(u'notes' not in text and u'.git' not in text and u'\u00ab%s\u00bb' % sort_content.ASIDE not in text,
+    taken = u'Папки аддона, в которые игра не смотрит'
+    check(code == 0 and taken in text and u'«the faces pack» — файлов: 6' in text,
+          'a folder with content beside materials/ is taken in, with the number of its files: %r' % text[:900])
+    check(u'notes' not in text and u'.git' not in text and u'«%s»' % sort_content.ASIDE not in text,
           'a folder without content, a hidden one and the folder of this tool are not: %r' % text[:900])
-    check(tree(os.path.join(root, 'the faces pack')) == before and u'\u043d\u0430\u0437\u0432\u0430\u043d\u043d\u044b\u0445 \u0432 Lua: 5 \u0438\u0437 6' in text,
-          'it is not touched - whether that is clothing is for the owner to say - and its files count as missing')
-    report = io.open(os.path.join(root, sort_content.REPORT), encoding='utf-8-sig').read()
-    check(warning in report, 'the report says it as well')
-    check(sort_content.stray(root) == [('the faces pack', 6)] and sort_content.stray(os.path.join(root, 'no such folder')) == [],
-          'stray(): %s' % sort_content.stray(root))
-
-    # ... dropped onto the tool, as it says: the faces go to their places
-    code, text = sort('--addon', root, '--names-list', listed, os.path.join(root, 'the faces pack'))
     got = tree(root)
-    check(code == 0 and all(name in got and name.replace('.vmt', '.vtf') in got for name in modern)
-          and u'\u043d\u0430\u0437\u0432\u0430\u043d\u043d\u044b\u0445 \u0432 Lua: 2 \u0438\u0437 6' in text,
-          'handed to the tool, the faces of the folder go to their places: %r' % text[-700:])
-    check(u'        The Faces Pack \u2014 1: materials/models/faces/ \u2014 1' in text, 'and what is still missing is told: %r' % text[-700:])
-    check(again not in text, '(no reminder when something was handed over): %r' % text[-500:])
+    check(all(name in got and name.replace('.vmt', '.vtf') in got for name in modern)
+          and u'названных в Lua: 2 из 6' in text,
+          'its faces go to their places in materials/ of the addon, without being handed over: %r' % text[-700:])
+    check(u'        The Faces Pack — 1: materials/models/faces/ — 1' in text,
+          'and what is still missing is told: %r' % text[-700:])
+    check(os.path.isfile(os.path.join(root, 'the faces pack', 'read me.txt'))
+          and u'«the faces pack» — файлов: 1' in text
+          and not any(name.startswith('the faces pack/materials') for name in tree(root)),
+          'what is no content stays where it was and keeps its folder - and that is told: %r' % text[-900:])
+    report = io.open(os.path.join(root, sort_content.REPORT), encoding='utf-8-sig').read()
+    check(taken in report, 'the report says it as well')
+    check(sort_content.stray(root) == [] and sort_content.stray(os.path.join(root, 'no such folder')) == [],
+          'no folder with content is left beside materials/: %s' % sort_content.stray(root))
+    folders = sort_content.unknown_folders(root)
+    check('the faces pack' in folders and 'notes' in folders and not any(
+              name in folders for name in ('.git', 'materials', 'models', 'lua', 'sort_content', sort_content.ASIDE)),
+          'unknown_folders(): %s' % folders)
+
+    # a folder that holds nothing but content is removed once it is emptied
+    second = os.path.join(root, 'the shirts pack', 'materials', 'models', 'shirts')
+    write(os.path.join(second, 'tie.vmt'), material('models/shirts/tie'))
+    write(os.path.join(second, 'tie.vtf'), texture('tie'))
+    code, text = sort('--addon', root, '--names-list', listed)
+    check(code == 0 and not os.path.isdir(os.path.join(root, 'the shirts pack'))
+          and u'названных в Lua: 1 из 6' in text and u'весь контент аддона — в materials и models' in text,
+          'a folder of content only is taken in, and gone when nothing is left in it: %r' % text[-700:])
+
+    # a content file where the game reads no content is told of: nobody sees it there
+    write(os.path.join(root, 'sound', 'old.vmt'), material('models/old'))
+    code, text = sort('--addon', root, '--names-list', listed)
+    check(code == 0 and u'ВНИМАНИЕ: вне materials и models в папке аддона осталось файлов контента: 1 (sound — 1)'
+          in text, 'a material below sound/ is seen by nobody, and that is a warning: %r' % text[-900:])
 
 
 # ---- folders thrown in the way they were collected: materials1, models2 ... ---------------------

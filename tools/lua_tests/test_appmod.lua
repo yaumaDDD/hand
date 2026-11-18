@@ -622,6 +622,93 @@ return function(testdir, luaroot)
 		eq(logged("    1 - no Lua: materials that models of the menu are made of"), 1, "zcg_content: a material of a model")
 		AP.Clothes[1]["of another addon"], hg.Accessories = nil, nil
 		M.files["materials/models/humans/male/group01/players_sheet.vmt"] = true
+
+		-- ---- whose folder the content lies in (zcg_own_content, zcg_outside)
+		-- The game reads content from the materials/ and models/ of every addon it has mounted, and
+		-- from nowhere else: a file the menu needs that lies in another addon is gone the moment that
+		-- addon is taken off the server. What this addon needs has to lie in its own two folders -
+		-- sort_content.bat puts it there, and the report says whether it is.
+		local realNeeds = ZCG.ContentNeeds
+		ZCG.ContentNeeds = function()
+			return { ["models/gate/mine.mdl"] = "a model of mine" }, { ["models/gate/mine"] = "male clothes of mine" }
+		end
+		local MINE = "materials/models/gate/mine.vmt  <-  male clothes of mine"
+		local function oneOf(lines, text)
+			for _, line in ipairs(lines) do if line == text then return true end end
+			return false
+		end
+		local function report()
+			local lines = {}
+			ZCG.OutsideReport(function(line) lines[#lines + 1] = line end)
+			return lines
+		end
+		M.files["materials/models/gate/mine.vmt"] = true
+		M.files["models/gate/mine.mdl"] = true
+		ZCG.Outside, ZCG.OwnCount = nil, nil
+		local list, own = ZCG.OutsideContent(true)
+		check(istable(list) and oneOf(list, MINE) and oneOf(list, "models/gate/mine.mdl  <-  a model of mine"),
+			"zcg_own_content: the files the tables name that the game has, but not in the folder of this addon")
+		eq(own, 0, "... and none of them is its own")
+		local lines = report()
+		check(oneOf(lines, "  2 files the tables name are NOT in the folder of this addon (0 are): the game finds them"
+			.. " in another addon, in a copy from the Workshop it has mounted, or among its own files - and they are"
+			.. " gone when that addon is taken off the server or a player has not got it"),
+			"the report says how many of them lie in another folder: " .. table.concat(lines, " | "))
+		check(oneOf(lines, "    " .. MINE), "... and names them")
+		check(oneOf(lines, "  sort_content.bat in the folder of this addon puts them into those two folders: what the"
+			.. " clothes need it copies out of the archives of the game and of the Workshop and takes out of any folder"
+			.. " or archive dropped onto it - and out of a folder of the addon that lies beside materials/ and models/,"
+			.. " which the game does not read, by itself. zcg_outside names every file"),
+			"... and what puts them there")
+		-- the same files in the folder of the addon: nothing depends on another addon any more
+		M.files["addons/zcity_csgo_gloves/materials/models/gate/mine.vmt"] = true
+		M.files["addons/zcity_csgo_gloves/models/gate/mine.mdl"] = true
+		list, own = ZCG.OutsideContent(true)
+		eq(#list, 0, "with the files in the folder of this addon nothing of the menu is somebody else's")
+		eq(own, 2, "... and both count as its own")
+		eq(ZCG.OutsideContent(), list, "(the disk is not asked twice: the list of the last look is returned)")
+		lines = report()
+		check(oneOf(lines, "  the content of the menu lies in the folder of this addon: 2 files the tables name and the"
+			.. " game has are its own - nothing here depends on another addon being on the server"),
+			"the report says so: " .. table.concat(lines, " | "))
+		-- a file that is nowhere at all is not one of them: those zcg_content names as missing
+		M.files["materials/models/gate/mine.vmt"], M.files["models/gate/mine.mdl"] = nil, nil
+		M.files["addons/zcity_csgo_gloves/materials/models/gate/mine.vmt"] = nil
+		M.files["addons/zcity_csgo_gloves/models/gate/mine.mdl"] = nil
+		list, own = ZCG.OutsideContent(true)
+		eq(#list, 0, "a file that is nowhere is not counted here")
+		eq(own, 0, "... and is not its own either")
+		M.setConVar("zcg_own_content", "0")
+		eq(ZCG.OutsideContent(true), nil, "zcg_own_content 0: whose folder the files lie in is not looked at")
+		lines = report()
+		eq(#lines, 0, "... and the report says nothing of it")
+		M.setConVar("zcg_own_content", "1")
+		ZCG.ContentNeeds = realNeeds
+		ZCG.Outside, ZCG.OwnCount = nil, nil
+
+		-- what the addon carries in the two folders the game reads content from
+		local wantMaterials, wantModels = 0, 0
+		for path in pairs(M.files) do
+			if path:find("^addons/zcity_csgo_gloves/materials/") then wantMaterials = wantMaterials + 1 end
+			if path:find("^addons/zcity_csgo_gloves/models/") then wantModels = wantModels + 1 end
+		end
+		local gotMaterials, gotModels = ZCG.OwnFiles(true)
+		eq(gotMaterials, wantMaterials, "OwnFiles: the files below materials/ of the addon")
+		eq(gotModels, wantModels, "OwnFiles: ... and below models/ of it")
+		eq(ZCG.OwnFiles(), wantMaterials, "OwnFiles: the disk is not asked twice")
+		M.log = {}
+		M.command("zcg_content", me)
+		eq(logged("  what this addon carries in the two folders the game reads content from: " .. wantMaterials
+			.. " files below its own materials/, " .. wantModels .. " below its own models/"), 1,
+			"zcg_content says what the addon carries in its own two folders: " .. table.concat(M.log, " | "))
+		M.log = {}
+		M.command("zcg_outside_cl", me)
+		eq(logged("[CS:GO Gloves] what this addon carries in the two folders the game reads content from: "
+			.. wantMaterials .. " files below its own materials/, " .. wantModels .. " below its own models/"), 1,
+			"zcg_outside says it as well")
+		ZCG.OwnCount = nil
+		M.files["materials/models/gate/mine.vmt"] = nil
+
 		ZCG.AddonFolder = false
 
 		-- the file arrives: zcg_content asks the disk anew, and the face is back
