@@ -67,6 +67,13 @@ local function survey(AP)
 		faces = {},        -- folder -> { slot = true }
 		persons = {},      -- person -> slot, false when two slots share the person
 	}
+	-- (what the face sync of this addon put into the tables is a mirror of an entry that is known
+	-- already: such a material is not content that arrived without its Lua - sh_faces.lua)
+	local synced = {}
+	for _, one in ipairs(ZCG.FaceAdded or {}) do
+		if isstring(one[4]) then synced[clean(one[4])] = true end
+	end
+	local slotKeys = {} -- a slot in lower case -> the key FacemapsSlots holds it under
 	for sex = 1, 2 do
 		local list = istable(AP.Clothes) and AP.Clothes[sex]
 		if istable(list) then
@@ -96,6 +103,7 @@ local function survey(AP)
 			if isstring(slot) and istable(list) then
 				local s = clean(slot)
 				known.named[s] = true
+				slotKeys[s] = slot
 				local person = personOf(nameOf(s))
 				if person and person ~= "" then
 					if known.persons[person] == nil then known.persons[person] = slot
@@ -104,10 +112,49 @@ local function survey(AP)
 				for key, path in pairs(list) do
 					if isstring(path) and path ~= "" and not (mine[list] and mine[list][key]) then
 						local p = clean(path)
-						known.named[p] = true
-						local folder = folderOf(p)
-						known.faces[folder] = known.faces[folder] or {}
-						known.faces[folder][slot] = true
+						if not synced[p] then
+							known.named[p] = true
+							local folder = folderOf(p)
+							known.faces[folder] = known.faces[folder] or {}
+							known.faces[folder][slot] = true
+						end
+					end
+				end
+			end
+		end
+	end
+	-- The faces of the Appearance Mod: several materials per face, by model (MultiFacemaps). They
+	-- are named content as much as the ones in FacemapsSlots, and their folders and persons tell
+	-- where a material that no Lua names belongs - a face of the mod is as good a neighbour as a
+	-- face of the gamemode. The slot is taken with the key FacemapsSlots holds it under, so that
+	-- what is found here can be put there (sh_faces.lua keeps the two tables in sync anyway).
+	if istable(AP.MultiFacemaps) then
+		for _, faces in pairs(AP.MultiFacemaps) do
+			if istable(faces) then
+				for _, byslot in pairs(faces) do
+					if istable(byslot) then
+						for slot, path in pairs(byslot) do
+							local key = slot
+							if isstring(slot) then
+								local s = clean(slot)
+								key = slotKeys[s] or slot
+								if not synced[s] then known.named[s] = true end
+								local person = personOf(nameOf(s))
+								if person and person ~= "" then
+									if known.persons[person] == nil then known.persons[person] = key
+									elseif known.persons[person] ~= key then known.persons[person] = false end
+								end
+							end
+							if isstring(path) and path ~= "" then
+								local p = clean(path)
+								if not synced[p] then
+									known.named[p] = true
+									local folder = folderOf(p)
+									known.faces[folder] = known.faces[folder] or {}
+									known.faces[folder][key] = true
+								end
+							end
+						end
 					end
 				end
 			end
@@ -404,6 +451,8 @@ function ZCG.FoundApply()
 	if not (ZCG.cvFound and ZCG.cvFound:GetBool()) or #ZCG.FoundAll() == 0 then
 		ZCG.FoundRemove()
 		ZCG.FoundLeft = 0
+		-- a face taken back out of here has to leave the table the other menu reads as well
+		if ZCG.SyncFaces then pcall(ZCG.SyncFaces) end
 		return 0, 0
 	end
 	local known = survey(AP)
@@ -459,6 +508,10 @@ function ZCG.FoundApply()
 			end
 		end
 	end
+	-- A face this put into FacemapsSlots is listed by the menu of the Appearance Mod only when it
+	-- stands in MultiFacemaps as well, and a face taken back out of here has to leave that table
+	-- too: the faces are synced right away, not ten seconds later (sh_faces.lua).
+	if ZCG.SyncFaces then pcall(ZCG.SyncFaces) end
 	ZCG.FoundLeft = left
 	return total, made
 end

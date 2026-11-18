@@ -26,8 +26,33 @@ function ZCO.Apply(ply, appearance, noModelChange)
 
 	local name, entry, sex = ZCO.ModelByName(appearance.AModel)
 	local model = (type(entry) == "table" and entry.mdl) or (type(appearance.AModel) == "string" and appearance.AModel)
-	if model and model ~= "" and model ~= ply:GetModel() and not noModelChange then
-		ply:SetModel(model)
+	local worn = ply:GetModel()
+	if not noModelChange then
+		if model and model ~= "" and model ~= worn then
+			-- A model the server itself has not is set all the same: the players may have it from
+			-- the Workshop or from FastDL, which the server cannot tell - and refusing it would
+			-- leave the player on a body the appearance was not made for. Both consoles are told,
+			-- once per model, so that the owner knows what to put on the server.
+			if not ZCO.ModelReady(model) then ZCO.ModelGone(model, ply) end
+			ply:SetModel(model)
+		end
+		-- A player who came with no model at all is invisible, and there is nothing on him for
+		-- the clothes, the face, the accessories or the gloves to go onto: he gets a model of the
+		-- catalog that IS on this server (nothing is forced on a mode that dresses him itself).
+		worn = ply:GetModel()
+		if not isstring(worn) or worn == "" then
+			local _any, anyEntry = ZCO.AnyModel()
+			if anyEntry then
+				ply:SetModel(anyEntry.mdl)
+				ZCGloves.Print("a player came with no model at all (" .. (ply.Nick and ply:Nick() or "?") .. "): he is given "
+					.. anyEntry.mdl .. ", the first model of the catalog that is on the server - there is nothing to "
+					.. "put an appearance on without one")
+			else
+				ZCO.ModelGone("", ply, true)
+			end
+		end
+	elseif not ZCO.ModelReady(worn) then
+		ZCO.ModelGone(worn, ply)
 	end
 	entry, sex = ZCO.ModelOf(ply)
 	sex = sex or ZCO.MALE

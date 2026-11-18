@@ -232,9 +232,9 @@ def main():
         if done.returncode != 0 or got != got0:
             show('--own-only', done)
 
-        # ---- the game: what the addon lacks is looked for in the game it lies in
+        # ---- the game: its files are not touched until the owner asks for it
         # (the tests keep the tool away from a game that is installed here: ZCG_GAME, see
-        # test_content.py - these two runs are the ones that look for it the way the owner's will)
+        # test_content.py - these runs are the ones that would look for it the way the owner's will)
         seeking = dict(env)
         seeking.pop('ZCG_GAME', None)
         game = os.path.join(tmp, u'Steam Library', 'steamapps', 'common', 'GarrysMod')
@@ -244,25 +244,32 @@ def main():
         T.write(os.path.join(game, 'garrysmod', 'garrysmod_dir.vpk'), T.a_vpk(['materials/models/gate/gone.vmt'], version=2))
         T.write(os.path.join(game, 'garrysmod', 'addons', 'pack.gma'), T.a_gma('A Pack', ['materials/models/gate/other.vmt']))
         script = os.path.join(addon, build_addon.SORT_TOOL_DIR, 'sort_content.py')
-        done = subprocess.run([sys.executable, '-I', '-B', script, '--keep-unused'], cwd=tmp, env=seeking, **quiet)
-        judge('the shipped script in the addons folder of a game', addon, want, done)
+        done = subprocess.run([sys.executable, '-I', '-B', script, '--keep-unused', '--game', game],
+                              cwd=tmp, env=seeking, **quiet)
+        judge('the shipped script, the game named', addon, want, done)
         text = done.stdout.decode('utf-8', 'replace')
         _got, report = result(addon)
-        check(u'\u0418\u0433\u0440\u0430 \u043d\u0430 \u044d\u0442\u043e\u043c \u043a\u043e\u043c\u043f\u044c\u044e\u0442\u0435\u0440\u0435: %s' % game in text,
-              'it finds the game the addon lies in: %r' % text[-1500:])
-        check(u'materials/models/gate/gone.vmt    \u2014 \u0432 \u0430\u0434\u0434\u043e\u043d\u0435 \u043d\u0435\u0442; \u0412 \u0418\u0413\u0420\u0415 \u0415\u0421\u0422\u042c: '
+        check(u'Игра на этом компьютере: %s' % game in text and u'Файлы самой игры не трогаются' not in text,
+              'named, the game is looked into: %r' % text[-1500:])
+        check(u'materials/models/gate/gone.vmt    \u2014 \u0432 \u0430\u0434\u0434\u043e\u043d\u0435 \u043d\u0435\u0442; \u0412 \u0418\u0413\u0420\u0415 \u0415\u0421\u0422\u042C: '
               u'\u0430\u0440\u0445\u0438\u0432 \u0438\u0433\u0440\u044b garrysmod/garrysmod_dir.vpk' in (report or b'').decode('utf-8-sig', 'replace'),
               'and tells that the game has the file the addon lacks, in which archive')
-        # ... and an addon that lies elsewhere looks for the game Steam has: found or not, it says which
+        # ... and an addon that lies elsewhere (or in the game, but nobody named it) does not go
+        # looking for a game of its own: the content is the addon's own, from its own folders
         addon = os.path.join(tmp, u'\u0440\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b', L.ADDON_DIRNAME)
         want = shipped(addon)
         script = os.path.join(addon, build_addon.SORT_TOOL_DIR, 'sort_content.py')
         done = subprocess.run([sys.executable, '-I', '-B', script, '--keep-unused'], cwd=tmp, env=seeking, **quiet)
-        judge('the shipped script, looking for the game of this computer', addon, want, done)
+        judge('the shipped script, no game asked for', addon, want, done)
         text = done.stdout.decode('utf-8', 'replace')
+        _got, report = result(addon)
+        report = (report or b'').decode('utf-8-sig', 'replace')
         said = [line for line in text.splitlines() if line.startswith(u'\u0418\u0433\u0440\u0430 \u043d\u0430 \u044d\u0442\u043e\u043c \u043a\u043e\u043c\u043f\u044c\u044e\u0442\u0435\u0440\u0435')]
-        check(len(said) == 1, 'it says whether this computer has the game: %r' % text[-1500:])
-        print('  the game of this computer: %s' % (said[0].encode('ascii', 'backslashreplace').decode('ascii') if said else '?'))
+        check(len(said) == 0 and u'Файлы самой игры не трогаются' in text,
+              'no game is looked for by itself: %r' % text[-1500:])
+        check(u'В файлы самой игры не заглядывали' in report and u'В ИГРЕ ЕСТЬ' not in report,
+              'and the report says where the content comes from - the folders of the addon, not the files of the game')
+        print('  the game of this computer: not looked for (nobody asked)')
 
         if os.name != 'nt':
             print('  (not on Windows: sort_content.bat itself is not run)')

@@ -250,6 +250,95 @@ return function(testdir, luaroot)
 	local taken = (ZCO.Catalog.Accessories or {})["свой шарф"]
 	check(taken and taken.pos and taken.pos[1] and taken.pos[1].x == 1, "... with its numbers kept")
 
+	-- ------------------------------------------------------------------ a model that is not here
+	-- A player model the appearance names and that this server has not leaves the player as the
+	-- ERROR body: no slots for the clothes, no material for the face, no bones for the accessories.
+	check(ZCO.ModelByName(nil) == nil, "a player with no model at all is not dressed for a model of the catalog")
+	check(ZCO.ModelByName("") == nil, "... and an empty name is not a model either")
+	check(not ZCO.ModelReady(nil) and not ZCO.ModelReady(""), "no model at all is never ready")
+	local far = "models/нет/такого.mdl"
+	check(not ZCO.ModelReady(far), "a model whose file is not here is not ready")
+
+	-- one model of the catalog is put on the server: it is the one a player without a model gets
+	local one, oneEntry = "Male 01", ZCO.Models(1)["Male 01"]
+	check(type(oneEntry) == "table" and isstring(oneEntry.mdl), "the catalog has Male 01: "
+		.. tostring(oneEntry and oneEntry.mdl))
+	local mats = {}
+	for _slot, material in pairs((oneEntry or {}).submatSlots or {}) do mats[#mats + 1] = material end
+	M.installModel(oneEntry.mdl, mats, { "models/slav/m" })
+	check(ZCO.ModelReady(oneEntry.mdl), "a model whose file is here is ready")
+	local anyName, anyEntry = ZCO.AnyModel()
+	eq(anyEntry and anyEntry.mdl, oneEntry.mdl, "of the models that are here the first is the one that is given")
+	check(anyName ~= nil, "... and it is known by its name: " .. tostring(anyName))
+	check(ZCO.AnyModel(ZCO.FEMALE) == nil or select(2, ZCO.AnyModel(ZCO.FEMALE)) ~= nil,
+		"a model of one sex alone is looked for in that sex")
+
+	-- a player who came with no model at all is invisible: he gets one that is here
+	local bare = M.newPlayer("Пустой", "", { steamid64 = "76561198000000009" })
+	ZCO.Apply(bare, { AModel = "", AClothes = {}, AAttachments = {}, ABodygroups = {}, AFacemap = "Default",
+		AName = "Пустой", AColor = Color(1, 2, 3) })
+	eq(bare:GetModel(), oneEntry.mdl, "a player who came with no model at all is given one that is installed")
+
+	-- a model the server has not is put on the player all the same - the players may have it from
+	-- the Workshop or from FastDL, which the server cannot tell - but both consoles are told
+	ZCO.Apply(ply, { AModel = far, AClothes = {}, AAttachments = {}, ABodygroups = {}, AFacemap = "Default",
+		AName = "Вася", AColor = Color(1, 2, 3) })
+	eq(ply:GetModel(), far, "a model the server has not is still put on the player")
+	check(ZCO.Gone[far] ~= nil, "... and it is remembered as one that is not here")
+	local told, toHim = false, false
+	for _, line in ipairs(M.log) do
+		if string.find(line, "not installed on the server", 1, true) and string.find(line, far, 1, true) then
+			told = true
+		end
+		if string.find(line, "[to Игрок]", 1, true) and string.find(line, "not installed", 1, true) then
+			toHim = true
+		end
+	end
+	check(told, "the server console is told which model of the appearance is not here")
+	check(toHim, "... and the player it was seen on is told in his own console")
+	local once = 0
+	for _, line in ipairs(M.log) do
+		if string.find(line, "not installed on the server", 1, true) and string.find(line, far, 1, true) then
+			once = once + 1
+		end
+	end
+	ZCO.Apply(ply, { AModel = far, AClothes = {}, AAttachments = {}, ABodygroups = {}, AFacemap = "Default",
+		AName = "Вася", AColor = Color(4, 5, 6) })
+	local twice = 0
+	for _, line in ipairs(M.log) do
+		if string.find(line, "not installed on the server", 1, true) and string.find(line, far, 1, true) then
+			twice = twice + 1
+		end
+	end
+	eq(twice, once, "the same model is told about once, not every time a player wears it")
+
+	-- a model that is not here and a player without one are named by zco_models
+	local ran = concommand.list["zco_models"]
+	check(ran ~= nil, "the command zco_models is there")
+	if ran then
+		-- whose models the server has is the owner's business: a player is told nothing
+		local from = #M.log
+		local ok, err = pcall(ran.fn, ply, "zco_models", {})
+		check(ok, "zco_models runs for a player: " .. tostring(err))
+		eq(#M.log, from, "... and tells a player nothing about the disk of the server")
+
+		local boss = M.newPlayer("Хозяин", oneEntry.mdl, { steamid64 = "76561198000000010", superadmin = true })
+		from = #M.log
+		ok, err = pcall(ran.fn, boss, "zco_models", {})
+		check(ok, "zco_models runs for the owner of the server: " .. tostring(err))
+		local said, named, seen, yours = false, false, false, false
+		for i = from + 1, #M.log do
+			if string.find(M.log[i], "models of the appearance on the server", 1, true) then said = true end
+			if string.find(M.log[i], far, 1, true) then named = true end
+			if string.find(M.log[i], "seen on", 1, true) then seen = true end
+			if string.find(M.log[i], "you are wearing", 1, true) then yours = true end
+		end
+		check(said, "zco_models says how many models of the appearance are installed")
+		check(named, "... and names the one that is not here")
+		check(seen, "... and the player it was seen on")
+		check(yours, "... and which model the one who asked wears himself")
+	end
+
 	-- ------------------------------------------------------------------ the client
 	local C = dofile(testdir .. "/gmod_mock.lua")("client")
 	local Z = dofile(testdir .. "/zcity_mock.lua")(C)
@@ -384,26 +473,48 @@ return function(testdir, luaroot)
 	check(ZCO.Saved ~= nil, "the look the server keeps is read")
 	if ZCO.Saved then eq(ZCO.Saved.AModel, "Male 04", "... with its model") end
 
-	-- the render of the accessories
+	-- The render of the accessories: every one that has a bone and a model of its own, in name
+	-- order. (pairs() has no order it keeps - which accessory a test like this one picks is left
+	-- to chance, and a run fails now and then for no reason at all. Picked at random, this test
+	-- never once looked at the vests and the purse, which are worn on bones the skeleton of the
+	-- imitation has not: Bip01_Spine1 and Bip01_Spine2. They are the reason ZCO.BoneOf exists.)
 	local him = C.newPlayer("Другой", Z.MALE, {})
-	local name = nil
+	local names = {}
 	for one_name, data in pairs(ZCO.Catalog.Accessories or {}) do
-		if data.bone and data.model and not data.cool then
-			name = one_name
-			break
-		end
+		if data.bone and data.model and not data.cool then names[#names + 1] = one_name end
 	end
-	check(name ~= nil, "an accessory to draw is in the catalog")
-	if name then
+	table.sort(names)
+	check(#names > 0, "accessories to draw are in the catalog: " .. #names)
+	local without = 0
+	for _, name in ipairs(names) do
+		local data = (ZCO.Catalog.Accessories or {})[name]
+		if not him:LookupBone(data.bone) then without = without + 1 end
+	end
+	check(without > 0, "accessories on a bone the skeleton of the imitation has not: " .. without)
+	-- the bone asked for, the one beside it, and nothing where the family is not there at all
+	eq(ZCO.BoneOf(him, "ValveBiped.Bip01_Head1"), him:LookupBone("ValveBiped.Bip01_Head1"),
+		"a bone the model has is taken as it is")
+	eq(ZCO.BoneOf(him, "ValveBiped.Bip01_Spine1"), him:LookupBone("ValveBiped.Bip01_Spine4"),
+		"...and one it has not is looked for beside it, nearest first")
+	eq(ZCO.BoneOf(him, "ValveBiped.Bip01_Tail"), nil, "a bone of a family the model has none of is not made up")
+	eq(ZCO.BoneOf(him, ""), nil, "no bone for no name")
+	eq(ZCO.BoneOf(nil, "ValveBiped.Bip01_Head1"), nil, "and none for no entity")
+	for _, name in ipairs(names) do
 		him:SetNetVar("Accessories", { name })
 		local before = #C.csmodels
 		DrawAppearance(him, him)
 		check(#C.csmodels > before, "the accessory is drawn as a model of its own (" .. name .. ")")
 		local model = C.csmodels[#C.csmodels]
-		check(model ~= nil and model:GetParent() == him, "it is parented to the player")
+		check(model ~= nil and model:GetParent() == him, "it is parented to the player (" .. name .. ")")
+		local data = (ZCO.Catalog.Accessories or {})[name]
+		if data and not him:LookupBone(data.bone) then
+			check(ZCO.BoneOf(him, data.bone) ~= nil,
+				"...on a bone of the same family: the model has not the one the catalog names (" .. name
+				.. " wants " .. tostring(data.bone) .. ")")
+		end
 		him:SetNetVar("Accessories", {})
 		DrawAppearance(him, him)
-		check(not IsValid(model), "an accessory that is taken off is removed")
+		check(not IsValid(model), "an accessory that is taken off is removed (" .. name .. ")")
 	end
 
 	-- the sets of the Appearance Mod that a player had before are read as ours
@@ -416,6 +527,66 @@ return function(testdir, luaroot)
 	check(old ~= nil, "a set of the old mod is read")
 	if old then eq(old.AModel, "Male 05", "... with its model") end
 	check(#ZCO.OldList() >= 1, "the sets of the old mod are listed")
+
+	-- ------------------------------------------------------------------ a model that is not here
+	-- The server cannot tell what a player has downloaded, so the client looks for itself: a model
+	-- that is not on this computer is the ERROR body, and the game says nothing about it.
+	local notice = hook.GetTable().Think and hook.GetTable().Think["zco_model_notice"]
+	check(notice ~= nil, "the client looks at the models of its players itself")
+	local worn = me:GetModel()
+	check(isstring(worn) and worn ~= "", "the player of the test wears a model: " .. tostring(worn))
+	check(not ZCO.ModelReady(worn), "... which is not on this computer")
+	if notice then
+		local from = #C.log
+		local ok, err = pcall(notice)
+		check(ok, "the look at the models runs: " .. tostring(err))
+		check(ZCO.Gone[worn] ~= nil, "a model that is not here is remembered")
+		local told, yours = false, false
+		for i = from + 1, #C.log do
+			if string.find(C.log[i], "not installed on this computer", 1, true) then told = true end
+			if string.find(C.log[i], "the model of your look", 1, true) then yours = true end
+		end
+		check(told, "the console of the player is told that his model is not on his computer")
+		check(yours, "... and that it is his own look and not the one of another player")
+
+		local lines = #C.log
+		ok, err = pcall(notice)
+		check(ok and #C.log == lines, "the same thing is not looked at again straight away")
+		C.advance(6)
+		from = #C.log
+		ok, err = pcall(notice)
+		check(ok and #C.log == from, "... and the same model is told about once, not every five seconds")
+
+		-- a player with no model at all is invisible: he is told so in his own console
+		local empty = C.newPlayer("Пустой", "", { steamid64 = "76561198000000011" })
+		C.localplayer = empty
+		C.advance(6)
+		from = #C.log
+		ok, err = pcall(notice)
+		check(ok, "a player with no model at all is looked at as well: " .. tostring(err))
+		check(ZCO.Gone["(no model at all)"] ~= nil, "... and remembered")
+		local invisible = false
+		for i = from + 1, #C.log do
+			if string.find(C.log[i], "invisible", 1, true) then invisible = true end
+		end
+		check(invisible, "the console is told that a player without a model is invisible")
+		C.localplayer = me
+	end
+
+	local models = concommand.list["zco_models_cl"]
+	check(models ~= nil, "the command zco_models_cl is there on the client")
+	if models then
+		local from = #C.log
+		local ok, err = pcall(models.fn, me, "zco_models_cl", {})
+		check(ok, "zco_models_cl runs: " .. tostring(err))
+		local said, missing = false, false
+		for i = from + 1, #C.log do
+			if string.find(C.log[i], "models of the appearance on this computer", 1, true) then said = true end
+			if string.find(C.log[i], "not here:", 1, true) then missing = true end
+		end
+		check(said, "zco_models_cl says how many models of the appearance this computer has")
+		check(missing, "... and names the ones it has not")
+	end
 
 	return checks, failures
 end

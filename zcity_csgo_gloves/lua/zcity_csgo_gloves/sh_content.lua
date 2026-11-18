@@ -290,6 +290,120 @@ function ZCG.ContentMissing(askMaterials)
 end
 
 -- ---------------------------------------------------------------------------------------------
+-- whose folder the files lie in
+-- ---------------------------------------------------------------------------------------------
+-- The game looks for a file the appearance tables name in everything it has mounted: the folder of
+-- this addon, the other addons in garrysmod/addons, the copies from the Workshop, the gamemode and
+-- the files of the game itself. A file that only ANOTHER addon has works as long as that addon is
+-- on the server - and is gone the moment it is taken off, switched off, or not downloaded by a
+-- player (a server has no Workshop copy of anything to give out but the one it mounts itself).
+-- An addon that carries its own content is one folder that can be copied, uploaded and counted on.
+--
+-- zcg_content says how many of the files the tables name lie in the folder of this addon and how
+-- many the game finds somewhere else, and zcg_outside names every one of the latter. They are the
+-- files to put into the addon: sort_content.bat copies what the clothes need out of the archives
+-- of the game and of the Workshop on the computer of the owner (and takes content from any folder
+-- or archive dropped onto it), and it never writes anywhere but into the folder of the addon.
+--
+-- Where the game mounted this addon as an archive - a copy from the Workshop - its files cannot be
+-- told from the files of another addon: nothing is counted then, and the report says why.
+
+-- (the convar zcg_own_content is made in sh_core.lua, with the other settings of the server:
+-- this file is run on its own by tools/lua_names.py, in a room that has no numbers of the game)
+ZCG.Outside = ZCG.Outside or nil       -- the list of the last look, false where there is no folder
+ZCG.OutsideOurs = ZCG.OutsideOurs or 0 -- how many of the files are in the folder of this addon
+ZCG.OutsideCut = ZCG.OutsideCut or false
+local MAX_OWN_FILES, MAX_OWN_SECONDS = 4000, 3
+
+--- the files the tables name that the game has, but not in the folder of this addon:
+--- { "materials/x.vmt  <-  who", ... }; false where the addon is mounted as an archive, nil where
+--- the check is switched off. Second: how many of them lie in the folder of the addon.
+--- (A file that is nowhere at all is not listed here: ZCG.ContentMissing names those.)
+function ZCG.OutsideContent(force)
+	if not (ZCG.cvOwnContent and ZCG.cvOwnContent:GetBool()) then return nil end
+	if ZCG.Outside ~= nil and not force then return ZCG.Outside, ZCG.OutsideOurs end
+	local ok, folder = pcall(ZCG.FindAddonFolder)
+	if not ok or not isstring(folder) or folder == "" then
+		ZCG.Outside, ZCG.OutsideOurs, ZCG.OutsideCut = false, 0, false
+		return false, 0
+	end
+	local okNeeds, models, materials = pcall(ZCG.ContentNeeds)
+	if not okNeeds or not istable(models) then
+		ZCG.Outside, ZCG.OutsideOurs, ZCG.OutsideCut = false, 0, false
+		return false, 0
+	end
+	materials = istable(materials) and materials or {}
+	local list, ours, checks, cut = {}, 0, 0, false
+	local stop = SysTime() + MAX_OWN_SECONDS
+	local function look(path, who)
+		if cut then return end
+		if checks >= MAX_OWN_FILES or SysTime() > stop then
+			cut = true
+			return
+		end
+		checks = checks + 1
+		if not has(path) then return end
+		if has(folder .. "/" .. path) then
+			ours = ours + 1
+			return
+		end
+		list[#list + 1] = path .. "  <-  " .. who
+	end
+	for path, who in pairs(models) do look(path, who) end
+	for name, who in pairs(materials) do look("materials/" .. name .. ".vmt", who) end
+	table.sort(list)
+	ZCG.Outside, ZCG.OutsideOurs, ZCG.OutsideCut = list, ours, cut
+	return list, ours
+end
+
+--- the lines for zcg_content
+function ZCG.OutsideReport(out)
+	local outside, ours = ZCG.OutsideContent()
+	if outside == nil then return end
+	if outside == false then
+		out("  whose folder the content lies in is not told here: the game mounted this addon as an archive (a copy"
+			.. " from the Workshop), where its files cannot be told from the files of another addon. An unpacked"
+			.. " folder in garrysmod/addons is checked (zcg_own_content 0 switches the check off)")
+		return
+	end
+	if #outside == 0 then
+		out("  the content of the menu lies in the folder of this addon: " .. ours .. " files the tables name and the"
+			.. " game has are its own - nothing here depends on another addon being on the server")
+	else
+		out("  " .. #outside .. " files the tables name are NOT in the folder of this addon (" .. ours
+			.. " are): the game finds them in another addon, in a copy from the Workshop it has mounted, or among its"
+			.. " own files - and they are gone when that addon is taken off the server or a player has not got it")
+		out("  sort_content.bat in the folder of this addon copies what the clothes need into it (out of the archives"
+			.. " of the game and of the Workshop, and out of any folder or archive dropped onto it); zcg_outside names"
+			.. " every file")
+		for i = 1, math.min(#outside, 6) do out("    " .. outside[i]) end
+		if #outside > 6 then out("    ... and " .. (#outside - 6) .. " more") end
+	end
+	if ZCG.OutsideCut then
+		out("  (not every file was looked at: the check has a budget of " .. MAX_OWN_FILES .. " files and "
+			.. MAX_OWN_SECONDS .. " seconds)")
+	end
+end
+
+concommand.Add("zcg_outside" .. (CLIENT and "_cl" or ""), function(ply)
+	if SERVER and IsValid(ply) and not ply:IsSuperAdmin() then return end
+	local outside, ours = ZCG.OutsideContent(true)
+	if outside == nil then
+		print("[CS:GO Gloves] zcg_own_content is 0: whose folder the files lie in is not looked at")
+		return
+	end
+	if outside == false then
+		print("[CS:GO Gloves] the folder of this addon is not there to look into: the game mounted it as an archive"
+			.. " (a copy from the Workshop). Unpacked into garrysmod/addons, it is checked")
+		return
+	end
+	print("[CS:GO Gloves] files of the appearance menu: " .. ours .. " in the folder of this addon, " .. #outside
+		.. " the game has somewhere else")
+	for i = 1, math.min(#outside, 400) do print("  " .. outside[i]) end
+	if #outside > 400 then print("  ... and " .. (#outside - 400) .. " more (the whole list is in data/zcg_content.txt)") end
+end, nil, "Name the files of the appearance menu that are not in the folder of this addon")
+
+-- ---------------------------------------------------------------------------------------------
 -- a face without its file
 -- ---------------------------------------------------------------------------------------------
 -- A face is a material Z-City puts over the face of a player model. One whose file is not
@@ -831,8 +945,17 @@ function ZCG.ContentReport(out)
 	end
 
 	if #missing == 0 then
+		-- Nothing is missing: what the addon did about the tables is told all the same - the lines
+		-- of the packs, the merged versions, the content without Lua, the accessories, the faces
+		-- and whose folder the files lie in are what zcg_content is for, not only what is gone.
 		faces()
 		ZCG.BoundReport(out)
+		if ZCG.FaceReport then ZCG.FaceReport(out) end
+		if ZCG.MergeReport then ZCG.MergeReport(out) end
+		if ZCG.RegisterReport then ZCG.RegisterReport(out) end
+		if ZCG.FoundReport then ZCG.FoundReport(out) end
+		if ZCG.AccessoryReport then ZCG.AccessoryReport(out) end
+		ZCG.OutsideReport(out)
 		return 0
 	end
 
@@ -945,10 +1068,12 @@ function ZCG.ContentReport(out)
 			.. " zcg_content in the console of the game checks those)")
 	end
 	ZCG.BoundReport(out)
+	if ZCG.FaceReport then ZCG.FaceReport(out) end
 	if ZCG.MergeReport then ZCG.MergeReport(out) end
 	if ZCG.RegisterReport then ZCG.RegisterReport(out) end
 	if ZCG.FoundReport then ZCG.FoundReport(out) end
 	if ZCG.AccessoryReport then ZCG.AccessoryReport(out) end
+	ZCG.OutsideReport(out)
 	return #missing
 end
 
@@ -1139,9 +1264,10 @@ end
 
 -- The watch that keeps the menu whole for as long as the game runs, on the client and on the
 -- server: every ten seconds the lines of sh_baked.lua are put back into the tables, the merged
--- versions of the packs add what only they have (sh_merge.lua), and a line that is still missing
--- gets the Lua of its pack run again. Nothing here depends on the order the addons load in, on
--- the Lua of the packs running at all, or on somebody making the tables anew afterwards.
+-- versions of the packs add what only they have (sh_merge.lua), a line that is still missing
+-- gets the Lua of its pack run again, and the faces are put into the table the other menu reads
+-- as well (sh_faces.lua). Nothing here depends on the order the addons load in, on the Lua of the
+-- packs running at all, or on somebody making the tables anew afterwards.
 hook.Add("InitPostEntity", "zcg_heal", function()
 	timer.Create("zcg_heal", 10, 0, function()
 		-- what the Lua of the packs put into the tables by calling this addon (sh_register.lua):
@@ -1151,6 +1277,9 @@ hook.Add("InitPostEntity", "zcg_heal", function()
 		if ZCG.MergePass then pcall(ZCG.MergePass) end
 		ZCG.HealBound()
 		if ZCG.FoundPass then pcall(ZCG.FoundPass) end
+		-- the faces into the table the other menu reads as well (sh_faces.lua) - after everything
+		-- that adds a face: the lines of the build, the merged versions, the content without Lua
+		if ZCG.FacePass then pcall(ZCG.FacePass) end
 	end)
 end)
 

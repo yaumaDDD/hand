@@ -5,7 +5,7 @@
 if SERVER then AddCSLuaFile() end
 
 ZCGloves = ZCGloves or {}
-ZCGloves.Version = "2.19.0"
+ZCGloves.Version = "2.20.0"
 
 local DIR = "zcity_csgo_gloves/"
 
@@ -52,6 +52,8 @@ if file.Exists(DIR .. "sh_baked.lua", "LUA") then shared("sh_baked.lua") end
 shared("sh_core.lua")
 shared("sh_materials.lua")
 shared("sh_content.lua")
+-- (the faces of the two systems Z-City has, in every table the menus read: sh_faces.lua)
+shared("sh_faces.lua")
 -- (sort_content.bat writes this one when materials lie in the addon that no Lua names: see sh_auto.lua)
 if file.Exists(DIR .. "sh_found.lua", "LUA") then shared("sh_found.lua") end
 shared("sh_auto.lua")

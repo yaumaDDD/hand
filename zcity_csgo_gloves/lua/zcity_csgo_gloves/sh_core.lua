@@ -50,6 +50,11 @@ ZCG.cvFixFaces = CreateConVar("zcg_fix_faces", "0", FLAGS,
 	.. "purple and black squares - on a computer that has the content of the menu as a whole; 2 = on any computer; "
 	.. "0 = the faces stay as the clothing Lua made them. Set it on the server. zcg_content tells how many there are.", 0, 2)
 
+ZCG.cvOwnContent = CreateConVar("zcg_own_content", "1", FLAGS,
+	"Content: 1 = zcg_content tells which of the files the appearance tables name the game finds somewhere "
+	.. "else than in the folder of this addon - in another addon, in a Workshop copy, among the files of the "
+	.. "game (sort_content.bat copies them into the addon, and zcg_outside names every one); 0 = it does not look.", 0, 1)
+
 ZCG.cvClothes = CreateConVar("zcg_fix_clothes", "0", FLAGS,
 	"1: in the game the server puts on the clothes (jacket, trousers, shoes) of models that name their parts differently. 0: the clothes are left to Z-City alone (default).")
 ZCG.cvGloves = CreateConVar("zcg_fix_gloves", "0", FLAGS,

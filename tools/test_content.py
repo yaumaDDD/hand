@@ -4681,7 +4681,7 @@ def test_every_folder(tmp):
     check(code == 1 and u'ОШИБКА' in text and u'--game' in text and lies('materials/materials5/models/late/x.vtf'),
           'a folder that is no game is refused, and nothing is touched: %r' % text)
 
-    # ---- no game on the computer: said, with what to do about it
+    # ---- no game asked for: the files of the game are not touched, and that is said
     saved, roots = os.environ.pop('ZCG_GAME', None), game_files.steam_roots
     game_files.steam_roots = lambda: []
     try:
@@ -4690,10 +4690,26 @@ def test_every_folder(tmp):
         game_files.steam_roots = roots
         if saved is not None:
             os.environ['ZCG_GAME'] = saved
-    check(code == 0 and u'Игра на этом компьютере не найдена' in text and lies('materials/models/late/x.vtf')
-          and u'перетащите мышью папку игры (GarrysMod — ту, в которой лежит\n  garrysmod) на sort_content.bat' in text
+    check(code == 0 and lies('materials/models/late/x.vtf')
+          and u'Файлы самой игры не трогаются: контент — из папок аддона' in text
+          and u'В файлы самой игры не заглядывали: контент берётся из папок аддона' in text
+          and u'Игра на этом компьютере' not in text
+          and u'--game "…\\GarrysMod"' in text
           and u'        из них: нет ни в одной папке — 2\n' in text,
-          'without a game it says that it could not look into one: %r' % text[-1800:])
+          'left to itself it does not look into a game, and says where the content comes from: %r' % text[-1800:])
+    saved = os.environ.pop('ZCG_GAME', None)      # (the tests keep it set: these calls ask directly)
+    try:
+        check(sort_content.game_choice(None, False, root) == ('default', None),
+              'nobody named a game: none is looked for (the content is the addon\'s own)')
+        check(sort_content.game_choice(None, True, root) == ('off', None),
+              '--no-game: the same, and the report says nothing about the game')
+        check(sort_content.game_choice('-', False, root) == ('off', None), '--game "-" is --no-game')
+        asked, found_game = sort_content.game_choice(game, False, root)
+        check(asked == 'given' and found_game is not None,
+              'a game that is named is the one looked into: %r' % ((asked, found_game and found_game.root),))
+    finally:
+        if saved is not None:
+            os.environ['ZCG_GAME'] = saved
     saved = os.environ.pop('ZCG_GAME', None)
     os.environ['ZCG_GAME'] = game
     try:
@@ -4727,9 +4743,18 @@ def test_every_folder(tmp):
     finally:
         if saved is not None:
             os.environ['ZCG_GAME'] = saved
+    check(code == 0 and u'Файлы самой игры не трогаются' in text and u'Игра на этом компьютере' not in text,
+          'an addon in the addons folder of the game does not pull that game in by itself: %r'
+          % [line for line in text.split(u'\n') if u'игр' in line.lower()][:8])
+    saved = os.environ.pop('ZCG_GAME', None)
+    try:
+        code, text = sort('--addon', inside, '--game', game, '--no-take')
+    finally:
+        if saved is not None:
+            os.environ['ZCG_GAME'] = saved
     check(code == 0 and u'Игра на этом компьютере: %s\n' % game in text and u'есть в самой игре — 1' in text
           and u'«zcity_csgo_gloves»' not in text,
-          'an addon in the addons folder of the game looks into that game - and not into itself: %r'
+          'named, that game is looked into - and the addon being sorted is not searched as a stranger: %r'
           % [line for line in text.split(u'\n') if u'игр' in line.lower()][:8])
 
     # ---- what is left behind is told: a heap under a numbered name, a file below the wrong folder

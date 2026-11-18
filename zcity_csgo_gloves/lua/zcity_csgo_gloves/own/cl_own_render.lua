@@ -49,6 +49,44 @@ local function pruneAccessories(ply, worn)
 	end
 end
 
+-- A bone of the player to wear an accessory on, or the nearest one of the same family. Not every
+-- model has every bone of a citizen: the vests of the catalog are on Bip01_Spine2, the purse is on
+-- Bip01_Spine1, and a model that has neither wears nothing at all - the accessory is made and then
+-- never drawn, because there is no bone to put it on. So the bones beside the one asked for are
+-- tried (nearest first), then the same bone without its number, then its name without the
+-- "ValveBiped." in front of it: a spine is a spine, and an accessory on the nearest one is better
+-- than one nobody sees.
+local BONE_TRIES = {}
+local function boneTries(name)
+	local tries = BONE_TRIES[name]
+	if tries then return tries end
+	tries = {}
+	local prefix, number = string.match(name, "^(.-)(%d+)$")
+	if prefix and prefix ~= "" then
+		for step = 1, 4 do
+			tries[#tries + 1] = prefix .. (number + step)
+			if number - step >= 0 then tries[#tries + 1] = prefix .. (number - step) end
+		end
+		tries[#tries + 1] = prefix
+	end
+	local plain = string.match(name, "^ValveBiped%.(.+)$")
+	if plain then tries[#tries + 1] = plain end
+	BONE_TRIES[name] = tries
+	return tries
+end
+
+function ZCO.BoneOf(ent, name)
+	if not IsValid(ent) or not ent.LookupBone then return nil end
+	if not isstring(name) or name == "" then return nil end
+	local bone = ent:LookupBone(name)
+	if bone then return bone end
+	for _, one in ipairs(boneTries(name)) do
+		local found = ent:LookupBone(one)
+		if found then return found end
+	end
+	return nil
+end
+
 --- one accessory on one player: the model is made once and drawn every frame where it belongs.
 --- setup: false = only draw it where it is (the bone matrices are set up already)
 function ZCO.DrawAccessory(ply, ent, name, data, isLocal, setup)
@@ -74,7 +112,7 @@ function ZCO.DrawAccessory(ply, ent, name, data, isLocal, setup)
 		model:SetModelScale(tonumber(offset[3]) or 1)
 		model:SetSkin(tonumber(data.skin) or 0)
 		if data.bodygroups then model:SetBodyGroups(data.bodygroups) end
-		local bone = data.bone and ent:LookupBone(data.bone) or nil
+		local bone = data.bone and ZCO.BoneOf(ent, data.bone) or nil
 		if bone then model:SetParent(ent, bone) end
 		if data.bonemerge then model:AddEffects(EF_BONEMERGE) end
 		if data.submat or data.SubMat then model:SetSubMaterial(0, data.submat or data.SubMat) end
@@ -89,7 +127,7 @@ function ZCO.DrawAccessory(ply, ent, name, data, isLocal, setup)
 	-- where it is drawn: the bone of the player, the offset and the angle of the catalog
 	if setup ~= false then
 		if not data.bone then return end
-		local bone = ent:LookupBone(data.bone)
+		local bone = ZCO.BoneOf(ent, data.bone)
 		if not bone then return end
 		-- a bone that was shrunk away (an amputated limb of Z-City) wears nothing
 		local scale = ent.GetManipulateBoneScale and ent:GetManipulateBoneScale(bone)
@@ -241,6 +279,35 @@ hook.Add("EntityRemoved", "zco_accessories", function(ent)
 			if IsValid(model) then model:Remove() end
 		end
 		ZCO.AccessoryModels[ent] = nil
+	end
+end)
+
+-- --------------------------------------------------------------------------------------
+-- a player whose model is not on this computer
+-- --------------------------------------------------------------------------------------
+-- The server cannot tell what a player has downloaded: a model may be on the server and not on
+-- his computer, or on his computer (from the Workshop, from FastDL) and not on the server. So the
+-- client looks for itself - once every five seconds, and one line per model, not per player: a
+-- player whose model is not here is the ERROR body, with no submaterial slots for the clothes, no
+-- face material to replace, no bones for the accessories and nothing for the gloves to hide, and
+-- the game itself tells him nothing about it.
+local lookedAt = 0
+hook.Add("Think", "zco_model_notice", function()
+	if SysTime() < lookedAt then return end
+	lookedAt = SysTime() + 5
+	local me = LocalPlayer()
+	if not IsValid(me) then return end
+	local worn = me:GetModel()
+	if not isstring(worn) or worn == "" then
+		ZCO.ModelGone("", me, true)     -- no model at all: he is invisible, and nothing fits him
+	else
+		if not ZCO.ModelReady(worn) then ZCO.ModelGone(worn, me, true) end
+		for _, ply in ipairs(player.GetAll()) do
+			if ply ~= me then
+				local model = ply:GetModel()
+				if isstring(model) and model ~= "" and not ZCO.ModelReady(model) then ZCO.ModelGone(model, ply) end
+			end
+		end
 	end
 end)
 

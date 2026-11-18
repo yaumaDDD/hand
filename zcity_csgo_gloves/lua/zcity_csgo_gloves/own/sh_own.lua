@@ -11,7 +11,7 @@
 
 ZCO = ZCO or {}
 
-ZCO.Version = "2.19.0"
+ZCO.Version = "2.20.0"
 ZCO.Name = "Z-City Own Appearance"
 ZCO.Catalog = ZCO.Catalog or {}
 ZCO.CatalogCounts = ZCO.CatalogCounts or {}
@@ -158,6 +158,9 @@ end
 
 --- a model of the catalog by its name or by its path: name, entry, sex
 function ZCO.ModelByName(name)
+	-- (a player with no model at all asks with nil: an entry of the catalog that has no path of
+	-- its own would answer to it, and the player would be dressed for a model he does not wear)
+	if not isstring(name) or name == "" then return nil end
 	for _, sex in ipairs({ ZCO.MALE, ZCO.FEMALE }) do
 		local entry = ZCO.Models(sex)[name]
 		if entry then return name, entry, sex end
@@ -169,6 +172,133 @@ function ZCO.ModelByName(name)
 	end
 	return nil
 end
+
+-- --------------------------------------------------------------------------------------
+-- a model that is not installed
+-- --------------------------------------------------------------------------------------
+-- A player model the appearance names and that this computer does not have leaves the player as
+-- the ERROR body: the clothes have no submaterial slots to go into, the face has no material to
+-- replace, the accessories have no bones to hang on and the gloves have nothing to hide. Nothing
+-- tells him so: the game prints one line of its own on the server ("a model that was not
+-- precached") and the player just sees a body that is not his. This side looks, says what is
+-- missing in whose look, and gives a player who came with no model at all one that is here -
+-- which is the only thing that can be done about an invisible player.
+
+ZCO.Gone = ZCO.Gone or {}   -- model path -> { the players it was seen on }
+
+--- is the file of a model there, in this realm?
+-- (A model that is not there is asked about again: a copy from the Workshop or from FastDL may
+-- still be on its way while the player is already in the game. One that is there is remembered -
+-- a file does not go away while the game runs.)
+local readyCache = {}   -- model path -> { ok = is it there, at = when it was asked }
+function ZCO.ModelReady(path)
+	if not isstring(path) or path == "" then return false end
+	local known = readyCache[path]
+	local now = SysTime()
+	if known and (known.ok or now - known.at < 30) then return known.ok end
+	local ok = file.Exists(path, "GAME")
+	readyCache[path] = { ok = ok, at = now }
+	return ok
+end
+
+--- a model that is not here: counted once, told once per model (and named again by zco_models).
+--- who: the player it was seen on - he is told in his own console as well.
+function ZCO.ModelGone(path, who, you)
+	local key = (isstring(path) and path ~= "") and path or "(no model at all)"
+	local had = ZCO.Gone[key]
+	if had == nil then
+		had = {}
+		ZCO.Gone[key] = had
+		local line = "[Z-City Own] " .. (you and "the model of your look" or "a player model of the appearance")
+			.. " is not installed on " .. (SERVER and "the server" or "this computer") .. ": " .. key
+			.. (key == "(no model at all)"
+				and " - a player without a model is invisible, and the clothes, the face, the accessories and the "
+					.. "gloves have nothing to go onto"
+				or " - on this computer that player is the ERROR body, and the clothes, the face, the accessories "
+					.. "and the gloves have nothing to go onto")
+			.. ". zco_models" .. (CLIENT and "_cl" or "") .. " names every model that is missing here"
+			.. (SERVER and ", zcg_content every file the appearance asks for" or "")
+		ZCGloves.Print(line)
+		if SERVER and IsValid(who) and who.PrintMessage then who:PrintMessage(HUD_PRINTCONSOLE, line .. "\n") end
+	end
+	local nick = IsValid(who) and (who.Nick and who:Nick() or "player") or (isstring(who) and who or nil)
+	if nick then
+		for _, one in ipairs(had) do if one == nick then return end end
+		if #had < 20 then had[#had + 1] = nick end
+	end
+end
+
+--- the first model of the catalog that IS installed here, in the order of the menu: name, entry
+function ZCO.AnyModel(sex)
+	local sexes = sex and { sex } or { ZCO.MALE, ZCO.FEMALE }
+	for _, one in ipairs(sexes) do
+		local names = {}
+		for name in pairs(ZCO.Models(one)) do names[#names + 1] = name end
+		table.sort(names)
+		for _, name in ipairs(names) do
+			local entry = ZCO.Models(one)[name]
+			if type(entry) == "table" and ZCO.ModelReady(entry.mdl) then return name, entry end
+		end
+	end
+	return nil
+end
+
+--- the lines for zco_models: how many models of the catalog are here, and which are not
+function ZCO.ModelReport(out)
+	out = out or print
+	-- (a name may be in both sexes, with a model of its own in each: every pair is counted)
+	local every, have, gone = {}, 0, {}
+	for _, sex in ipairs({ ZCO.MALE, ZCO.FEMALE }) do
+		for name, entry in pairs(ZCO.Models(sex)) do
+			if type(entry) == "table" and isstring(entry.mdl) and entry.mdl ~= "" then
+				local line = name .. "  " .. entry.mdl
+				every[line] = true
+				if ZCO.ModelReady(entry.mdl) then have = have + 1
+				else gone[#gone + 1] = line end
+			end
+		end
+	end
+	local names = {}
+	for line in pairs(every) do names[#names + 1] = line end
+	table.sort(names)
+	table.sort(gone)
+	out("[Z-City Own] models of the appearance on " .. (SERVER and "the server" or "this computer") .. ": "
+		.. have .. " of " .. #names .. " are installed" .. (#gone > 0 and ", " .. #gone .. " are not" or ""))
+	for i = 1, math.min(#gone, 60) do out("  not here: " .. gone[i]) end
+	if #gone > 60 then out("  ... and " .. (#gone - 60) .. " more") end
+	local seenOn = {}
+	for path, who in pairs(ZCO.Gone) do
+		seenOn[#seenOn + 1] = path .. (#who > 0 and "  (seen on: " .. table.concat(who, ", ") .. ")" or "")
+			.. (ZCO.ModelReady(path) and "  - it is there now" or "")
+	end
+	if #seenOn > 0 then
+		table.sort(seenOn)
+		out("[Z-City Own] models a player was asked to wear and that are not here:")
+		for i = 1, math.min(#seenOn, 60) do out("  " .. seenOn[i]) end
+		if #seenOn > 60 then out("  ... and " .. (#seenOn - 60) .. " more") end
+	else
+		out("[Z-City Own] no player was asked for a model that is not here")
+	end
+	if SERVER then
+		out("  (this is the disk of the server. A player may have a model from the Workshop or from FastDL that "
+			.. "the server itself has not: zco_models_cl in the console of that player checks his own computer)")
+	end
+	return #gone
+end
+
+concommand.Add("zco_models" .. (CLIENT and "_cl" or ""), function(ply)
+	if SERVER and IsValid(ply) and not ply:IsSuperAdmin() then return end
+	ZCO.Install()
+	local me = SERVER and (IsValid(ply) and ply or nil) or (CLIENT and LocalPlayer() or nil)
+	if IsValid(me) then
+		local worn = me:GetModel()
+		ZCO.ModelReport(print)
+		print("[Z-City Own] you are wearing " .. tostring(isstring(worn) and worn ~= "" and worn or "nothing at all")
+			.. (ZCO.ModelReady(worn) and " - it is installed here" or " - it is NOT installed here"))
+		return
+	end
+	ZCO.ModelReport(print)
+end, nil, "Which models of the appearance are installed here, and which player was asked for one that is not")
 
 --- the sex of an entity: what its model says (the submodels m_anm / f_anm, as Z-City tells it)
 function ZCO.IsFemale(ent)

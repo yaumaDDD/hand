@@ -876,6 +876,11 @@ def game_lines(game, found, asked):
     asked: 'off' when the user did not want the game looked into"""
     if asked == 'off':
         return []
+    if asked == 'default':
+        return [u'В файлы самой игры не заглядывали: контент берётся из папок аддона и из папок и архивов,',
+                u'  перетащенных на sort_content.bat — откуда угодно и с любой глубиной. Так аддон несёт своё сам.',
+                u'  (Взять недостающее из архивов игры и из .gma воркшопа на этом компьютере: --game "…\\GarrysMod"',
+                u'  или перетащить папку игры на .bat. Не трогать игру вовсе: --no-game.)']
     if game is None:
         return [u'Игра на этом компьютере не найдена (Steam с Garry’s Mod нет, и аддон лежит не в папке addons игры).',
                 u'  Какие из недостающих файлов есть в самой игре, здесь не проверить: это покажет zcg_content в игре.',
@@ -1219,7 +1224,15 @@ def game_seconds():
 def game_choice(given, off, addon):
     """The game to look into for the files the addon does not have: ('off', None) when that is
     not wanted (--no-game; --game or the variable ZCG_GAME set to "-"), ('given', Game) for a
-    folder that was named, else ('auto', the game found on this computer or None)."""
+    folder that was named (--game, ZCG_GAME, or the folder of the game dropped onto the .bat),
+    else ('default', None) - nobody asked for it.
+
+    By default the files of the game itself are NOT touched. What the appearance needs is taken
+    from the folders of the addon and from the folders and archives dropped onto sort_content.bat,
+    wherever they lie and however deep; the addon is meant to carry its own content, and a file
+    copied out of an archive of Garry's Mod is a file the owner cannot see the source of. Looking
+    into the game (and copying out of the .gma of the Workshop, take_from_game) is a thing the
+    owner asks for by name - it is there for a machine where the content is only in the game."""
     value = given if given is not None else os.environ.get('ZCG_GAME')
     if off or (value is not None and value.strip().lower() in NO_GAME):
         return 'off', None
@@ -1229,7 +1242,8 @@ def game_choice(given, off, addon):
             raise UserError(u'Это не папка игры Garry’s Mod (в ней нет папки garrysmod): %s\n'
                             u'Укажите папку GarrysMod — ту, в которой лежит garrysmod: --game "D:\\...\\GarrysMod"' % value)
         return 'given', game
-    return 'auto', game_files.find(addon)
+    _ = addon       # (the game is no longer looked for by itself: it is named or it is not touched)
+    return 'default', None
 
 
 def main(argv=None):
@@ -1250,9 +1264,12 @@ def main(argv=None):
                                              '(default: %s beside this script)' % list_content.RUN_LIST)
     parser.add_argument('--dry-run', action='store_true', help='only tell what would be done')
     parser.add_argument('--game', help='the folder of the game (GarrysMod, the one that holds garrysmod): the files '
-                                       'the addon does not have are looked for in it. Default: the game the addon '
-                                       'lies in, else the one Steam has; "-" to leave the game alone')
-    parser.add_argument('--no-game', action='store_true', help='do not look into the game')
+                                       'the addon does not have are looked for in it, and what an archive of the '
+                                       'Workshop holds is copied out of it into the addon. Default: the files of the '
+                                       'game are not touched at all - the content comes from the folders of the addon '
+                                       'and from what was dropped onto the .bat; "-" means the same as --no-game')
+    parser.add_argument('--no-game', action='store_true', help='do not look into the game (the default; says nothing '
+                                                               'about it in the report)')
     parser.add_argument('--no-fill', action='store_true',
                         help='do not fill the names that have no file with files that lie under another name '
                              '(copies of renamed files, see fill_content.py)')
@@ -1557,6 +1574,9 @@ def run(args, switched=None, filled=None):
                 args.game = game_files.sure_game(dropped[0])
             say(u'Папка «%s» — это сама игра: из неё ничего не берётся, в ней ищутся недостающие файлы.' % dropped[0])
         asked, game = game_choice(args.game, args.no_game, addon)
+        if asked == 'default':
+            say(u'Файлы самой игры не трогаются: контент — из папок аддона и из того, что перетащили на .bat.'
+                u' (Нужно недостающее из архивов игры и воркшопа: --game "D:\\...\\GarrysMod".)')
         if not args.dry_run:
             resumed = resume(addon)
             if resumed:
