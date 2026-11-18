@@ -809,7 +809,8 @@ def step_found(out, content, named, ran):
         if there:
             taken.add(there)
     loose = sort_content.found_materials(out, taken)
-    return len(loose), sort_content.write_found(out, loose, tool=u'build_addon.py')
+    models = sort_content.found_models(out, taken)
+    return len(loose), sort_content.write_found(out, loose, tool=u'build_addon.py', models=models), len(models)
 
 
 # Two versions together. The version of a pack that is left out has the same Lua files as the one
@@ -1423,12 +1424,16 @@ def main():
         scripts, stock, listed = step_sort_tool(out, ran)
         print('  sort_content.bat: %d scripts, %d names of Z-City itself that it leaves alone%s'
               % (scripts, stock, '' if listed is None else ", %d names the addon's Lua gives when it is run" % listed))
-        loose, wrote_found = step_found(out, content, named, ran)
+        loose, wrote_found, loose_models = step_found(out, content, named, ran)
         if loose:
             print('  content without Lua: %d materials nobody names are listed for the game in lua/%s%s'
                   % (loose, FOUND_LUA, '' if wrote_found else ' (unchanged)'))
         elif wrote_found:
-            print('  content without Lua: none, lua/%s is gone' % FOUND_LUA)
+            print('  content without Lua: no material nobody names, lua/%s%s'
+                  % (FOUND_LUA, ' is gone' if not loose_models else ' keeps the models only'))
+        if loose_models:
+            print('  models without Lua: %d models nobody names and the game can read are listed there too -'
+                  ' the menu of this addon offers them, and reads their slots out of their own files' % loose_models)
         foreign = [dest for dest, _item in content.placed]
         for entry in sources:
             counts = entry['counts']

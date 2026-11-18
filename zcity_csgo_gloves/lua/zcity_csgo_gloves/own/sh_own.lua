@@ -11,7 +11,7 @@
 
 ZCO = ZCO or {}
 
-ZCO.Version = "2.21.0"
+ZCO.Version = "2.22.0"
 ZCO.Name = "Z-City Own Appearance"
 ZCO.Catalog = ZCO.Catalog or {}
 ZCO.CatalogCounts = ZCO.CatalogCounts or {}
@@ -75,14 +75,37 @@ function ZCO.Accessories()
 	return got
 end
 
---- the models of one sex: { name = { mdl, sex, submatSlots } }
-function ZCO.Models(sex)
+--- the models of one sex the Lua named: { name = { mdl, sex, submatSlots } }. The automatic
+--- choices - the default look, a random one, the model a player who came with none is given, the
+--- tables of the game - are made of these alone: what a walk through the folder of the addon found
+--- (own/sh_scan.lua) is offered in the menu and worn when a player asks for it, and is never put on
+--- anybody by itself.
+function ZCO.CatalogModels(sex)
 	return (ZCO.Catalog.Models or {})[sex or ZCO.MALE] or {}
 end
 
---- the clothes of one sex: { name = the material of the sheet }
-function ZCO.Clothes(sex)
+--- the clothes of one sex the Lua named: { name = the material of the sheet }
+function ZCO.CatalogClothes(sex)
 	return (ZCO.Catalog.Clothes or {})[sex or ZCO.MALE] or {}
+end
+
+--- the models of one sex: the ones the Lua named, and the ones the addon found in its own folder
+--- and no Lua names (a model in models/ nobody called AppAddModel for - own/sh_scan.lua). The name
+--- of a model that was found is its path: a file has no other name two computers agree on.
+function ZCO.Models(sex)
+	sex = sex or ZCO.MALE
+	local mine = ZCO.CatalogModels(sex)
+	if not ZCO.MergeModels then return mine end
+	return ZCO.MergeModels(sex, mine)
+end
+
+--- the clothes of one sex: the ones the Lua named, and the materials the addon found in its own
+--- materials/ and no Lua names (their names are their paths as well)
+function ZCO.Clothes(sex)
+	sex = sex or ZCO.MALE
+	local mine = ZCO.CatalogClothes(sex)
+	if not ZCO.MergeClothes then return mine end
+	return ZCO.MergeClothes(sex, mine)
 end
 
 --- the bodygroups of one group and sex: { name = { submodel, pointshop, id } }
@@ -233,10 +256,10 @@ function ZCO.AnyModel(sex)
 	local sexes = sex and { sex } or { ZCO.MALE, ZCO.FEMALE }
 	for _, one in ipairs(sexes) do
 		local names = {}
-		for name in pairs(ZCO.Models(one)) do names[#names + 1] = name end
+		for name in pairs(ZCO.CatalogModels(one)) do names[#names + 1] = name end
 		table.sort(names)
 		for _, name in ipairs(names) do
-			local entry = ZCO.Models(one)[name]
+			local entry = ZCO.CatalogModels(one)[name]
 			if type(entry) == "table" and ZCO.ModelReady(entry.mdl) then return name, entry end
 		end
 	end
@@ -344,11 +367,21 @@ function ZCO.SlotOf(ent, material)
 end
 
 --- the slots of the clothes of an entity: { main = 0, pants = 1, ... }
+--- A model no Lua described - one the addon found in its own models/, one from another addon, one
+--- a player set by hand - has no submatSlots in the catalog, and without them there is nowhere to
+--- put the clothes. Its own file says them: the header of a .mdl lists the materials of the model in
+--- the order of their sub-material indices, and the words of their paths say which of them is the
+--- sheet, the trousers, the boots and the hands (ZCO.GuessSlots, own/sh_scan.lua).
 function ZCO.Slots(ent)
 	local entry = ZCO.ModelOf(ent)
 	local got = {}
-	if type(entry) ~= "table" or type(entry.submatSlots) ~= "table" then return got end
-	for slot, material in pairs(entry.submatSlots) do
+	if type(entry) ~= "table" then return got end
+	local slots = type(entry.submatSlots) == "table" and entry.submatSlots or nil
+	if not slots or not next(slots) then
+		slots = ZCO.GuessSlots and IsValid(ent) and ZCO.GuessSlots(ent:GetModel()) or nil
+	end
+	if type(slots) ~= "table" then return got end
+	for slot, material in pairs(slots) do
 		local found = ZCO.SlotOf(ent, material)
 		got[slot] = found or (slot == "main" and 0 or nil)
 	end
@@ -415,7 +448,7 @@ function ZCO.Default(sex)
 	end
 	if sex == ZCO.FEMALE then
 		local names = {}
-		for name in pairs(ZCO.Models(ZCO.FEMALE)) do names[#names + 1] = name end
+		for name in pairs(ZCO.CatalogModels(ZCO.FEMALE)) do names[#names + 1] = name end
 		table.sort(names)
 		if names[1] then got.AModel = names[1] end
 	end
@@ -493,20 +526,23 @@ end
 function ZCO.Random(sex)
 	sex = sex or math.random(1, 2)
 	local got = ZCO.Default(sex)
+	-- (a model or a material that was found in the folder of the addon and no Lua names is worn
+	-- when a player chooses it in the menu, and is never chosen for him: what a walk found may be
+	-- a prop, a sheet of another game or a material with no texture - own/sh_scan.lua)
 	local models = {}
-	for name, entry in pairs(ZCO.Models(sex)) do
+	for name, entry in pairs(ZCO.CatalogModels(sex)) do
 		if type(entry) == "table" and entry.mdl then models[#models + 1] = name end
 	end
 	table.sort(models)
 	if #models > 0 then got.AModel = models[math.random(1, #models)] end
 	local clothes = {}
-	for name in pairs(ZCO.Clothes(sex)) do clothes[#clothes + 1] = name end
+	for name in pairs(ZCO.CatalogClothes(sex)) do clothes[#clothes + 1] = name end
 	table.sort(clothes)
 	if #clothes > 0 then
 		local worn = clothes[math.random(1, #clothes)]
 		got.AClothes = { main = worn, pants = worn, boots = worn }
 	end
-	local entry = ZCO.Models(sex)[got.AModel]
+	local entry = ZCO.CatalogModels(sex)[got.AModel]
 	local faces = {}
 	for name in pairs(ZCO.Faces(entry and entry.mdl or "", sex)) do faces[#faces + 1] = name end
 	table.sort(faces)
@@ -856,7 +892,9 @@ function ZCO.Install()
 	appearance.PlayerModels = appearance.PlayerModels or { {}, {} }
 	for _, sex in ipairs({ ZCO.MALE, ZCO.FEMALE }) do
 		appearance.PlayerModels[sex] = appearance.PlayerModels[sex] or {}
-		for name, entry in pairs(ZCO.Models(sex)) do
+		-- (only what the Lua named: a model the addon found in its own folder is worn by a player
+		-- who chose it in our menu, and is not offered to the menus of everybody else)
+		for name, entry in pairs(ZCO.CatalogModels(sex)) do
 			if not appearance.PlayerModels[sex][name] then appearance.PlayerModels[sex][name] = entry end
 		end
 	end
@@ -870,7 +908,7 @@ function ZCO.Install()
 	appearance.Clothes = appearance.Clothes or { {}, {} }
 	for _, sex in ipairs({ ZCO.MALE, ZCO.FEMALE }) do
 		appearance.Clothes[sex] = appearance.Clothes[sex] or {}
-		for name, material in pairs(ZCO.Clothes(sex)) do
+		for name, material in pairs(ZCO.CatalogClothes(sex)) do
 			if not appearance.Clothes[sex][name] then appearance.Clothes[sex][name] = material end
 		end
 		if not appearance.Clothes[sex]["normal"] then appearance.Clothes[sex]["normal"] = "" end
@@ -1012,10 +1050,18 @@ function ZCO.Counts()
 	local catalog = ZCO.Catalog
 	local got = {
 		models = 0, clothes = 0, faces = 0, bodygroups = 0, accessories = 0, names = 0,
+		foundModels = 0, foundClothes = 0,
 	}
 	for _, sex in ipairs({ ZCO.MALE, ZCO.FEMALE }) do
-		for _name in pairs(ZCO.Models(sex)) do got.models = got.models + 1 end
-		for _name in pairs(ZCO.Clothes(sex)) do got.clothes = got.clothes + 1 end
+		for _name in pairs(ZCO.CatalogModels(sex)) do got.models = got.models + 1 end
+		for _name in pairs(ZCO.CatalogClothes(sex)) do got.clothes = got.clothes + 1 end
+	end
+	-- what the addon found in its own folder and no Lua names (own/sh_scan.lua)
+	for _path in pairs((ZCO.Scanned or {}).Models and ZCO.Scanned.Models[ZCO.MALE] or {}) do
+		got.foundModels = got.foundModels + 1
+	end
+	for _name in pairs((ZCO.Scanned or {}).Clothes and ZCO.Scanned.Clothes[ZCO.MALE] or {}) do
+		got.foundClothes = got.foundClothes + 1
 	end
 	for _slot, by_name in pairs(catalog.Facemaps or {}) do
 		for _name in pairs(by_name) do got.faces = got.faces + 1 end

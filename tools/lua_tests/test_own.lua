@@ -470,6 +470,183 @@ return function(testdir, luaroot)
 	ApplyAppearance(bot2, nil, true)
 	check(forced == nil and modded.calls == 1, "a bot goes to the mod: it has no look to keep")
 
+	do -- the content of the addon that no Lua names: found by walking its own folder (own/sh_scan.lua)
+		local FOLDER, MODEL = "addons/zcity_csgo_gloves", "models/odd/found_body.mdl"
+		local CLOTH, LONELY = "models/odd/found_cloth", "models/odd/lonely"
+		ZCGloves.AddonFolder = FOLDER
+		M.files[FOLDER .. "/lua/autorun/zcity_csgo_gloves.lua"] = true
+		-- a model nobody called AppAddModel for: its parts are beside it and its materials are there
+		M.installModel(MODEL, { "players_sheet", "found_pants", "found_boots" }, { "models/odd" })
+		for _, ext in ipairs({ ".mdl", ".vvd", ".dx90.vtx" }) do
+			M.files[FOLDER .. "/models/odd/found_body" .. ext] = true
+		end
+		for _, name in ipairs({ "players_sheet", "found_pants", "found_boots" }) do
+			M.files["materials/models/odd/" .. name .. ".vmt"] = true
+		end
+		-- a model without the parts it needs: the game does not read it, so it is not offered
+		M.files[FOLDER .. "/models/odd/half_a_model.mdl"] = true
+		-- a material no pack calls AddClothes for, with its texture - and one whose texture is not there
+		M.files["materials/" .. CLOTH .. ".vmt"] = true
+		M.filedata["materials/" .. CLOTH .. ".vmt"] = '"VertexLitGeneric"\n{\n\t"$BaseTexture" "models/odd/found_cloth_color"\n}\n'
+		M.files["materials/models/odd/found_cloth_color.vtf"] = true
+		M.files[FOLDER .. "/materials/" .. CLOTH .. ".vmt"] = true
+		M.files[FOLDER .. "/materials/models/odd/found_cloth_color.vtf"] = true
+		M.files["materials/" .. LONELY .. ".vmt"] = true
+		M.filedata["materials/" .. LONELY .. ".vmt"] = '"VertexLitGeneric"\n{\n\t"$basetexture" "models/odd/nowhere"\n}\n'
+		M.files[FOLDER .. "/materials/" .. LONELY .. ".vmt"] = true
+		-- a note, and the gloves of the addon itself: neither of them is something to wear
+		M.files[FOLDER .. "/materials/readme.txt"] = true
+		M.files[FOLDER .. "/materials/zcity_csgo_gloves/icons/moto_1.png"] = true
+
+		local files, cut = ZCO.ScanAll(true)
+		check(istable(files), "the walk through the folder of the addon returns what lies in it")
+		eq(#files, 9, "every file of its materials/ and models/ is walked")
+		eq(cut, false, "... and the walk was not cut short by its budget")
+		local got = ZCO.ScanCounts()
+		eq(got.models, 2, "models in the folder of the addon")
+		eq(got.complete, 1, "... one of them with the parts a model needs")
+		eq(got.brokenModels, 1, "... and one without them")
+		eq(got.materials, 2, "materials in it")
+		eq(got.textures, 1, "textures")
+		eq(got.parts, 2, "parts of models")
+		eq(got.other, 1, "files that are no content at all")
+		eq(got.own, 1, "... and the gloves of the addon itself are counted apart")
+
+		local worn, clothed = ZCO.ScanWear()
+		eq(worn, 1, "one model no Lua names can be worn")
+		eq(clothed, 2, "... and two materials no Lua names")
+		local names = {}
+		for name in pairs(ZCO.Scanned.Clothes[1]) do names[#names + 1] = name end
+		table.sort(names)
+		eq(table.concat(names, ","), CLOTH .. "," .. LONELY,
+			"the materials that can be worn, and nothing of the gloves among them")
+		local entry = ZCO.Models(1)[MODEL]
+		check(istable(entry) and entry.mdl == MODEL, "the model that was found is in the list of the models")
+		check(entry and entry.found == true, "... marked as one the addon found itself")
+		check(ZCO.Models(2)[MODEL] ~= nil, "... in both sexes: the menu lists the models of the sex that is chosen")
+		eq(ZCO.CatalogModels(1)[MODEL], nil, "... and it is not in the catalog")
+		eq(hg.Appearance.PlayerModels[1][MODEL], nil, "... so it is not pushed into the tables of the game either")
+		eq(ZCO.Clothes(1)[CLOTH], CLOTH, "a material that was found can be worn")
+		eq(ZCO.CatalogClothes(1)[CLOTH], nil, "... and is not in the catalog")
+		check(ZCO.IsScanned("model", MODEL) and ZCO.IsScanned("clothes", CLOTH), "... and both say what they are")
+		check(not ZCO.IsScanned("model", "Male 01"), "a model the Lua named is not one that was found")
+		for _try = 1, 10 do
+			local random = ZCO.Random(1)
+			check(random.AModel ~= MODEL and random.AClothes.main ~= CLOTH,
+				"a random look is made of the catalog alone, not of what the walk found")
+		end
+		check(ZCO.AnyModel() ~= MODEL, "... and so is the model a player who came with none is given")
+
+		-- the slots of a model nobody described are read out of its own file
+		local slots = ZCO.GuessSlots(MODEL)
+		check(istable(slots), "the slots of a model no Lua described come out of its own file")
+		eq(slots and slots.main, "models/odd/players_sheet", "... the sheet")
+		eq(slots and slots.pants, "models/odd/found_pants", "... the trousers")
+		eq(slots and slots.boots, "models/odd/found_boots", "... and the boots")
+		eq(ZCO.GuessSlots(MODEL), slots, "(the file of the model is not read twice)")
+		eq(ZCO.GuessSlots("models/odd/half_a_model.mdl"), nil, "a model whose file cannot be read has no slots")
+
+		-- what a material says about its texture
+		eq(ZCO.MaterialTexture(CLOTH), "models/odd/found_cloth_color",
+			"the texture a material names is read out of its .vmt, whatever the case of the key")
+		check(not ZCO.MaterialBroken(CLOTH), "... and that texture is there")
+		eq(ZCO.MaterialTexture(LONELY), "models/odd/nowhere", "a material whose texture is not there says so")
+		check(ZCO.MaterialBroken(LONELY), "... and is named as one that draws the ERROR texture")
+
+		-- worn on a player: the model is set, and the clothes go into the slot its file gave
+		local boss = M.newPlayer("Хозяин", oneEntry.mdl, { steamid64 = "76561198000000031", superadmin = true })
+		local look = { AModel = MODEL, AClothes = { main = CLOTH, pants = LONELY }, AAttachments = {},
+			ABodygroups = {}, AFacemap = "Default", AName = "", AColor = Color(200, 200, 200) }
+		local ok, why = ZCO.Validate(look)
+		check(ok, "a look of what was found is one the server accepts: " .. tostring(why))
+		local clean = ZCO.Clean(look)
+		eq(clean.AModel, MODEL, "... it keeps the model that was found")
+		eq(clean.AClothes.main, CLOTH, "... and the material that was found")
+		ZCO.Apply(boss, clean)
+		eq(boss:GetModel(), MODEL, "the model that was found is put on the player")
+		eq(boss:GetSubMaterial(0), CLOTH, "... the clothes go into the slot the file of the model gave")
+		eq(boss:GetSubMaterial(1), LONELY, "... and the trousers into theirs")
+		eq(ZCO.Slots(boss).main, 0, "the slots of a player in a model nobody described come from its file")
+
+		M.log = {}
+		M.command("zco_status", boss)
+		local said = table.concat(M.log, "\n")
+		check(string.find(said, "Без Lua найдено в папке аддона: моделей 1, материалов 2", 1, true) ~= nil,
+			"zco_status says what was found without Lua: " .. said:sub(1, 400))
+
+		M.log = {}
+		M.command("zco_scan", mine)
+		check(string.find(table.concat(M.log, "\n"), "Только администрация", 1, true) ~= nil,
+			"zco_scan is a command of the owner: another player is told so")
+		M.log = {}
+		M.command("zco_scan", boss)
+		said = table.concat(M.log, "\n")
+		check(string.find(said, "Контент без Lua", 1, true) ~= nil, "zco_scan says what it walked through")
+		check(string.find(said, "моделей 1, материалов 2", 1, true) ~= nil, "... and what can be worn")
+		check(string.find(said, "моделей без частей", 1, true) ~= nil, "... and a model the game cannot read")
+		check(string.find(said, "у 1 нет текстуры рядом", 1, true) ~= nil, "... and a material with no texture")
+		M.log = {}
+		M.command("zco_scan_list", boss)
+		said = table.concat(M.log, "\n")
+		check(string.find(said, MODEL .. "  —  модель (надеть можно)", 1, true) ~= nil,
+			"zco_scan_list names every file: " .. said:sub(1, 600))
+		check(string.find(said, "слоты из файла: boots → models/odd/found_boots", 1, true) ~= nil,
+			"... and the slots it read out of the model")
+		check(string.find(said, "$basetexture models/odd/nowhere — ТЕКСТУРЫ НЕТ", 1, true) ~= nil,
+			"... and a material whose texture is not there")
+		check(string.find(said, "models/odd/half_a_model.mdl  —  модель неполная", 1, true) ~= nil,
+			"... and a model without its parts")
+		check(string.find(said, "readme.txt  —  прочий файл (не контент", 1, true) ~= nil,
+			"... and a file that is no content at all")
+		check(string.find(said, "zcity_csgo_gloves", 1, true) == nil,
+			"... without the gloves of the addon itself: they are not clothes")
+
+		-- switched off: what was found is taken back out of the menu, and out of a look that wears it
+		M.setConVar("zco_scan_content", "0")
+		ZCO.ScanPass(true)
+		eq(ZCO.Scanned, nil, "zco_scan_content 0: what was found is taken back")
+		eq(ZCO.Models(1)[MODEL], nil, "... the model is not offered any more")
+		eq(ZCO.Clothes(1)[CLOTH], nil, "... and the material is not either")
+		local back = ZCO.Clean(look)
+		check(back.AClothes.main ~= CLOTH, "... so a look that wears it is cleaned back to the catalog")
+		M.log = {}
+		M.command("zco_scan", boss)
+		check(string.find(table.concat(M.log, "\n"), "выключен", 1, true) ~= nil, "... and zco_scan says so")
+		M.setConVar("zco_scan_content", "1")
+		ZCO.ScanPass(true)
+		check(ZCO.Models(1)[MODEL] ~= nil and ZCO.Clothes(1)[CLOTH] ~= nil,
+			"... and switching it back on finds everything again")
+
+		-- a copy from the Workshop: the game does not list the folders of an archive it mounted
+		ZCGloves.AddonFolder = false
+		ZCO.ScanPass(true)
+		eq(ZCO.ScanAll(true), nil, "an addon mounted as an archive has no folder to walk through")
+		M.log = {}
+		M.command("zco_scan", boss)
+		check(string.find(table.concat(M.log, "\n"), "смонтирован архивом", 1, true) ~= nil,
+			"... and zco_scan says where the list comes from then")
+		ZCGloves.AddonFolder = FOLDER
+		ZCO.ScanPass(true)
+
+		M.files[FOLDER .. "/lua/autorun/zcity_csgo_gloves.lua"] = nil
+		for _, path in ipairs({
+			FOLDER .. "/models/odd/found_body.mdl", FOLDER .. "/models/odd/found_body.vvd",
+			FOLDER .. "/models/odd/found_body.dx90.vtx", FOLDER .. "/models/odd/half_a_model.mdl",
+			FOLDER .. "/materials/" .. CLOTH .. ".vmt", FOLDER .. "/materials/models/odd/found_cloth_color.vtf",
+			FOLDER .. "/materials/" .. LONELY .. ".vmt", FOLDER .. "/materials/readme.txt",
+			FOLDER .. "/materials/zcity_csgo_gloves/icons/moto_1.png",
+			"materials/" .. CLOTH .. ".vmt", "materials/models/odd/found_cloth_color.vtf",
+			"materials/" .. LONELY .. ".vmt", "materials/models/odd/players_sheet.vmt",
+			"materials/models/odd/found_pants.vmt", "materials/models/odd/found_boots.vmt",
+		}) do
+			M.files[path] = nil
+		end
+		M.filedata["materials/" .. CLOTH .. ".vmt"], M.filedata["materials/" .. LONELY .. ".vmt"] = nil, nil
+		M.files[MODEL], M.filedata[MODEL], M.models[MODEL] = nil, nil, nil
+		ZCGloves.AddonFolder, ZCO.ScanFiles, ZCO.Scanned, ZCO.ScanTried = nil, nil, nil, false
+		ZCO.ScanGuess, ZCO.ScanTexture, ZCO.ScanFolder = {}, {}, nil
+	end
+
 	-- ------------------------------------------------------------------ the client
 	local C = dofile(testdir .. "/gmod_mock.lua")("client")
 	local Z = dofile(testdir .. "/zcity_mock.lua")(C)
@@ -721,6 +898,139 @@ return function(testdir, luaroot)
 		end
 		check(said, "zco_models_cl says how many models of the appearance this computer has")
 		check(missing, "... and names the ones it has not")
+	end
+
+	do -- the menu of what the addon found without Lua (own/cl_own_menu.lua, own/sh_scan.lua)
+		local FOLDER, MODEL = "addons/zcity_csgo_gloves", "models/odd/found_body.mdl"
+		local CLOTH, TROUSERS = "models/odd/found_cloth", "models/odd/found_pants_cloth"
+		ZCGloves.AddonFolder = FOLDER
+		C.files[FOLDER .. "/lua/autorun/zcity_csgo_gloves.lua"] = true
+		C.installModel(MODEL, { "players_sheet", "found_pants" }, { "models/odd" })
+		for _, ext in ipairs({ ".mdl", ".vvd", ".dx90.vtx" }) do
+			C.files[FOLDER .. "/models/odd/found_body" .. ext] = true
+		end
+		for _, name in ipairs({ "players_sheet", "found_pants" }) do
+			C.files["materials/models/odd/" .. name .. ".vmt"] = true
+		end
+		C.files["materials/" .. CLOTH .. ".vmt"] = true
+		C.files[FOLDER .. "/materials/" .. CLOTH .. ".vmt"] = true
+		C.files["materials/" .. TROUSERS .. ".vmt"] = true
+		C.files[FOLDER .. "/materials/" .. TROUSERS .. ".vmt"] = true
+		C.files[FOLDER .. "/materials/models/odd/found_cloth_color.vtf"] = true
+		ZCO.ScanPass(true)
+
+		local menu = ZCO.OpenMenu()
+		check(menu ~= nil, "the menu opens for the list of what was found")
+		local look = menu.zcoAppearance
+		local found = ZCO.Menu.Items("found", look)
+		check(#found >= 3, "the menu has the list of what the addon found without Lua: " .. #found)
+		local model, cloth, trousers, notes = nil, nil, nil, 0
+		for _, item in ipairs(found) do
+			if item.kind == "model" and item.value == MODEL then model = item end
+			if item.kind == "clothes" and item.value == CLOTH then cloth = item end
+			if item.kind == "clothes" and item.value == TROUSERS then trousers = item end
+			if item.kind == "info" then notes = notes + 1 end
+		end
+		check(model ~= nil, "... with the model that was found")
+		eq(model and model.title, "found_body · odd  — модель",
+			"... shown by the name of its file and the folder it lies in: " .. tostring(model and model.title))
+		check(cloth ~= nil, "... and with a material that was found")
+		eq(cloth and cloth.slot, "main", "... which goes into the sheet when the player clicks it")
+		eq(trousers and trousers.slot, "pants", "... while one whose path says trousers goes into the trousers")
+		check(notes >= 2, "... and it says what cannot be worn, and why: " .. notes)
+
+		-- a click wears them, and the preview puts the clothes where the file of the model says
+		ZCO.Menu.Choose(menu, "found", model, look)
+		eq(look.AModel, MODEL, "a click on a model that was found wears it")
+		eq(menu.zcoPreview.zcoModel, MODEL, "... and the preview shows it")
+		ZCO.Menu.Choose(menu, "found", cloth, look)
+		eq(look.AClothes.main, CLOTH, "a click on a material puts it into the slot its path asks for")
+		ZCO.Menu.Choose(menu, "found", trousers, look)
+		eq(look.AClothes.pants, TROUSERS, "... and the trousers into theirs")
+		local shown = menu.zcoPreview.Entity
+		check(shown ~= nil, "the preview holds the model")
+		eq(shown and shown:GetSubMaterial(0), CLOTH,
+			"... where the clothes are: the sheet is the slot the file of the model gave")
+		eq(shown and shown:GetSubMaterial(1), TROUSERS, "... and the trousers are in theirs")
+
+		-- a file that cannot be worn says why and changes nothing
+		local note = nil
+		for _, item in ipairs(found) do
+			if item.kind == "info" then note = item end
+		end
+		local before = look.AModel
+		ZCO.Menu.Choose(menu, "found", note, look)
+		eq(look.AModel, before, "a click on a file that cannot be worn changes nothing")
+
+		-- the same things are in the categories of their own, with a mark that says where they came from
+		local listed, marked = false, false
+		for _, item in ipairs(ZCO.Menu.Items("model", look)) do
+			if item.value == MODEL then
+				listed = true
+				marked = string.find(item.title, "без Lua", 1, true) ~= nil
+			end
+		end
+		check(listed, "the model that was found is in the category of the models as well")
+		check(marked, "... with a mark that says no Lua named it")
+		local inClothes = false
+		for _, item in ipairs(ZCO.Menu.Items("main", look)) do
+			if item.value == CLOTH then
+				inClothes = string.find(item.title, "без Lua", 1, true) ~= nil
+			end
+		end
+		check(inClothes, "... and the material is in the category of the clothes, with the same mark")
+
+		-- switched off, the list says so instead of offering what cannot be worn any more
+		C.setConVar("zco_scan_content", "0")
+		ZCO.ScanPass(true)
+		local off = ZCO.Menu.Items("found", look)
+		eq(#off, 1, "zco_scan_content 0: the list says the check is off")
+		check(off[1] and string.find(off[1].title, "zco_scan_content 0", 1, true) ~= nil,
+			"... and names the switch that takes it back")
+		local still = false
+		for _, item in ipairs(ZCO.Menu.Items("model", look)) do
+			if item.value == MODEL then still = true end
+		end
+		check(not still, "... so the model that was found is not offered any more")
+		C.setConVar("zco_scan_content", "1")
+		ZCO.ScanPass(true)
+		check(#ZCO.Menu.Items("found", look) >= 3, "... and switching it back on brings the list back")
+
+		-- a copy from the Workshop has no folder to walk through: the list says where it comes from
+		ZCGloves.AddonFolder = false
+		ZCO.ScanPass(true)
+		local archive = ZCO.Menu.Items("found", look)
+		eq(#archive, 1, "an addon mounted as an archive: the walk finds nothing to list")
+		check(archive[1] and string.find(archive[1].hint, "sh_found.lua", 1, true) ~= nil,
+			"... and the list names what the build writes instead")
+
+		-- ... and then it wears the models the build or sort_content.bat wrote into the addon: the
+		-- folders of an archive are not listed, but its files are there to be read
+		C.files["models/odd/found_body.vvd"] = true
+		C.files["models/odd/found_body.dx90.vtx"] = true
+		ZCGloves.FoundModels = { MODEL, "models/odd/half_a_model.mdl" }
+		ZCO.ScanPass(true)
+		check(ZCO.Models(1)[MODEL] ~= nil, "a model of that list is offered as a model")
+		eq(ZCO.Models(1)["models/odd/half_a_model.mdl"], nil,
+			"... and one whose parts are not there is not: the game draws it as an ERROR body")
+		archive = ZCO.Menu.Items("found", look)
+		eq(#archive, 2, "the list of an archive is the list the build wrote, and the note about it")
+		check(archive[1] and archive[1].kind == "model" and archive[1].value == MODEL,
+			"... with the model that can be worn")
+		ZCO.Menu.Choose(menu, "found", archive[1], look)
+		eq(look.AModel, MODEL, "... which a click wears")
+		M.log = {}
+		C.command("zco_scan_cl", C.localplayer)
+		local said = table.concat(C.log, "\n")
+		check(string.find(said, "смонтирован архивом", 1, true) ~= nil, "zco_scan says it is an archive")
+		check(string.find(said, "материалов 0, моделей 2", 1, true) ~= nil, "... and what the list holds")
+		check(string.find(said, "Моделей из этого списка можно надеть: 1", 1, true) ~= nil,
+			"... and how many of them can be worn: " .. said:sub(1, 400))
+		ZCGloves.FoundModels = nil
+		C.files["models/odd/found_body.vvd"], C.files["models/odd/found_body.dx90.vtx"] = nil, nil
+
+		ZCGloves.AddonFolder, ZCO.ScanFiles, ZCO.Scanned, ZCO.ScanTried = nil, nil, nil, false
+		ZCO.ScanGuess, ZCO.ScanTexture, ZCO.ScanFolder = {}, {}, nil
 	end
 
 	return checks, failures

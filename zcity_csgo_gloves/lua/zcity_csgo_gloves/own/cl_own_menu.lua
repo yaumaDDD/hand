@@ -28,7 +28,12 @@ ZCO.Categories = {
 	{ id = "name", title = "Имя" },
 	{ id = "color", title = "Цвет" },
 	{ id = "sets", title = "Наборы" },
+	{ id = "found", title = "Без Lua" },
 }
+
+-- the slot a material found in the folder of the addon is put into when the player clicks it, in
+-- the words of the menu (ZCO.SlotOfMaterial says which one its path asks for)
+local SLOT_TITLES = { main = "Одежда", pants = "Штаны", boots = "Обувь", hands = "Перчатки" }
 
 --- the sex the menu shows the things of: the one of the model that is chosen
 function ZCO.Menu.SexOf(appearance)
@@ -41,13 +46,18 @@ function ZCO.Menu.Items(category, appearance)
 	local sex = ZCO.Menu.SexOf(appearance)
 	local got = {}
 	if category == "model" then
+		local list = ZCO.Models(sex)
 		local names = {}
-		for name, entry in pairs(ZCO.Models(sex)) do
+		for name, entry in pairs(list) do
 			if type(entry) == "table" and entry.mdl then names[#names + 1] = name end
 		end
 		table.sort(names)
 		for _, name in ipairs(names) do
-			got[#got + 1] = { title = name, value = name, hint = ZCO.Models(sex)[name].mdl }
+			local entry = list[name]
+			-- a model the addon found in its own folder and no Lua names (own/sh_scan.lua): its name
+			-- is its path, so the button shows the name of the file and the folder it lies in
+			got[#got + 1] = { title = entry.found and (ZCO.ScanTitle(name) .. "  (без Lua)") or name,
+				value = name, hint = entry.mdl }
 		end
 	elseif category == "main" or category == "pants" or category == "boots" or category == "hands" then
 		local slot = category == "hands" and "hands" or category
@@ -62,9 +72,14 @@ function ZCO.Menu.Items(category, appearance)
 		table.sort(names, function(a, b) return a[1] < b[1] end)
 		for _, pair in ipairs(names) do
 			local description = (ZCO.Catalog.ClothesDesc or {})[pair[1]]
-			got[#got + 1] = { title = pair[1], value = pair[1], material = pair[2], slot = slot,
-				hint = description and description.desc or nil }
+			-- a material the addon found in its own materials/ and no Lua names: its name is its path
+			local found = ZCO.IsScanned and ZCO.IsScanned("clothes", pair[1]) or false
+			got[#got + 1] = { title = found and (ZCO.ScanTitle(pair[2]) .. "  (без Lua)") or pair[1],
+				value = pair[1], material = pair[2], slot = slot,
+				hint = description and description.desc or (found and pair[2] or nil) }
 		end
+	elseif category == "found" then
+		return ZCO.Menu.ScanItems()
 	elseif category == "face" then
 		local _name, entry = ZCO.ModelByName(appearance.AModel)
 		local model = (entry and entry.mdl) or (type(appearance.AModel) == "string" and appearance.AModel) or ""
@@ -133,6 +148,127 @@ function ZCO.Menu.Items(category, appearance)
 	return got
 end
 
+--- the list of everything the addon found in its own folder and no Lua names: what can be worn
+--- (a model, a material) and what cannot (a texture, a model without its parts, a file that is no
+--- content at all) - with the reason, so that the owner sees what his addon carries
+function ZCO.Menu.ScanItems()
+	local got = {}
+	if not (ZCO.cvScan and ZCO.cvScan:GetBool()) then
+		got[#got + 1] = { title = "Проверка выключена (zco_scan_content 0)", info = true, kind = "info",
+			hint = "В меню только то, что называет Lua паков и каталог аддона. С zco_scan_content 1 аддон"
+				.. " проходится по своим materials/ и models/ и предлагает то, что не назвал никто." }
+		return got
+	end
+	local files = ZCO.ScanAll and ZCO.ScanAll() or nil
+	if not istable(files) then
+		-- a copy from the Workshop: the game does not list the folders of an archive it mounted, so
+		-- what the build or sort_content.bat wrote into the addon is what this list has
+		local shipped = istable(ZCGloves.Found) and #ZCGloves.Found or 0
+		local names = {}
+		for path in pairs((ZCO.Scanned or {}).Models and ZCO.Scanned.Models[ZCO.MALE] or {}) do
+			names[#names + 1] = path
+		end
+		table.sort(names)
+		for _, path in ipairs(names) do
+			got[#got + 1] = { title = ZCO.ScanTitle(path) .. "  — модель", value = path, kind = "model",
+				hint = path .. "  (из списка, который написала сборка или sort_content.bat)" }
+		end
+		got[#got + 1] = { title = "Папка аддона не перечисляется", info = true, kind = "info",
+			hint = "Копия из Мастерской смонтирована архивом: игра не перечисляет его папки, поэтому в игре "
+				.. "ничего не находится. Список даёт то, что написала сборка или sort_content.bat "
+				.. "(sh_found.lua): материалов " .. shipped .. ", моделей " .. #names .. "." }
+		return got
+	end
+	local examples = {}
+	local function example(kind, path)
+		examples[kind] = examples[kind] or {}
+		local list = examples[kind]
+		if #list < 3 then list[#list + 1] = path end
+	end
+	local models, clothes, textures, broken, parts, other, own = 0, 0, 0, 0, 0, 0, 0
+	for _, one in ipairs(files) do
+		if one.own then
+			own = own + 1
+		elseif one.kind == "model" then
+			if not one.complete then
+				broken = broken + 1
+				example("broken", one.path)
+			elseif not one.named and not one.wear then
+				-- a model the walk can offer: it is in ZCO.Scanned already (ScanWear put it there)
+				if ZCO.IsScanned and ZCO.IsScanned("model", one.path) then
+					if models < ZCO.SCAN_MAX_MENU then
+						got[#got + 1] = { title = ZCO.ScanTitle(one.path) .. "  — модель", value = one.path,
+							kind = "model", hint = one.path .. (ZCO.ScanSex(one.path) == ZCO.FEMALE
+								and "  (женская: так говорит путь)" or "  (мужская: так говорит путь)") }
+					end
+					models = models + 1
+				end
+			end
+		elseif one.kind == "material" then
+			if one.wear then
+				if clothes < ZCO.SCAN_MAX_MENU then
+					local slot = ZCO.SlotOfMaterial(one.path)
+					local title = ZCO.ScanTitle(one.path) .. "  — материал → " .. (SLOT_TITLES[slot] or slot)
+					if one.texture ~= nil and ZCO.MaterialBroken(one.wear) then
+						title = title .. "  (нет текстуры)"
+					end
+					got[#got + 1] = { title = title, value = one.wear, kind = "clothes", slot = slot,
+						material = one.wear, hint = one.path }
+				end
+				clothes = clothes + 1
+			end
+		elseif one.kind == "texture" then
+			textures = textures + 1
+			example("texture", one.path)
+		elseif one.kind == "part" then
+			parts = parts + 1
+			example("part", one.path)
+		else
+			other = other + 1
+			example("other", one.path)
+		end
+	end
+	if models > ZCO.SCAN_MAX_MENU or clothes > ZCO.SCAN_MAX_MENU then
+		got[#got + 1] = { title = ("... и ещё: моделей %d, материалов %d"):format(models - ZCO.SCAN_MAX_MENU,
+			clothes - ZCO.SCAN_MAX_MENU), info = true, kind = "info",
+			hint = "Весь список печатает zco_scan_list_cl в консоли." }
+	end
+	local function note(title, kind, why)
+		local list = examples[kind] or {}
+		got[#got + 1] = { title = title, info = true, kind = "info",
+			hint = why .. (#list > 0 and (" Например: " .. table.concat(list, ", ") .. ".") or "") }
+	end
+	if broken > 0 then
+		note(("Моделей без частей: %d"):format(broken), "broken",
+			"Рядом с .mdl нет .vvd или .vtx - игра такую модель не прочитает, и надеть её нельзя. ")
+	end
+	if textures > 0 then
+		note(("Текстур: %d"):format(textures), "texture",
+			"Текстура сама не надевается: её читает материал через $basetexture. ")
+	end
+	if parts > 0 then
+		note(("Частей моделей: %d"):format(parts), "part",
+			".vvd, .vtx и .phy читаются вместе со своей моделью, отдельно от неё их не надеть. ")
+	end
+	if other > 0 then
+		note(("Прочих файлов: %d"):format(other), "other",
+			"Не материал, не модель и не текстура: игра контентом их не считает. ")
+	end
+	if own > 0 then
+		note(("Своих файлов аддона: %d"):format(own), "own",
+			"Перчатки, руки внутри них и их значки: их пути зашиты в их модели, это не одежда. ")
+	end
+	if ZCO.ScanCut then
+		got[#got + 1] = { title = "Обход прерван бюджетом", info = true, kind = "info", hint = "Папок или файлов "
+			.. "больше, чем обход готов пройти за раз (zco_scan печатает сколько). Список неполный." }
+	end
+	got[#got + 1] = { title = "zco_scan_content 0 убирает всё это из меню", info = true, kind = "info",
+		hint = "Категория «Без Lua» и пометки «(без Lua)» - то, что аддон нашёл в своей папке сам: "
+			.. "модели в models/ и материалы в materials/, которых не называет ничей Lua. Слоты модели, "
+			.. "которую никто не описал, читаются из её файла (.mdl)." }
+	return got
+end
+
 --- what is chosen right now in a category (so that the button of it is lit)
 function ZCO.Menu.Chosen(category, appearance)
 	if category == "model" then return appearance.AModel end
@@ -140,6 +276,9 @@ function ZCO.Menu.Chosen(category, appearance)
 		return appearance.AClothes and appearance.AClothes[category == "hands" and "hands" or category]
 	end
 	if category == "face" then return appearance.AFacemap end
+	-- (the list of what was found lights nothing up: a model or a material of it is worn through the
+	-- categories of its own, and there it is lit)
+	if category == "found" then return nil end
 	if category == "attach" then return appearance.AAttachments end
 	for _, known in ipairs(ZCO.GROUPS) do
 		if known == category then return appearance.ABodygroups and appearance.ABodygroups[category] end
@@ -168,10 +307,11 @@ function ZCO.Menu.Preview(panel, appearance)
 	if not IsValid(ent) then return end
 	local sex = (entry and entry.sex and ZCO.FEMALE) or (name and ZCO.Menu.SexOf(appearance)) or ZCO.MALE
 	local clothes = ZCO.Clothes(sex)
-	local slots = entry and entry.submatSlots or {}
 	ent:SetSubMaterial()
+	-- the slots of the catalog, or - for a model no Lua described - the ones its own file gives
+	local slots = ZCO.Slots(ent)
 	for _, slot in ipairs(ZCO.SLOTS) do
-		local index = ZCO.SlotOf(ent, slots[slot])
+		local index = slots[slot]
 		local worn = appearance.AClothes and appearance.AClothes[slot]
 		local material = worn and (clothes[worn] or ZCO.Clothes(ZCO.MALE)[worn] or ZCO.Clothes(ZCO.FEMALE)[worn])
 		if index and material and material ~= "" then ent:SetSubMaterial(index, material) end
@@ -216,6 +356,7 @@ local function itemButton(parent, item, chosen, category, appearance, frame)
 	button.zcoTitle = item.title
 	button.zcoHint = item.hint
 	button.zcoChosen = chosen
+	button.zcoInfo = item.info
 	if item.material and item.material ~= "" then
 		button.zcoMaterial = Material(item.material)
 	end
@@ -230,8 +371,8 @@ local function itemButton(parent, item, chosen, category, appearance, frame)
 			surface.DrawTexturedRect(6, 5, tall - 10, tall - 10)
 			left = tall + 4
 		end
-		draw.SimpleText(self.zcoTitle, "ZCOItem", left, tall / 2, Color(235, 238, 242), TEXT_ALIGN_LEFT,
-			TEXT_ALIGN_CENTER)
+		draw.SimpleText(self.zcoTitle, "ZCOItem", left, tall / 2,
+			self.zcoInfo and Color(196, 214, 236) or Color(235, 238, 242), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
 		if self.zcoChosen then
 			draw.SimpleText("выбрано", "ZCOSmall", wide - 8, tall / 2, Color(210, 230, 255), TEXT_ALIGN_RIGHT,
 				TEXT_ALIGN_CENTER)
@@ -246,6 +387,23 @@ end
 
 --- a click on an item: the look changes, the preview and the list are drawn again
 function ZCO.Menu.Choose(frame, category, item, appearance)
+	if category == "found" then
+		-- a model is worn as a model, a material goes into the slot its path asks for, and a file
+		-- that cannot be worn says why instead of doing nothing at all
+		if item.kind == "model" then
+			ZCO.Menu.Choose(frame, "model", item, appearance)
+			return
+		end
+		if item.kind == "clothes" then
+			ZCO.Menu.Choose(frame, item.slot or "main", item, appearance)
+			return
+		end
+		if chat and chat.AddText then
+			chat.AddText(Color(255, 205, 130), "[Внешность] ", Color(230, 230, 230),
+				tostring(item.hint or "Это не надевается."))
+		end
+		return
+	end
 	if category == "model" then
 		appearance.AModel = item.value
 		-- another model: the clothes and the face of the old one may not be there in the new one
@@ -554,6 +712,9 @@ end
 function ZCO.OpenMenu()
 	if not LocalPlayer or not IsValid(LocalPlayer()) then return end
 	ZCO.Install()
+	-- (a Lua refresh, a check that was switched on after the game had started: the walk is tried
+	-- again before the list of what was found is drawn)
+	if ZCO.ScanPass and not ZCO.ScanTried then pcall(ZCO.ScanPass) end
 	if IsValid(ZCO.MenuFrame) then
 		ZCO.MenuFrame:MoveToFront()
 		return ZCO.MenuFrame

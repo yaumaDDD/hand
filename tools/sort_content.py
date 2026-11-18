@@ -1438,6 +1438,26 @@ def found_materials(addon, taken):
     return sorted(found)
 
 
+def found_models(addon, taken):
+    """the models below models/ that are not in taken (paths in the addon) and are not the addon's
+    own: game paths, sorted. A model the game cannot read - no .vvd or no mesh beside its .mdl - is
+    not listed: it draws as an ERROR body, and there is nothing to put an appearance on."""
+    found = []
+    for rel, full in sorted(walk_files(os.path.join(addon, 'models'))):
+        rel = 'models/' + rel
+        if not rel.lower().endswith('.mdl') or L.is_own_content(rel) or rel != rel.lower():
+            continue
+        if rel in taken:
+            continue
+        base = full[:-len('.mdl')]
+        if not os.path.isfile(long_path(base + '.vvd')):
+            continue
+        if not any(os.path.isfile(long_path(base + ext)) for ext in ('.dx90.vtx', '.vtx', '.sw.vtx')):
+            continue
+        found.append(rel)
+    return sorted(found)
+
+
 def read_lua_string(line, at):
     """The value of a Lua string literal as lua_string writes it, from the quote at `at`:
     (the text in latin-1, where the literal ends) or (None, at) when there is no literal there."""
@@ -1521,19 +1541,32 @@ def write_baked(addon, entries):
     return True
 
 
-def write_found(addon, found, tool=u'sort_content.bat'):
+def write_found(addon, found, tool=u'sort_content.bat', models=()):
     """writes (or removes) the list for the game; returns True when the file was changed. `tool` is
-    who writes it: sort_content.bat on the computer of the owner, build_addon.py in the build"""
+    who writes it: sort_content.bat on the computer of the owner, build_addon.py in the build.
+    `models` are the models below models/ that no Lua names: a copy of the addon from the Workshop is
+    mounted as an archive whose folders the game does not list, so the addon cannot find them itself
+    (own/sh_scan.lua) and wears what this file gives it."""
     path = os.path.join(addon, FOUND_LUA.replace('/', os.sep))
-    if not found:
+    if not found and not models:
         if os.path.isfile(path):
             os.remove(path)
             return True
         return False
-    text = (u'-- Written by %s: materials that lie in this addon and that no Lua and no model names.\n' % tool
-            + u'-- The game puts them into the appearance menu where they belong (sh_auto.lua; zcg_found_content 0 = not).\n'
-            u'-- Do not edit: the next run writes the file anew. The server needs the same file.\n'
-            u'ZCGloves.Found = {\n' + u''.join(u'\t%s,\n' % lua_string(name) for name in found) + u'}\n').encode('utf-8')
+    text = u'-- Written by %s: what lies in this addon and no Lua and no model names.\n' % tool
+    if found:
+        text += (u'-- The game puts these materials into the appearance menu where they belong\n'
+                 u'-- (sh_auto.lua; zcg_found_content 0 = not).\n'
+                 u'-- Do not edit: the next run writes the file anew. The server needs the same file.\n'
+                 u'ZCGloves.Found = {\n'
+                 + u''.join(u'\t%s,\n' % lua_string(name) for name in found) + u'}\n')
+    if models:
+        text += (u'\n-- The models of this addon that no Lua names and the game can read (.vvd and a mesh\n'
+                 u'-- beside the .mdl): the menu of this addon offers them as models, and reads the slots\n'
+                 u'-- their clothes go into out of their own files (own/sh_scan.lua; zco_scan_content 0 = not).\n'
+                 u'ZCGloves.FoundModels = {\n'
+                 + u''.join(u'\t%s,\n' % lua_string(name) for name in models) + u'}\n')
+    text = text.encode('utf-8')
     try:
         with open(path, 'rb') as f:
             if f.read() == text:
@@ -1870,16 +1903,22 @@ def run(args, switched=None, filled=None):
                     if there:
                         taken.add(there)
                 loose = found_materials(addon, taken)
+                loose_models = found_models(addon, taken)
                 try:
-                    write_found(addon, loose)
+                    write_found(addon, loose, models=loose_models)
                 except (OSError, IOError) as err:
                     say(u'ВНИМАНИЕ: не удалось записать %s: %s (закройте игру и запустите ещё раз).' % (FOUND_LUA, err))
-                    loose = []
+                    loose, loose_models = [], []
                 if loose:
                     say(u'Контент без Lua: материалов, которых не называет ни один Lua и ни одна модель, — %d.' % len(loose))
                     say(u'  Они записаны в %s: игра сама добавит в меню внешности те, место которых' % FOUND_LUA)
                     say(u'  понятно, — лица (…_facemap…) к лицам их модели, одежду к одежде. Сколько добавлено и что нет —')
                     say(u'  покажут в игре zcg_content и zcg_found_list. Этот файл нужен и на сервере (копируйте папку целиком).')
+                if loose_models:
+                    say(u'Модели без Lua: моделей в models/, которых не называет ни один Lua и которые игра может')
+                    say(u'  прочитать (.vvd и меш рядом с .mdl), — %d. Они записаны в %s: меню внешности этого' % (len(loose_models), FOUND_LUA))
+                    say(u'  аддона предложит их как модели, а слоты, в которые уходит одежда, прочитает из их же файлов.')
+                    say(u'  В игре их покажет zco_scan, наденет игрок сам (zco_menu, категория «Без Lua»).')
             baked = read_bound_entries(addon)
             try:
                 write_baked(addon, baked)

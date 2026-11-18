@@ -471,6 +471,12 @@ concommand.Add("zco_status", function(ply)
 		:format(ZCO.Name, ZCO.Version, got.models, got.clothes, got.faces, got.bodygroups, got.accessories, got.names,
 			ZCO.MadeTables and "созданы аддоном" or "мод внешности на месте",
 			ZCO.AccessForAll:GetBool() and "всё всем" or "админам и списку zco_access_steam"))
+	-- what the addon found in its own folder and no Lua names (own/sh_scan.lua)
+	if got.foundModels > 0 or got.foundClothes > 0 then
+		say(ply, ("Без Lua найдено в папке аддона: моделей %d, материалов %d — они в меню (zco_menu), в категории")
+			:format(got.foundModels, got.foundClothes))
+		say(ply, "«Без Lua» и в своих категориях с пометкой; весь список — zco_scan и zco_scan_list.")
+	end
 	if IsValid(ply) and ply:IsPlayer() then
 		local files = 0
 		for _name in ipairs(file.Find(ZCO.Directory .. "*", "DATA")) do files = files + 1 end

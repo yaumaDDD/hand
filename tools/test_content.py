@@ -2064,12 +2064,19 @@ def test_the_build_writes_the_found_list(tmp):
                               ('zcity_csgo_gloves/icons/own', 'zcity_csgo_gloves/icons/own')):
             z.writestr('pack/materials/%s.vmt' % name, vmt(texture).encode('utf-8'))
             z.writestr('pack/materials/%s.vtf' % texture, b'a texture')
+        # a model no Lua names, with the parts it needs - and one without them, and the gloves
+        for name, parts in (('models/odd/found_body', ('.mdl', '.vvd', '.dx90.vtx')),
+                            ('models/odd/half_a_model', ('.mdl',)),
+                            ('models/zcity_csgo_gloves/v_glove_slick', ('.mdl', '.vvd', '.dx90.vtx'))):
+            for ext in parts:
+                z.writestr('pack/%s%s' % (name, ext),
+                           model(['models/odd/'], ['players_sheet'], name + ext) if ext == '.mdl' else b'a part')
     out = os.path.join(tmp, 'built found')
     real = build_addon.HERE
     build_addon.HERE = repo
     try:
         _sources, content, named, ran = build_addon.step_dropins(None, os.path.join(tmp, 'unpacked found'), out)
-        listed, wrote = build_addon.step_found(out, content, named, ran)
+        listed, wrote, listed_models = build_addon.step_found(out, content, named, ran)
     finally:
         build_addon.HERE = real
     path = os.path.join(out, build_addon.FOUND_LUA.replace('/', os.sep))
@@ -2079,11 +2086,21 @@ def test_the_build_writes_the_found_list(tmp):
           'a material no Lua and no model names is on it: %s' % text[-200:])
     check('models/gate/named' not in text, '... and one the Lua of the pack names is not')
     check('zcity_csgo_gloves/icons/own' not in text, '... nor a material of the addon itself')
-    check(listed == 1, 'the build says how many are listed: %d' % listed)
+    check(listed == 1, 'the build says how many materials are listed: %d' % listed)
     check('build_addon.py' in text, 'and the file says who wrote it')
-    check(build_addon.step_found(out, content, named, ran) == (1, False), 'a second build writes the same file')
+    check(build_addon.step_found(out, content, named, ran) == (1, False, 1), 'a second build writes the same file')
     check(u'ZCGloves.Found = {' in text and text.rstrip().endswith('}'),
           'the game reads it as the table it is: %s' % text[:120])
+    # the models no Lua names are listed for the game as well: a copy of the addon from the Workshop
+    # is mounted as an archive whose folders the game does not list, so there the addon cannot walk
+    # its own models/ and wears what this file gives it (own/sh_scan.lua)
+    check(listed_models == 1, 'the build says how many models are listed: %d' % listed_models)
+    check(u'ZCGloves.FoundModels = {' in text and '"models/odd/found_body.mdl",' in text,
+          'a model no Lua names and the game can read is on it: %s' % text[-260:])
+    check('models/odd/half_a_model.mdl' not in text,
+          '... and one without the parts it needs is not: the game draws it as an ERROR body')
+    check('models/zcity_csgo_gloves/v_glove_slick.mdl' not in text,
+          '... nor a model of the addon itself: the gloves are not clothes')
 
 
 def test_versions_of_a_pack(tmp):
@@ -2844,6 +2861,11 @@ def test_found(tmp):
         'materials/models/hat/empty.vmt': 'junk',
         'materials/zcity_csgo_gloves/own.vmt': material('own'),
         'models/hat/hat.mdl': model(['models/hat/'], ['skin'], 'hat/hat.mdl'),
+        'models/hat/hat.vvd': b'vvd', 'models/hat/hat.dx90.vtx': b'vtx',
+        'models/hat/half.mdl': model(['models/hat/'], ['skin'], 'hat/half.mdl'),
+        'models/zcity_csgo_gloves/v_glove_slick.mdl': model(['models/'], ['skin'], 'glove.mdl'),
+        'models/zcity_csgo_gloves/v_glove_slick.vvd': b'vvd',
+        'models/zcity_csgo_gloves/v_glove_slick.dx90.vtx': b'vtx',
         'materials/models/faces/van_facemap_new.vmt': material('models/faces/van_facemap_new'),
     }
     for rel, data in files.items():
@@ -2852,13 +2874,22 @@ def test_found(tmp):
     got = sort_content.found_materials(root, taken)
     check(got == ['models/faces/van_facemap_new', 'models/gate/extra'],
           'the materials nobody names, once each; none that is the same file as a named one, none of the addon itself: %s' % got)
+    check(sort_content.found_models(root, taken | set(['models/hat/hat.mdl'])) == [],
+          'a model the Lua names is not one nobody names')
+    check(sort_content.found_models(root, taken) == ['models/hat/hat.mdl'],
+          'the models nobody names: the one the game can read, without the one that has no parts '
+          'and without the gloves of the addon itself: %s' % sort_content.found_models(root, taken))
     code, said = sort('--addon', root, '--no-game', found=True)
     path = os.path.join(root, sort_content.FOUND_LUA)
     text = build_addon.read_bytes(path).decode('utf-8') if os.path.isfile(path) else ''
     check(code == 0 and '"models/faces/van_facemap_new",' in text and '"models/gate/extra",' in text and 'models/gate/epl' not in text
-          and 'models/hat/skin' not in text and text.count('\t"') == 2 and 'ZCGloves.Found = {' in text,
-          'sort_content.py writes them into the Lua file for the game - without what the Lua or a model names: %s' % text[-200:])
-    check(u'Контент без Lua' in said and u'— 2.' in said and said.rstrip().splitlines()[-1].startswith(u'Готово'), 'and says so')
+          and 'models/hat/skin' not in text and text.count('\t"') == 3 and 'ZCGloves.Found = {' in text
+          and 'ZCGloves.FoundModels = {' in text and '"models/hat/hat.mdl",' in text and 'models/hat/half.mdl' not in text
+          and 'v_glove_slick' not in text,
+          'sort_content.py writes them into the Lua file for the game - without what the Lua or a model names, '
+          'and the models nobody names with them: %s' % text[-260:])
+    check(u'Контент без Lua' in said and u'— 2.' in said and u'Модели без Lua' in said and u'— 1.' in said
+          and said.rstrip().splitlines()[-1].startswith(u'Готово'), 'and says so')
     stamp = os.path.getmtime(path)
     code, said2 = sort('--addon', root, '--no-game', found=True)
     check(code == 0 and os.path.getmtime(path) == stamp and u'изменён' not in said2 and said2.count(u'ВНИМАНИЕ') == said.count(u'ВНИМАНИЕ'),
@@ -2867,7 +2898,14 @@ def test_found(tmp):
     os.remove(os.path.join(root, 'materials/models/gate/extra (1).vmt'))
     os.remove(os.path.join(root, 'materials/models/faces/van_facemap_new.vmt'))
     code, said = sort('--addon', root, '--no-game', found=True)
-    check(code == 0 and not os.path.isfile(path) and u'Контент без Lua' not in said, 'with nothing left to list the file goes away')
+    text = build_addon.read_bytes(path).decode('utf-8') if os.path.isfile(path) else ''
+    check(code == 0 and u'Контент без Lua' not in said and u'Модели без Lua' in said
+          and 'ZCGloves.Found = {' not in text and '"models/hat/hat.mdl",' in text,
+          'with no material left to list the file keeps the models only: %s' % text[-200:])
+    os.remove(os.path.join(root, 'models/hat/hat.vvd'))
+    code, said = sort('--addon', root, '--no-game', found=True)
+    check(code == 0 and not os.path.isfile(path) and u'Модели без Lua' not in said,
+          '... and with nothing left to list at all the file goes away')
 
 
 def test_cleaning(tmp):

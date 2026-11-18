@@ -5,7 +5,7 @@
 if SERVER then AddCSLuaFile() end
 
 ZCGloves = ZCGloves or {}
-ZCGloves.Version = "2.21.0"
+ZCGloves.Version = "2.22.0"
 
 local DIR = "zcity_csgo_gloves/"
 
@@ -73,6 +73,9 @@ shared("sh_merge.lua")
 -- Mod: what the gamemode of Z-City calls by name is defined by this addon as well.
 if file.Exists(DIR .. "own/sh_catalog.lua", "LUA") then shared("own/sh_catalog.lua") end
 shared("own/sh_own.lua")
+-- (the content of the addon no Lua names, found by walking its own materials/ and models/: a model
+-- or a material somebody threw into the addon is offered by the menu of this addon as well)
+shared("own/sh_scan.lua")
 
 server("sv_core.lua")
 server("own/sv_own.lua")
