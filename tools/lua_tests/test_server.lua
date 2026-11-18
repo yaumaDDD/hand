@@ -41,8 +41,12 @@ return function(testdir, luaroot)
 	eq(ZCGloves.LoadErrors, nil, "every file of the addon loaded: " .. tostring(ZCGloves.LoadErrors and ZCGloves.LoadErrors[1] or ""))
 	eq(#ZCG.Variants, 81, "number of gloves")
 	eq(#ZCG.Families, 11, "number of glove families")
-	eq(ZCG.Ready, nil, "not registered while Z-City is missing")
-	eq(#M.csfiles, 10, "files sent to clients")
+	eq(ZCG.Ready, nil, "not registered at the moment it loads")
+	-- the own appearance system of the addon (lua/zcity_csgo_gloves/own/) sends its files too:
+	-- the catalog, the shared engine, the render, the files of the client and its menu
+	eq(#M.csfiles, 15, "files sent to clients")
+	local ownHands = table.Count(hg.Appearance.Bodygroups.HANDS[1])
+	check(ownHands >= 8, "the hands of the addon's own catalog are in the menu tables: " .. ownHands)
 	eq(#util.precached, 13, "precached models")
 	eq(#resource.files, 0, "nothing in FastDL by default")
 	eq(#resource.workshop, 0, "no workshop download by default")
@@ -76,17 +80,21 @@ return function(testdir, luaroot)
 	end
 
 	M.advance(3)
-	eq(ZCG.Ready, nil, "still waiting for Z-City")
+	-- the addon no longer waits for the Appearance Mod: it brings the appearance tables itself,
+	-- so the gloves are registered on a server where no mod is installed at all
+	eq(ZCG.Ready, true, "registered without Z-City: the own tables are there")
 	eq(#M.errors, 0, "no errors while waiting")
 
 	-- ---------------------------------------------------------------- Z-City appears
 	Z.install()
 	M.advance(1.2)
-	eq(ZCG.Ready, true, "registered once Z-City exists")
+	eq(ZCG.Ready, true, "and it stays registered once Z-City exists")
 
 	local hands = hg.Appearance.Bodygroups.HANDS
 	for sex = 1, 2 do
-		eq(table.Count(hands[sex]), 3 + 81, "entries in HANDS[" .. sex .. "]")
+		-- the hands of the catalog of the addon stay next to the ones of Z-City and the gloves:
+		-- a name both have is the one of Z-City (nothing is listed twice)
+		eq(table.Count(hands[sex]), ownHands + 81, "entries in HANDS[" .. sex .. "]")
 		local entry = hands[sex]["CS:GO Moto 05"]
 		check(entry ~= nil, "moto 05 registered for sex " .. sex)
 		eq(entry[1], "hands", "our gloves keep the bare hands submodel")
@@ -399,7 +407,11 @@ return function(testdir, luaroot)
 		for _, line in ipairs(M.log) do
 			if line:find("materials/models/humans/slav/hair.vmt  <-  material of " .. SLAV, 1, true) then listed = true end
 		end
-		check(listed, "zcg_content on the server lists the material a model lacks")
+		-- the tables of the addon's own catalog name a lot of content of their own, and the
+		-- console shows the first 200 lines of the list: the whole list is in the file it writes
+		local whole = M.written["zcg_content.txt"] or ""
+		check(listed or whole:find("materials/models/humans/slav/hair.vmt", 1, true) ~= nil,
+			"zcg_content on the server lists the material a model lacks")
 
 		-- what the clothing Lua of the addon adds (ZCG.Bound, written by the build): the server
 		-- has its own side of the list

@@ -5,7 +5,7 @@
 if SERVER then AddCSLuaFile() end
 
 ZCGloves = ZCGloves or {}
-ZCGloves.Version = "2.17.8"
+ZCGloves.Version = "2.18.0"
 
 local DIR = "zcity_csgo_gloves/"
 
@@ -59,6 +59,19 @@ if file.Exists(DIR .. "sh_merged.lua", "LUA") then
 	end
 end
 shared("sh_merge.lua")
+
+-- Our own appearance system (own rails). The catalog is everything the addon has of the appearance
+-- of Z-City - models, clothes, faces, bodygroups, accessories - written down as data of this addon
+-- while it was built (tools/catalog.py). The code that follows dresses a player, keeps his look on
+-- the server, draws his accessories and opens a menu of its own. None of it needs the Appearance
+-- Mod: what the gamemode of Z-City calls by name is defined by this addon as well.
+if file.Exists(DIR .. "own/sh_catalog.lua", "LUA") then shared("own/sh_catalog.lua") end
+shared("own/sh_own.lua")
+
 server("sv_core.lua")
+server("own/sv_own.lua")
 client("cl_render.lua")
 client("cl_editor.lua")
+client("own/cl_own_render.lua")
+client("own/cl_own_files.lua")
+client("own/cl_own_menu.lua")

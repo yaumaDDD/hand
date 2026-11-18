@@ -255,7 +255,9 @@ return function(realm)
 	-- into M.pathFiles[name] = { path = true }; one the test did not name lists nothing.
 	M.pathFiles = {}
 	function file.Find(pattern, where)
-		assert(type(pattern) == "string" and pattern:sub(-2) == "/*", "file.Find: the imitation lists whole folders (dir/*)")
+		assert(type(pattern) == "string", "file.Find: a pattern")
+		assert(pattern:sub(-2) == "/*" or pattern:match("^.*%*%.[%a%d]+$"),
+			"file.Find: the imitation lists whole folders (dir/*), not one kind of file (dir/*.ext)")
 		local dir = pattern:gsub("/%*$", "")
 		local files, dirs, seen = {}, {}, {}
 		local listed = M.files
@@ -467,7 +469,15 @@ return function(realm)
 		return out
 	end
 	M.entityMeta = ENT
-	function FindMetaTable(name) return name == "Entity" and ENT or nil end
+	-- the player metatable of the game: the methods of an entity and the ones of a player on top
+	local PLAYER = setmetatable({}, { __index = ENT })
+	PLAYER.__index = PLAYER
+	function FindMetaTable(name)
+		if name == "Entity" then return ENT end
+		if name == "Player" then return PLAYER end
+		return nil
+	end
+	M.playerMeta = PLAYER
 	-- (the index of an entity: its place in M.entities)
 	function Entity(index) return M.entities[index] or NULL end
 	function ENT:EntIndex()
@@ -850,6 +860,10 @@ return function(realm)
 		Panel = {}, DPanel = {}, DLabel = {},
 		DFrame = {
 			SetTitle = function(self, title) self.title = title end,
+			Center = function(self) self.centered = true end,
+			SetBackgroundBlur = function() end,
+			SetDeleteOnClose = function() end,
+			SetScreenLock = function() end,
 			SetDraggable = function() end,
 			ShowCloseButton = function() end,
 			-- like the game: gone at once, then OnClose
@@ -891,6 +905,127 @@ return function(realm)
 			SetHideButtons = function() end,
 			SetScroll = function(self, value) self.scroll = value end,
 			GetScroll = function(self) return self.scroll or 0 end,
+		},
+		DTextEntry = {
+			SetValue = function(self, value) self.value = tostring(value) end,
+			GetValue = function(self) return self.value or "" end,
+			GetText = function(self) return self.value or "" end,
+			SetText = function(self, value) self.value = tostring(value) end,
+			SetPlaceholderText = function(self, text) self.placeholder = text end,
+			SetEditable = function() end,
+			SetUpdateOnType = function() end,
+			SetFont = function(self, font) self.font = font end,
+			OnChange = function() end,
+			OnEnter = function() end,
+		},
+		DImage = {
+			SetImage = function(self, path) self.image = path end,
+			GetImage = function(self) return self.image end,
+			SetKeepAspect = function() end,
+			SetMaterial = function(self, material) self.material = material end,
+		},
+		DImageButton = {
+			SetImage = function(self, path) self.image = path end,
+			GetImage = function(self) return self.image end,
+			DoClick = function() end,
+		},
+		DCheckBox = {
+			SetValue = function(self, value) self.checked = value and true or false end,
+			GetChecked = function(self) return self.checked and true or false end,
+			SetText = function(self, text) self.text = text end,
+			OnChange = function() end,
+		},
+		DNumSlider = {
+			SetMin = function() end,
+			SetMax = function() end,
+			SetDecimals = function() end,
+			SetValue = function(self, value) self.value = tonumber(value) or 0 end,
+			GetValue = function(self) return self.value or 0 end,
+			SetText = function(self, text) self.text = text end,
+			OnValueChanged = function() end,
+		},
+		DComboBox = {
+			AddChoice = function(self, value, data, select)
+				self.Choices = self.Choices or {}
+				self.ChoiceData = self.ChoiceData or {}
+				self.Choices[#self.Choices + 1] = value
+				self.ChoiceData[#self.ChoiceData + 1] = data
+				if select then self.value = value end
+			end,
+			SetValue = function(self, value) self.value = value end,
+			GetValue = function(self) return self.value end,
+			GetSelected = function(self)
+				for index, value in ipairs(self.Choices or {}) do
+					if value == self.value then return value, (self.ChoiceData or {})[index] end
+				end
+				return nil
+			end,
+			GetOptionData = function(self, index) return (self.ChoiceData or {})[index] end,
+			OptionCount = function(self) return #(self.Choices or {}) end,
+			SetSortItems = function() end,
+			Clear = function(self) self.Choices, self.ChoiceData, self.value = {}, {}, nil end,
+			ChooseOption = function(self, _value, index)
+				local value = (self.Choices or {})[index]
+				self.value = value
+				if self.OnSelect then self:OnSelect(index, value, (self.ChoiceData or {})[index]) end
+			end,
+			OnSelect = function() end,
+		},
+		DListView = {
+			AddColumn = function(self, name)
+				self.Columns = self.Columns or {}
+				self.Columns[#self.Columns + 1] = name
+				return self.Columns[#self.Columns]
+			end,
+			AddLine = function(self, ...)
+				self.Lines = self.Lines or {}
+				local line = setmetatable({ class = "DListViewLine", children = {} }, panelMeta)
+				line.Columns = { ... }
+				self.Lines[#self.Lines + 1] = line
+				line:SetParent(self)
+				return line
+			end,
+			GetLines = function(self) return self.Lines or {} end,
+			GetSelected = function(self)
+				local got = {}
+				for _, line in ipairs(self.Lines or {}) do
+					if line.selected then got[#got + 1] = line end
+				end
+				return got
+			end,
+			GetSelectedLine = function(self)
+				for index, line in ipairs(self.Lines or {}) do
+					if line.selected then return index, line end
+				end
+				return nil
+			end,
+			ClearSelection = function(self)
+				for _, line in ipairs(self.Lines or {}) do line.selected = false end
+			end,
+			Clear = function(self) self.Lines = {} end,
+			SetMultiSelect = function() end,
+			SetHeaderHeight = function() end,
+			SelectItem = function(self, line) if line then line.selected = true end end,
+			RemoveLine = function(self, index) table.remove(self.Lines or {}, index) end,
+			OnRowSelected = function() end,
+			DoDoubleClick = function() end,
+		},
+		DColorMixer = {
+			SetColor = function(self, color) self.color = color end,
+			GetValue = function(self) return self.color or Color(255, 255, 255) end,
+			SetAlphaBar = function() end,
+			SetWangs = function() end,
+			SetPalette = function() end,
+			EnableAlpha = function() end,
+			ValueChanged = function() end,
+		},
+		DHorizontalDivider = {
+			SetLeft = function(self, panel) self.left = panel end,
+			SetRight = function(self, panel) self.right = panel end,
+			SetDividerWidth = function() end,
+			SetLeftWidth = function() end,
+			SetLeftMin = function() end,
+			SetRightMin = function() end,
 		},
 	}
 	M.builtin = builtin
@@ -972,6 +1107,386 @@ return function(realm)
 			end
 		end
 		error("menu has no option starting with " .. text)
+	end
+
+	-- ----------------------------------------------------------------------------------
+	-- the rest of the game the own appearance system (lua/zcity_csgo_gloves/own/) uses
+	-- ----------------------------------------------------------------------------------
+	TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER, TEXT_ALIGN_RIGHT = 0, 1, 2
+	TEXT_ALIGN_TOP, TEXT_ALIGN_BOTTOM = 3, 4
+	EF_BONEMERGE = EF_BONEMERGE or 4096
+	RENDERGROUP_BOTH = RENDERGROUP_BOTH or 3
+
+	function table.HasValue(list, value)
+		for _, item in ipairs(list or {}) do
+			if item == value then return true end
+		end
+		return false
+	end
+	function table.IsEmpty(list) return next(list or {}) == nil end
+	function table.Copy(list)
+		local got = {}
+		for key, value in pairs(list or {}) do
+			got[key] = type(value) == "table" and table.Copy(value) or value
+		end
+		return got
+	end
+	function table.Random(list)
+		local keys = {}
+		for key in pairs(list or {}) do keys[#keys + 1] = key end
+		if #keys == 0 then return nil, nil end
+		local key = keys[math.random(1, #keys)]
+		return list[key], key
+	end
+	function ColorRand(alpha) return Color(math.random(0, 255), math.random(0, 255), math.random(0, 255),
+		alpha and 255 or 255) end
+
+	-- the utf8 library of the game: a Russian letter is two bytes, and one letter is one letter
+	utf8 = utf8 or {}
+	local function utf8each(text)
+		return tostring(text):gmatch("[%z\1-\127\194-\244][\128-\191]*")
+	end
+	function utf8.len(text)
+		local count = 0
+		for _ in utf8each(text) do count = count + 1 end
+		return count
+	end
+	function utf8.GetChar(text, index)
+		local at = 0
+		for letter in utf8each(text) do
+			at = at + 1
+			if at == index then return letter end
+		end
+		return ""
+	end
+	function utf8.sub(text, from, to)
+		local letters, out = {}, {}
+		for letter in utf8each(text) do letters[#letters + 1] = letter end
+		from = from or 1
+		if from < 0 then from = math.max(1, #letters + from + 1) end
+		to = to or #letters
+		if to < 0 then to = #letters + to + 1 end
+		for index = from, math.min(to, #letters) do out[#out + 1] = letters[index] end
+		return table.concat(out)
+	end
+
+	function LocalToWorld(pos, ang, origin, base)
+		-- good enough for the tests: the offset turned by the angle of the bone and moved
+		local rad = math.rad((base or Angle(0, 0, 0)).y or 0)
+		local x = (pos or vector_origin).x * math.cos(rad) - (pos or vector_origin).y * math.sin(rad)
+		local y = (pos or vector_origin).x * math.sin(rad) + (pos or vector_origin).y * math.cos(rad)
+		return Vector((origin or vector_origin).x + x, (origin or vector_origin).y + y,
+			(origin or vector_origin).z + (pos or vector_origin).z),
+			Angle(((base or angle_zero).p or 0) + (ang or angle_zero).p or 0,
+				((base or angle_zero).y or 0) + (ang or angle_zero).y or 0,
+				((base or angle_zero).r or 0) + (ang or angle_zero).r or 0)
+	end
+	function GetViewEntity() return M.viewentity or LocalPlayer() end
+	M.globals = {}
+	function SetGlobalBool(name, value) M.globals[name] = value and true or false end
+	function GetGlobalBool(name, default)
+		if M.globals[name] == nil then return default and true or false end
+		return M.globals[name]
+	end
+	function SetGlobalString(name, value) M.globals[name] = tostring(value) end
+	function GetGlobalString(name, default) return tostring(M.globals[name] or default or "") end
+
+	chat = {}
+	M.chat = {}
+	function chat.AddText(...)
+		local line = {}
+		for _, part in ipairs({ ... }) do
+			line[#line + 1] = type(part) == "table" and "" or tostring(part)
+		end
+		M.chat[#M.chat + 1] = table.concat(line)
+	end
+
+	file.directories = file.directories or {}
+	function file.CreateDir(path)
+		assert(type(path) == "string", "file.CreateDir: path")
+		file.directories[path] = true
+		M.pathFiles.DATA = M.pathFiles.DATA or {}
+	end
+	function file.Delete(path)
+		assert(type(path) == "string", "file.Delete: path")
+		local was = M.written[path] ~= nil or (M.pathFiles.DATA or {})[path] == true
+		M.written[path] = nil
+		if M.pathFiles.DATA then M.pathFiles.DATA[path] = nil end
+		return was
+	end
+	-- data/ is what the addon wrote itself (M.written) plus what the test put there; LUA is what
+	-- the test handed in plus the Lua of the addon on disk (the game finds both)
+	local existsBefore = file.Exists
+	function file.Exists(path, where)
+		if where == "DATA" then
+			return M.written[path] ~= nil or (M.pathFiles.DATA or {})[path] == true
+		end
+		if where == "LUA" then
+			if M.luafiles[path] ~= nil then return true end
+			local handle = io.open(tostring(M.luaroot or "") .. "/" .. path, "rb")
+			if handle then
+				handle:close()
+				return true
+			end
+			return false
+		end
+		return existsBefore(path, where)
+	end
+	function file.Read(path, where)
+		if where == "DATA" and M.written[path] ~= nil then return M.written[path] end
+		local data = M.filedata[path]
+		if type(data) == "string" then return data end
+		return nil
+	end
+	vector_origin = Vector(0, 0, 0)
+	angle_zero = Angle(0, 0, 0)
+
+	function PANEL:Clear()
+		for index = #self.children, 1, -1 do
+			self.children[index]:Remove()
+		end
+		self.children = {}
+	end
+	builtin.DScrollPanel.Clear = function(self)
+		if self.canvas then self.canvas:Clear() end
+	end
+
+	-- the network of the game: a message is written, then M.netSend hands it to whoever receives it
+	net = {}
+	M.network = {}
+	M.netMessages = {}
+	function util.AddNetworkString(name)
+		assert(type(name) == "string", "AddNetworkString: name")
+		M.network[name] = M.network[name] or {}
+	end
+	local writing = nil
+	function net.Start(name)
+		assert(type(name) == "string", "net.Start: name")
+		writing = { name = name, data = {}, to = nil, server = false }
+		M.netMessages[#M.netMessages + 1] = writing
+	end
+	function net.WriteString(value)
+		assert(writing and type(value) == "string", "net.WriteString: a string inside net.Start")
+		writing.data[#writing.data + 1] = value
+	end
+	function net.WriteBool(value)
+		assert(writing, "net.WriteBool: inside net.Start")
+		writing.data[#writing.data + 1] = value and true or false
+	end
+	function net.WriteInt(value)
+		assert(writing and type(value) == "number", "net.WriteInt: a number inside net.Start")
+		writing.data[#writing.data + 1] = value
+	end
+	function net.WriteFloat(value)
+		assert(writing and type(value) == "number", "net.WriteFloat: a number inside net.Start")
+		writing.data[#writing.data + 1] = value
+	end
+	function net.WriteEntity(value)
+		assert(writing, "net.WriteEntity: inside net.Start")
+		writing.data[#writing.data + 1] = value
+	end
+	function net.WriteTable(value)
+		assert(writing and type(value) == "table", "net.WriteTable: a table inside net.Start")
+		writing.data[#writing.data + 1] = table.Copy(value)
+	end
+	function net.WriteVector(value)
+		assert(writing, "net.WriteVector: inside net.Start")
+		writing.data[#writing.data + 1] = value
+	end
+	function net.WriteColor(value)
+		assert(writing, "net.WriteColor: inside net.Start")
+		writing.data[#writing.data + 1] = value
+	end
+	function net.Send(target)
+		assert(writing, "net.Send: inside net.Start")
+		writing.to = target
+		writing = nil
+	end
+	function net.SendToServer()
+		assert(writing, "net.SendToServer: inside net.Start")
+		writing.server = true
+		writing = nil
+	end
+	function net.Broadcast()
+		assert(writing, "net.Broadcast: inside net.Start")
+		writing.to = "all"
+		writing = nil
+	end
+	M.netReceivers = {}
+	function net.Receive(name, fn)
+		assert(type(name) == "string" and type(fn) == "function", "net.Receive(name, fn)")
+		M.netReceivers[name] = fn
+	end
+	--- the messages that were sent, one after another, to their receivers (a test runs this)
+	function M.netFlush(toServer)
+		local sent = M.netMessages
+		M.netMessages = {}
+		local got = 0
+		local wanted = toServer and true or false
+		for _, message in ipairs(sent) do
+			if (message.server and true or false) == wanted then
+				local fn = M.netReceivers[message.name]
+				if fn then
+					M.netData = message.data
+					M.netAt = 0
+					M.netFrom = message.to
+					fn(#message.name * 8, message.server and (M.localplayer or NULL) or (M.localplayer or NULL))
+					got = got + 1
+				end
+			end
+		end
+		return got
+	end
+	M.netData, M.netAt = {}, 0
+	local function readNext(what)
+		M.netAt = M.netAt + 1
+		local value = M.netData[M.netAt]
+		assert(value ~= nil or what == "optional", "net.Read: the message has no value #" .. tostring(M.netAt))
+		return value
+	end
+	function net.ReadString() return tostring(readNext() or "") end
+	function net.ReadBool() return readNext() and true or false end
+	function net.ReadInt() return tonumber(readNext()) or 0 end
+	function net.ReadFloat() return tonumber(readNext()) or 0 end
+	function net.ReadTable() return readNext() or {} end
+	function net.ReadEntity() return readNext() or NULL end
+	function net.ReadVector() return readNext() or vector_origin end
+	function net.ReadColor() return readNext() or Color(255, 255, 255) end
+
+	util.TableToJSON = util.TableToJSON or function(value)
+		-- enough of JSON for the tests: strings, numbers, booleans and tables of them
+		local function of(item)
+			local kind = type(item)
+			if kind == "string" then return '"' .. item:gsub('"', '\\"') .. '"' end
+			if kind == "number" or kind == "boolean" then return tostring(item) end
+			if kind ~= "table" then return "null" end
+			local array, parts = true, {}
+			for index = 1, #item do parts[#parts + 1] = of(item[index]) end
+			for key in pairs(item) do
+				if type(key) ~= "number" or key < 1 or key > #item then array = false end
+			end
+			if array then return "[" .. table.concat(parts, ",") .. "]" end
+			parts = {}
+			for key, value in pairs(item) do parts[#parts + 1] = '"' .. tostring(key) .. '":' .. of(value) end
+			return "{" .. table.concat(parts, ",") .. "}"
+		end
+		return of(value)
+	end
+	util.JSONToTable = util.JSONToTable or function(text)
+		local pos = 1
+		local function skip()
+			pos = text:find("[^ \t\r\n]", pos) or (#text + 1)
+		end
+		local function value()
+			skip()
+			local char = text:sub(pos, pos)
+			if char == "{" or char == "[" then
+				local open, close = char, (char == "{" and "}" or "]")
+				local got, index = (char == "{" and {} or {}), 1
+				pos = pos + 1
+				skip()
+				if text:sub(pos, pos) == close then pos = pos + 1 return got end
+				while true do
+					local key
+					if char == "{" then
+						skip()
+						key = value()
+						skip()
+						pos = pos + 1      -- the ":"
+					end
+					local item = value()
+					if key ~= nil then got[key] = item else got[index] = item index = index + 1 end
+					skip()
+					local next_char = text:sub(pos, pos)
+					pos = pos + 1
+					if next_char ~= "," then break end
+				end
+				return got
+			end
+			if char == '"' then
+				local rest = text:sub(pos + 1)
+				local got = rest:match('^([^"]*)')
+				pos = pos + 1 + #got + 1
+				return (got:gsub('\\"', '"'))
+			end
+			if text:sub(pos, pos + 3) == "true" then pos = pos + 4 return true end
+			if text:sub(pos, pos + 4) == "false" then pos = pos + 5 return false end
+			if text:sub(pos, pos + 3) == "null" then pos = pos + 4 return nil end
+			local number = text:sub(pos):match("^[-%d.eE+]+")
+			pos = pos + #(number or "")
+			return tonumber(number)
+		end
+		local ok, got = pcall(value)
+		if not ok then return nil end
+		return got
+	end
+
+	-- the entity of a player: what the own appearance system asks of it
+	function ENT:SetColor(color) self.color = color end
+	function ENT:GetColor() return self.color or Color(255, 255, 255) end
+	function ENT:SetPlayerColor(vector) self.playerColor = vector end
+	function ENT:GetPlayerColor() return self.playerColor or Vector(1, 1, 1) end
+	function ENT:SetNWVector(key, value) self.nwvectors = self.nwvectors or {} self.nwvectors[key] = value end
+	function ENT:GetNWVector(key, default) return (self.nwvectors or {})[key] or default or vector_origin end
+	function ENT:SetNWInt(key, value) self.nwints = self.nwints or {} self.nwints[key] = value end
+	function ENT:GetNWInt(key, default) return (self.nwints or {})[key] or default or 0 end
+	function ENT:SetNWBool(key, value) self.nwbools = self.nwbools or {} self.nwbools[key] = value and true or false end
+	function ENT:GetNWBool(key, default)
+		local got = (self.nwbools or {})[key]
+		if got == nil then return default and true or false end
+		return got
+	end
+	function ENT:SetNetVar(key, value)
+		self.netvars = self.netvars or {}
+		self.netvars[key] = value
+		if SERVER and self.isplayer then M.replicated = (M.replicated or 0) + 1 end
+	end
+	function ENT:GetNetVar(key, default)
+		local got = (self.netvars or {})[key]
+		if got == nil then return default end
+		return got
+	end
+	function ENT:CallOnRemove(id, fn) self.removers = self.removers or {} self.removers[id] = fn end
+	function ENT:SetBodyGroups(value)
+		assert(type(value) == "string", "SetBodyGroups: the game takes a string of digits")
+		self.bodygroups = {}
+		for index = 1, #value do
+			self.bodygroups[index - 1] = tonumber(value:sub(index, index)) or 0
+		end
+	end
+	function ENT:GetSubModels() return self.submodels end
+	function ENT:SetModelScale(scale) self.modelScale = scale end
+	function ENT:GetModelScale() return self.modelScale or 1 end
+	function ENT:SetSkin(skin) self.skin = skin end
+	function ENT:GetSkin() return self.skin or 0 end
+	function ENT:SetRenderOrigin(pos) self.renderOrigin = pos end
+	function ENT:SetRenderAngles(ang) self.renderAngles = ang end
+	function ENT:GetManipulateBoneScale(_bone) return self.boneScale or Vector(1, 1, 1) end
+	function ENT:GetFlexIDByName(_name) return nil end
+	function ENT:SetFlexWeight() end
+	function ENT:GetActiveWeapon() return self.weapon or NULL end
+	function ENT:IsBot() return self.bot and true or false end
+	-- a player is an admin / a super admin as the gamemode says (the imitation takes the fields
+	-- the tests set: admin, superadmin, usergroup)
+	function ENT:IsAdmin() return self.admin == true or self.superadmin == true
+		or self.usergroup == "admin" or self.usergroup == "superadmin" end
+	function ENT:GetUserGroup() return self.usergroup or (self.superadmin and "superadmin" or "user") end
+	function ENT:SetUserGroup(name) self.usergroup = name end
+	function ENT:SteamID() return self.steamid or "STEAM_0:0:0" end
+	function ENT:SteamID64() return self.steamid64 or "0" end
+	function ENT:ChatPrint(text)
+		assert(type(text) == "string", "ChatPrint: text")
+		M.chat[#M.chat + 1] = text
+	end
+
+	local oldSetSubMaterial = ENT.SetSubMaterial
+	function ENT:SetSubMaterial(index, material)
+		if index == nil then
+			-- the game resets every slot of the model: SetSubMaterial() with nothing
+			self.submaterials = {}
+			return
+		end
+		return oldSetSubMaterial(self, index, material)
 	end
 
 	-- paints (and thinks) a panel tree once, like one frame of the game

@@ -740,11 +740,80 @@ local function run(spec)
 		bound = { count = count or -1, missing = missing or {} }
 	end
 
+	-- -------------------------------------------------------------------------------------
+	-- the appearance tables as data of their own (spec.catalog): what the addon keeps in
+	-- lua/zcity_csgo_gloves/own/sh_catalog.lua, so that the addon needs no Appearance Mod -
+	-- every model, piece of clothing, face, bodygroup and accessory the Lua of Z-City and of
+	-- the packs put into the tables is written down here as it is, with its numbers.
+	-- A value is { s = string } / { n = number } / { b = boolean } / { v = {x,y,z} } (a Vector) /
+	-- { a = {p,y,r} } (an Angle) / { c = {r,g,b,a} } (a Color) / { t = { key = value, ... } }.
+	-- -------------------------------------------------------------------------------------
+	local catalog
+	if spec.catalog then
+		local function plain(value, depth, seen)
+			local kind = type(value)
+			if kind == "string" then return { s = value } end
+			if kind == "number" then return { n = value } end
+			if kind == "boolean" then return { b = value } end
+			if kind ~= "table" or depth > 8 or seen[value] then return nil end
+			seen[value] = true
+			if isStub(value) then
+				-- (a part of the game that is not there, or a Vector / Angle / Color of it)
+				local x, y, z = rawget(value, "x"), rawget(value, "y"), rawget(value, "z")
+				if type(x) == "number" and type(y) == "number" then
+					return { v = { x, y, type(z) == "number" and z or 0 } }
+				end
+				local p, r = rawget(value, "p"), rawget(value, "r")
+				if type(p) == "number" and type(y) == "number" then
+					return { a = { p, y, type(r) == "number" and r or 0 } }
+				end
+				local g, b, a = rawget(value, "g"), rawget(value, "b"), rawget(value, "a")
+				if type(r) == "number" and type(g) == "number" then
+					return { c = { r, g, type(b) == "number" and b or 0, type(a) == "number" and a or 255 } }
+				end
+				seen[value] = nil
+				return nil
+			end
+			local out, count = {}, 0
+			for key, item in pairs(value) do
+				local got = plain(item, depth + 1, seen)
+				if got ~= nil then
+					local name = type(key) == "string" and key or (type(key) == "number" and key or nil)
+					if type(key) == "boolean" then name = key and "true" or "false" end
+					if name ~= nil then
+						out[name] = got
+						count = count + 1
+					end
+				end
+			end
+			seen[value] = nil
+			if count == 0 then return nil end
+			return { t = out }
+		end
+
+		local function take(table, name)
+			if type(table) ~= "table" or isStub(table) then return nil end
+			return plain(rawget(table, name), 0, {})
+		end
+
+		catalog = {}
+		local hg = rawget(env, "hg")
+		if type(hg) == "table" and not isStub(hg) then
+			local appearance = rawget(hg, "Appearance")
+			for _, name in ipairs({ "PlayerModels", "Clothes", "ClothesDesc", "FacemapsSlots", "FacemapsModels",
+				"MultiFacemaps", "Bodygroups", "RandomNames", "SkeletonAppearanceTable" }) do
+				catalog[name] = take(appearance, name)
+			end
+			catalog.Accessories = plain(rawget(hg, "Accessories"), 0, {})
+		end
+	end
+
 	local stubs = {}
 	for name in pairs(healed) do stubs[#stubs + 1] = name end
 	for name in pairs(healedHg) do stubs[#stubs + 1] = "hg." .. name end
 	table.sort(stubs)
-	return { entries = entries, lost = lost, errors = errors, ran = ran, stubs = stubs, missing = missing, bound = bound }
+	return { entries = entries, lost = lost, errors = errors, ran = ran, stubs = stubs, missing = missing, bound = bound,
+		catalog = catalog }
 end
 
 -- runs until no file stumbles over a part of the game that is not there
@@ -753,7 +822,8 @@ return function(spec)
 	local result
 	for _ = 1, 400 do
 		result = run({ files = spec.files, content = spec.content, realm = spec.realm, skip = spec.skip,
-			port = spec.port, bare = spec.bare, bound = spec.bound, stubs = stubs, hgStubs = hgStubs })
+			port = spec.port, bare = spec.bare, bound = spec.bound, catalog = spec.catalog, stubs = stubs,
+			hgStubs = hgStubs })
 		if not result.missing then break end
 		if result.missing[1] == "hg" then hgStubs[result.missing[2]] = true else stubs[result.missing[2]] = true end
 	end

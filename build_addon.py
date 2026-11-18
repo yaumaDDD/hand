@@ -47,6 +47,7 @@ import list_content  # noqa: E402
 import lua_names  # noqa: E402
 import place_content  # noqa: E402
 import content_report  # noqa: E402
+import catalog  # noqa: E402
 
 # reduced versions of the oversized textures (tools/optimize_textures.py), in the addon layout;
 # the second archive came with the Driver and Specialist gloves, the third with Sport
@@ -716,6 +717,33 @@ SORT_TOOL = ('sort_content.py', 'place_content.py', 'content_report.py', 'list_c
              'zcg_layout.py', 'vmt.py', 'game_files.py', 'fill_content.py', 'clean_content.py')
 
 
+# the catalog of the own appearance system: every model, piece of clothing, face, bodygroup and
+# accessory the Lua of Z-City and of the clothing packs puts into the appearance tables, written
+# down as data of the addon itself, so that the addon needs no Appearance Mod (lua/.../own/)
+CATALOG_LUA = catalog.CATALOG_LUA
+
+
+def step_catalog(out):
+    """Writes lua/<CATALOG_LUA> out of the Lua of the assembled addon - without the Lua of the
+    addon itself, which is what the catalog is for. Where the Lua cannot be run (the lupa module
+    is missing) or nothing comes out of it, the catalog the sources bring stays as it is.
+    Returns dict(counts, size, note): counts None where nothing was written."""
+    dest = os.path.join(out, 'lua', CATALOG_LUA)
+    kept = os.path.getsize(dest) if os.path.isfile(dest) else 0
+    everything = lua_names.folder_files(os.path.join(out, 'lua'))
+    files = dict((path, text) for path, text in everything.items() if not lua_names.is_own(path))
+    try:
+        got, stock = catalog.gather_files(files, quiet=True)
+    except catalog.CatalogError as err:
+        return dict(counts=None, size=kept, note=str(err))
+    counts = catalog.counts(got)
+    if not any(counts.values()):
+        return dict(counts=None, size=kept, note='nothing came out of the Lua')
+    size = catalog.write(dest, got, tool='build_addon.py')
+    return dict(counts=counts, size=size, note='' if stock else
+                'without the Lua of Z-City itself (z_city.zip was not found)')
+
+
 def step_sort_tool(out, ran=None):
     """The scripts of sort_content.bat with two lists, because the tool has neither z_city.zip nor
     a Lua to run where it works:
@@ -1355,6 +1383,16 @@ def main():
         if ran and ran.get('tried'):
             joined = step_combine(out, ran, combine=not args.no_combine)
         left_out = ran.get('left_out_all', ran.get('left_out', ())) if ran else ()
+        wrote = step_catalog(out)
+        if wrote['counts']:
+            got = wrote['counts']
+            print('  the own appearance system: lua/%s written, %s (%d models, %d pieces of clothing, '
+                  '%d faces, %d multi-facemaps, %d bodygroups, %d accessories, %d names%s)'
+                  % (CATALOG_LUA, mb(wrote['size']), got['models'], got['clothes'], got['faces'],
+                     got['multifacemaps'], got['bodygroups'], got['accessories'], got['names'],
+                     '' if not wrote['note'] else '; ' + wrote['note']))
+        else:
+            print('  the own appearance system keeps the catalog of the sources (%s)' % wrote['note'])
         scripts, stock, listed = step_sort_tool(out, ran)
         print('  sort_content.bat: %d scripts, %d names of Z-City itself that it leaves alone%s'
               % (scripts, stock, '' if listed is None else ", %d names the addon's Lua gives when it is run" % listed))

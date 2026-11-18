@@ -119,6 +119,43 @@ class Result(object):
         self.ran = {}       # realm -> the Lua files in the order they were run
         self.stubs = []     # globals taken for parts of the game
         self.bound = {}     # realm -> (entries the addon's check looked for, [(entry, wanted, Lua file, found)])
+        self.catalog = {}   # realm -> the appearance tables as plain data (run(..., catalog=True))
+
+
+def plain_data(value):
+    """a value of the catalog dump of lua_names.lua as plain Python data: {s=...} a string,
+    {n=...} a number, {b=...} a boolean, {v=[x,y,z]} a Vector, {a=[p,y,r]} an Angle,
+    {c=[r,g,b,a]} a Color, {t={...}} a table of them - into str, number, bool, dict, list."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, (bytes, str)):
+        return _exact(value)
+    try:
+        got = dict(value.items())
+    except AttributeError:
+        return value
+    if len(got) == 1:
+        only, inner = list(got.items())[0]
+        mark = _exact(only) if isinstance(only, (bytes, str)) else only
+        if mark in ('s', 'n', 'b'):
+            return plain_data(inner)
+        if mark in ('v', 'a', 'c'):
+            parts = plain_data(inner) or {}
+            kind = {'v': 'vector', 'a': 'angle', 'c': 'color'}[mark]
+            if isinstance(parts, dict):
+                parts = [parts[key] for key in sorted(parts, key=lambda k: (isinstance(k, str), k))]
+            return {kind: [float(part) for part in parts]}
+        if mark == 't':
+            return plain_data(inner)
+    out = {}
+    for key, item in got.items():
+        name = int(key) if isinstance(key, float) and key.is_integer() else key
+        if isinstance(name, (bytes, str)):
+            name = _exact(name)
+        made = plain_data(item)
+        if made is not None:
+            out[name] = made
+    return out
 
 
 def content_source():
@@ -127,12 +164,14 @@ def content_source():
         return f.read()
 
 
-def run(files, stock=(), skip=(), content=None, port=False, bound=None):
+def run(files, stock=(), skip=(), content=None, port=False, bound=None, catalog=False):
     """files: {path below lua/: text in the dialect of the game} - everything the game would
     find there; stock: the paths among them that are Z-City's own; skip: paths that are not run;
     port: load the files with the copy of Z-City's loader in lua_names.lua although the loader
     itself is among them; bound: the text of an sh_bound.lua, for the addon's own check to compare
     the tables with (Result.bound). Returns a Result, or None when there is no Lua to run it with.
+    catalog: also hand over the appearance tables as data of their own (Result.catalog), for
+    tools/catalog.py to write lua/zcity_csgo_gloves/own/sh_catalog.lua out of them.
 
     The names are those of a game that has every file installed. Each side is run once more as
     if nothing were: an entry that only shows with its file there (Result.if_installed) is one
@@ -161,6 +200,7 @@ def run(files, stock=(), skip=(), content=None, port=False, bound=None):
             'port': bool(port),
             'bare': bare,
             'bound': lua_bytes(check) if check is not None else None,
+            'catalog': bool(catalog),
         }))
 
     for realm in REALMS:
@@ -171,6 +211,8 @@ def run(files, stock=(), skip=(), content=None, port=False, bound=None):
         result.if_installed |= set(own) - bare
         result.ran[realm] = [_shown(name) for name in got.ran.values()]
         stubs.update(_shown(name) for name in got.stubs.values())
+        if catalog:
+            result.catalog[realm] = plain_data(got.catalog) or {}
         if got.bound is not None:
             result.bound[realm] = (got.bound.count, [
                 (_exact(item.entry), _exact(item.want), _exact(item.by), _exact(item.now) if item.now else None)
@@ -247,14 +289,15 @@ def dropin_files(root=None):
     return found
 
 
-def run_addon(files, port=False, bound=None):
+def run_addon(files, port=False, bound=None, catalog=False):
     """runs the Lua of an addon ({path below lua/: text}) on top of Z-City's own appearance Lua
     (when z_city.zip is at hand). Returns (Result or None, was Z-City's Lua there?)"""
     stock = stock_files()
     everything = dict(stock)
     everything.update(files)    # a file of the addon at the path of one of Z-City's replaces it
     own_stock = [path for path in stock if path not in files]
-    result = run(everything, stock=own_stock, skip=[path for path in files if is_own(path)], port=port, bound=bound)
+    result = run(everything, stock=own_stock, skip=[path for path in files if is_own(path)], port=port,
+                 bound=bound, catalog=catalog)
     return result, bool(stock)
 
 
