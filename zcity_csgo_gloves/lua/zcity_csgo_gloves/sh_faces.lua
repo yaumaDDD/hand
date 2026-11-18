@@ -47,7 +47,7 @@ ZCG.FaceAdded = ZCG.FaceAdded or {}
 local added = ZCG.FaceAdded
 
 ZCG.FaceClash = ZCG.FaceClash or 0 -- an entry that is there with another value: left alone
-ZCG.FaceMade = ZCG.FaceMade or { multi = 0, slots = 0, models = 0, lower = 0 }
+ZCG.FaceMade = ZCG.FaceMade or { multi = 0, slots = 0, models = 0, lower = 0, alias = 0 }
 
 local function clean(path)
 	return string.lower(string.gsub(tostring(path), "\\", "/"))
@@ -95,7 +95,7 @@ local function takeBack()
 		end
 		added[index] = nil
 	end
-	ZCG.FaceMade = { multi = 0, slots = 0, models = 0, lower = 0 }
+	ZCG.FaceMade = { multi = 0, slots = 0, models = 0, lower = 0, alias = 0 }
 	ZCG.FaceClash = 0
 end
 
@@ -261,7 +261,76 @@ function ZCG.SyncFaces()
 		end
 	end
 
-	-- 4. the keys the menus ask for in lower case: a copy beside the one the Lua wrote
+	-- 4. a model whose own materials name none of the slots its faces are registered under: the
+	-- gamemode applies a face with FacemapsSlots[material of the player][name of the face], so a
+	-- slot key the model file does not carry means no face ever lands on that model, whatever the
+	-- menus show. The faces of every slot of such a model are mirrored into the material the model
+	-- actually has - the one that reads as its face (a path with "face" or "head" in it), the only
+	-- material of a model that has one, or the first material no face slot is registered under.
+	-- (2.23.0: the faces of the clothing Lua work on every model that carries them, not only on
+	-- the models compiled with the slot the Lua named.)
+	if istable(slots) and ZCG.ModelTextures then
+		local function slotThere(mat)
+			return slots[mat] ~= nil or slots[clean(mat)] ~= nil
+		end
+		local want = {}
+		for model, list in pairs(slotsOf) do
+			local textures = has(model) and ZCG.ModelTextures(model) or nil
+			local paths = {}
+			if istable(textures) and istable(textures.names) then
+				for index = 1, #textures.names do
+					for _, path in ipairs(ZCG.TexturePaths(textures, index) or {}) do
+						if isstring(path) and path ~= "" then paths[#paths + 1] = path end
+					end
+				end
+			end
+			if #paths > 0 then
+				local hit = false
+				for _, path in ipairs(paths) do
+					local name = clean(path)
+					if list[name] or slotThere(name) then hit = true end
+				end
+				local target
+				if not hit then
+					for _, path in ipairs(paths) do
+						local name = clean(path)
+						if name:find("face", 1, true) or name:find("head", 1, true) then
+							target = path
+							break
+						end
+					end
+					if not target and #paths == 1 then target = paths[1] end
+					if not target then
+						for _, path in ipairs(paths) do
+							if not slotThere(path) then target = path break end
+						end
+					end
+				end
+				if not hit and isstring(target) and target ~= "" then
+					for slot in pairs(list) do want[#want + 1] = { model, slot, target } end
+				end
+			end
+		end
+		for _, one in ipairs(want) do
+			local model, slot, target = one[1], one[2], one[3]
+			local faces
+			for key, value in pairs(slots) do
+				if isstring(key) and clean(key) == slot and istable(value) then faces = value break end
+			end
+			if istable(faces) then
+				for name, path in pairs(faces) do
+					if isstring(name) and isstring(path) and path ~= "" then
+						if put("alias", slots, { target, name }, path) then made = made + 1 end
+						if istable(multi) and put("alias", multi, { model, name, clean(target) }, path) then
+							made = made + 1
+						end
+					end
+				end
+			end
+		end
+	end
+
+	-- 5. the keys the menus ask for in lower case: a copy beside the one the Lua wrote
 	local function lowerKeys(kind, root, deep)
 		if not istable(root) then return end
 		local want = {}
@@ -354,15 +423,17 @@ function ZCG.FaceReport(out)
 	if faces == 0 and multi == 0 then return end
 	local made = ZCG.FaceMade or {}
 	local total = (made.multi or 0) + (made.slots or 0) + (made.models or 0) + (made.lower or 0)
+		+ (made.alias or 0)
 	out("  faces: " .. faces .. " in FacemapsSlots, " .. multi .. " in MultiFacemaps, " .. models
 		.. " models with a face, " .. slots .. " face materials of a model")
 	if total > 0 then
 		out("  " .. total .. " of them this addon put where the other menu looks as well ("
 			.. (made.multi or 0) .. " into MultiFacemaps, " .. (made.slots or 0) .. " into FacemapsSlots, "
 			.. (made.models or 0) .. " models told their slot, " .. (made.lower or 0)
-			.. " keys in the lower case the menus ask for): a face of the clothing Lua is listed by the menu of"
-			.. " the Appearance Mod, and a multi-facemap by the plain menu of Z-City and by the LEGACY build"
-			.. " (zcg_faces names them, zcg_sync_faces 0 takes them back)")
+			.. " keys in the lower case the menus ask for, " .. (made.alias or 0)
+			.. " mirrored into the material their model actually carries): a face of the clothing Lua is listed"
+			.. " by the menu of the Appearance Mod, and a multi-facemap by the plain menu of Z-City and by the"
+			.. " LEGACY build (zcg_faces names them, zcg_sync_faces 0 takes them back)")
 	end
 	if (ZCG.FaceClash or 0) > 0 then
 		out("  " .. ZCG.FaceClash .. " face entries are there with another value and are left as they are")
@@ -410,7 +481,8 @@ concommand.Add("zcg_faces" .. (CLIENT and "_cl" or ""), function(ply)
 	local made = ZCG.FaceMade or {}
 	print("[CS:GO Gloves] put there by this addon: " .. (made.multi or 0) .. " into MultiFacemaps, "
 		.. (made.slots or 0) .. " into FacemapsSlots, " .. (made.models or 0) .. " models told their slot, "
-		.. (made.lower or 0) .. " keys in lower case; left alone with another value: " .. (ZCG.FaceClash or 0))
+		.. (made.lower or 0) .. " keys in lower case, " .. (made.alias or 0)
+		.. " mirrored into the material their model carries; left alone with another value: " .. (ZCG.FaceClash or 0))
 	local lines = {}
 	for _, one in ipairs(added) do
 		lines[#lines + 1] = one[1] .. "  " .. tostring(one[6]) .. (one[5] and "/" or " = " .. tostring(one[4]))
@@ -420,6 +492,43 @@ concommand.Add("zcg_faces" .. (CLIENT and "_cl" or ""), function(ply)
 	for index = 1, math.min(#lines, 200) do print("  " .. lines[index]) end
 	if #lines > 200 then print("  ... and " .. (#lines - 200) .. " more (zcg_sync_faces 0 takes every one back)") end
 end, nil, "Put the faces of Z-City into the table the other menu reads as well, and say what was done")
+
+--- why a face does or does not go onto a player: the materials of the player against the tables
+concommand.Add("zcg_face_debug" .. (CLIENT and "_cl" or ""), function(ply)
+	if SERVER and IsValid(ply) and not ply:IsSuperAdmin() then return end
+	local AP = istable(hg) and hg.Appearance or nil
+	local who = CLIENT and { LocalPlayer() } or (player.GetAll and player.GetAll() or {})
+	for _, one in ipairs(who) do
+		if IsValid(one) then
+			local model = one:GetModel() or ""
+			local mats = one:GetMaterials() or {}
+			local face = SERVER and istable(one.CurAppearance) and one.CurAppearance.AFacemap or nil
+			print("[zcg faces] " .. tostring(one:Nick()) .. ": model " .. tostring(model)
+				.. "; face chosen: " .. tostring(face) .. "; materials of the player: " .. #mats)
+			for index = 1, #mats do
+				local path = mats[index]
+				local tbl = istable(AP) and istable(AP.FacemapsSlots) and (AP.FacemapsSlots[path] or AP.FacemapsSlots[clean(path)]) or nil
+				local names, hit = 0, nil
+				if istable(tbl) then
+					for name, mat in pairs(tbl) do
+						if isstring(mat) then names = names + 1 end
+						if name == face then hit = mat end
+					end
+				end
+				print("  [" .. (index - 1) .. "] " .. tostring(path) .. ": faces registered " .. names
+					.. (tbl == nil and " (NO FACE SLOT UNDER THIS MATERIAL)" or "")
+					.. (hit and ": the face of the player goes here -> " .. tostring(hit)
+						or (face and ": no face of this name here" or "")))
+			end
+			if istable(AP) then
+				local lower = clean(model)
+				print("  FacemapsModels: " .. (istable(AP.FacemapsModels) and tostring(AP.FacemapsModels[lower] or AP.FacemapsModels[model]) or "no table")
+					.. "; MultiFacemaps: " .. (istable(AP.MultiFacemaps) and (istable(AP.MultiFacemaps[lower]) and "yes" or "no model") or "no table")
+					.. "; ModelFaceSlots: " .. (istable(AP.ModelFaceSlots) and (istable(AP.ModelFaceSlots[lower]) and "yes" or "no model") or "no table"))
+			end
+		end
+	end
+end, nil, "Say why a face does or does not go onto a player: the materials of the player against the tables of faces")
 
 -- (a Lua file loaded again while the game runs)
 if hg and istable(hg.Appearance) then pass() end

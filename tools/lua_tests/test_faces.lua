@@ -291,6 +291,68 @@ return function(testdir, luaroot)
 	eq(AP.MultiFacemaps[MENU]["Face 1"][SLOT], "models/bloo_ltcom_zel/citizens/facemaps/ted_facemap", "...where they were")
 	eq(#M.errors, 0, "no errors: " .. table.concat(M.errors, " | "))
 
+	-- ------------- a model compiled without the slot its faces are registered under (2.23.0):
+	-- the gamemode applies a face with FacemapsSlots[material of the player][name of the face],
+	-- so a slot key the model file does not carry meant no face ever landed on that model,
+	-- whatever the menus showed. The faces are mirrored into the material the model has.
+	fresh()
+	M = dofile(testdir .. "/gmod_mock.lua")("server")
+	Z = dofile(testdir .. "/zcity_mock.lua")(M)
+	M.luaroot = luaroot
+	Z.install()
+	AP = hg.Appearance
+	local SLOT3 = "models/humans/male/group01/eric_facemap"
+	local OWN = "models/slav/m/male_04.mdl"
+	local FACE = "models/slav/m/male_04_face"
+	local ONE = "models/slav/m/male_05.mdl"
+	local ONEMAT = "models/slav/m/male_05"
+	M.installModel(OWN, { "male_04_face", "players_sheet" }, { "models/slav/m" })
+	M.installModel(ONE, { "male_05" }, { "models/slav/m" })
+	AP.FacemapsSlots = { [SLOT3] = { ["Default"] = "", ["Face 10 (New)"] = "models/humans/modern/male/male_04/facemap_01" } }
+	AP.FacemapsModels = { [OWN] = SLOT3, [ONE] = SLOT3 }
+	AP.MultiFacemaps = {}
+	AP.ModelFaceSlots = {}
+	AP.PlayerModels[1]["Male 04"] = { mdl = OWN, sex = false, submatSlots = {} }
+	AP.PlayerModels[1]["Male 05"] = { mdl = ONE, sex = false, submatSlots = {} }
+	include("autorun/zcity_csgo_gloves.lua")
+	ZCG = ZCGloves
+	eq(ZCG.LoadErrors, nil, "the addon loaded: " .. tostring(ZCG.LoadErrors and ZCG.LoadErrors[1] or ""))
+	check((ZCG.FaceMade.alias or 0) > 0, "faces mirrored into the materials the models carry: "
+		.. tostring(ZCG.FaceMade.alias))
+	eq(AP.FacemapsSlots[FACE] and AP.FacemapsSlots[FACE]["Face 10 (New)"],
+		"models/humans/modern/male/male_04/facemap_01",
+		"the model whose own material reads as a face (..._face) takes the faces of its slot on it")
+	eq(AP.FacemapsSlots[ONEMAT] and AP.FacemapsSlots[ONEMAT]["Face 10 (New)"],
+		"models/humans/modern/male/male_04/facemap_01",
+		"a model of a single material takes them on that material")
+	eq(AP.FacemapsSlots["models/slav/m/players_sheet"], nil, "the sheet of the body is left alone")
+	eq(AP.MultiFacemaps[string.lower(OWN)] and AP.MultiFacemaps[string.lower(OWN)]["Face 10 (New)"]
+		and AP.MultiFacemaps[string.lower(OWN)]["Face 10 (New)"][FACE],
+		"models/humans/modern/male/male_04/facemap_01",
+		"the menu of the mod lists them for the model under its own material as well")
+	local applied
+	for _, path in ipairs({ FACE, "models/slav/m/players_sheet" }) do
+		local list = AP.FacemapsSlots[path]
+		if istable(list) and list["Face 10 (New)"] then applied = list["Face 10 (New)"] end
+	end
+	eq(applied, "models/humans/modern/male/male_04/facemap_01",
+		"the apply of the gamemode (FacemapsSlots[material of the player][face]) finds the face on the model")
+	M.newPlayer("Tester", OWN)
+	M.command("zcg_face_debug")
+	local said = false
+	for _, line in ipairs(M.log) do
+		if line:find(FACE .. ": faces registered", 1, true) then said = true end
+	end
+	check(said, "zcg_face_debug names the material the faces are registered under now")
+	eq(#M.errors, 0, "no errors: " .. table.concat(M.errors, " | "))
+	M.setConVar("zcg_sync_faces", "0")
+	eq(ZCG.SyncFaces(), false, "zcg_sync_faces 0: nothing is synced")
+	eq(AP.FacemapsSlots[FACE], nil, "the mirrored faces are taken back with everything else")
+	eq(AP.FacemapsSlots[ONEMAT], nil, "...all of them")
+	eq(AP.FacemapsSlots[SLOT3]["Face 10 (New)"], "models/humans/modern/male/male_04/facemap_01",
+		"the slot the Lua wrote stays as it was")
+	M.setConVar("zcg_sync_faces", "1")
+
 	-- ----------------------------- tables with clothes alone: no face table is made for the sync
 	fresh()
 	M = dofile(testdir .. "/gmod_mock.lua")("server")
