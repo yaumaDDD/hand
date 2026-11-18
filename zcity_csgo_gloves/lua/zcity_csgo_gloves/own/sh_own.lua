@@ -11,7 +11,7 @@
 
 ZCO = ZCO or {}
 
-ZCO.Version = "2.23.0"
+ZCO.Version = "2.24.0"
 ZCO.Name = "Z-City Own Appearance"
 ZCO.Catalog = ZCO.Catalog or {}
 ZCO.CatalogCounts = ZCO.CatalogCounts or {}

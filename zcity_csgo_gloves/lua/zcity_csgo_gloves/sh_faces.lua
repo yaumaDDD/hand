@@ -493,6 +493,68 @@ concommand.Add("zcg_faces" .. (CLIENT and "_cl" or ""), function(ply)
 	if #lines > 200 then print("  ... and " .. (#lines - 200) .. " more (zcg_sync_faces 0 takes every one back)") end
 end, nil, "Put the faces of Z-City into the table the other menu reads as well, and say what was done")
 
+--- the face the player wears, put straight onto the materials his model actually has - the way it
+--- was done from the start, in the wear itself (own/sv_own.lua): the gamemode sets a face once, and
+--- a model change, a bodygroup, a heal or a dress by the Appearance Mod alone can take it back;
+--- this sets the sub-materials again, from both tables of faces - the one of the gamemode
+--- (FacemapsSlots) and the one of this addon (ZCO.Catalog.Facemaps), plus every slot a model with
+--- several of them is known for (MultiFacemaps) (2.24.0).
+--- Returns how many slots were set; 0 when the player wears no face or the tables are not there.
+function ZCG.ForceFace(ply)
+	if not IsValid(ply) or not ply.GetMaterials then return 0 end
+	local AP = istable(hg) and hg.Appearance or nil
+	local own = istable(ZCO) and istable(ZCO.Catalog) and ZCO.Catalog or nil
+	local slots = istable(AP) and istable(AP.FacemapsSlots) and AP.FacemapsSlots or nil
+	local ownSlots = own and istable(own.Facemaps) and own.Facemaps or nil
+	if not slots and not ownSlots then return 0 end
+	local multi = (istable(AP) and istable(AP.MultiFacemaps) and AP.MultiFacemaps or nil)
+		or (own and istable(own.MultiFacemaps) and own.MultiFacemaps or nil)
+	local look = istable(ply.CurAppearance) and ply.CurAppearance
+		or (istable(ply.CachedAppearance) and ply.CachedAppearance or nil)
+	local face = istable(look) and isstring(look.AFacemap) and look.AFacemap or nil
+	if not face or face == "" then return 0 end
+	local mats = ply:GetMaterials() or {}
+	--- the faces of one material of the player, from whichever table names them
+	local function listOf(material)
+		local key = clean(material)
+		local list = (slots and (slots[material] or slots[key])) or nil
+		if not istable(list) then list = (ownSlots and (ownSlots[material] or ownSlots[key])) or nil end
+		return istable(list) and list or nil
+	end
+	local done = 0
+	if face == "Default" then
+		-- the face of the model itself: whatever a face put there is taken back
+		for index = 1, #mats do
+			if listOf(mats[index]) then
+				ply:SetSubMaterial(index - 1, "")
+				done = done + 1
+			end
+		end
+		return done
+	end
+	for index = 1, #mats do
+		local list = listOf(mats[index])
+		local path = list and list[face] or nil
+		if isstring(path) and path ~= "" then
+			ply:SetSubMaterial(index - 1, path)
+			done = done + 1
+		end
+	end
+	-- a model with several face slots: the face is written into every slot it is known for
+	local model = ply.GetModel and ply:GetModel() or nil
+	local by_slot = istable(multi) and isstring(model) and istable(multi[model]) and multi[model][face] or nil
+	if istable(by_slot) then
+		for index = 1, #mats do
+			local material = by_slot[mats[index]] or by_slot[clean(mats[index])]
+			if isstring(material) and material ~= "" then
+				ply:SetSubMaterial(index - 1, material)
+				done = done + 1
+			end
+		end
+	end
+	return done
+end
+
 --- why a face does or does not go onto a player: the materials of the player against the tables
 concommand.Add("zcg_face_debug" .. (CLIENT and "_cl" or ""), function(ply)
 	if SERVER and IsValid(ply) and not ply:IsSuperAdmin() then return end

@@ -344,6 +344,15 @@ return function(testdir, luaroot)
 		if line:find(FACE .. ": faces registered", 1, true) then said = true end
 	end
 	check(said, "zcg_face_debug names the material the faces are registered under now")
+
+	-- the old way, straight on the player: what he wears is put back on his own materials
+	local faceply = M.newPlayer("Лицо", OWN)
+	faceply.CurAppearance = { AFacemap = "Face 10 (New)" }
+	check(ZCG.ForceFace(faceply) >= 1, "the face the player wears is put back onto the material his model carries")
+	eq(faceply:GetSubMaterial(0), "models/humans/modern/male/male_04/facemap_01",
+		"... exactly the material the tables name for it")
+	faceply.CurAppearance.AFacemap = "Default"
+	check(ZCG.ForceFace(faceply) >= 1, "the face of the model itself takes the sub-material back")
 	eq(#M.errors, 0, "no errors: " .. table.concat(M.errors, " | "))
 	M.setConVar("zcg_sync_faces", "0")
 	eq(ZCG.SyncFaces(), false, "zcg_sync_faces 0: nothing is synced")

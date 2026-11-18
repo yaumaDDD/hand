@@ -163,6 +163,20 @@ end
 
 net.Receive("zco_ask", function()
 	local appearance = ZCO.LocalAppearance()
+	-- Nothing of our own is kept: the file the Appearance Mod keeps is the save of this player -
+	-- the server is asked for it at every spawn, so a look chosen once stays (2.24.0).
+	if (not appearance or next(appearance) == nil) and not ZCO.ForcedRandom:GetBool()
+		and hg and hg.Appearance
+		and hg.Appearance.LoadAppearanceFile and hg.Appearance.SelectedAppearance then
+		local got = hg.Appearance.LoadAppearanceFile(hg.Appearance.SelectedAppearance:GetString())
+		if type(got) == "table" and next(got) ~= nil then
+			appearance = got
+			local col = appearance.AColor
+			if istable(col) and col.r and col.g and col.b then
+				appearance.AColor = { r = col.r, g = col.g, b = col.b, a = col.a or 255 }
+			end
+		end
+	end
 	net.Start("zco_answer")
 	net.WriteTable(appearance or {})
 	net.SendToServer()

@@ -138,6 +138,11 @@ function ZCO.Apply(ply, appearance, noModelChange)
 	-- the field Z-City itself reads: its modes (homicide names a traitor by the name over his
 	-- head), its ragdolls (fake/sv_tier_0.lua copies it onto the body) and its admin tools
 	ply.CurAppearance = ZCO.Copy(appearance)
+	-- the field the Appearance Mod itself reads before it does anything else (its ApplyAppearance
+	-- takes Client.CachedAppearance first, and its own spawn path asks for a random look when that
+	-- field is empty): what this addon put on the player is what the mod keeps for him, so his own
+	-- path does not dress him at random over it (2.24.0)
+	ply.CachedAppearance = ZCO.Copy(appearance)
 	hook.Run("ZCOApplied", ply, ply.zcoAppearance)
 	return true
 end
@@ -215,6 +220,33 @@ local function wantsRandom(client)
 	return client:GetInfoNum("zco_random", 0) ~= 0
 end
 
+--- the face the player wears, put back onto the materials his model actually has - a moment later,
+--- because the materials of a model that was just changed are not the ones of this very tick
+--- (ZCG.ForceFace, sh_faces.lua: both tables of faces, and every slot a model is known for) (2.24.0)
+local function faceAgain(client)
+	if not (ZCGloves and ZCGloves.ForceFace) then return end
+	for _, delay in ipairs({ 0.5, 2 }) do
+		timer.Simple(delay, function()
+			if IsValid(client) then ZCGloves.ForceFace(client) end
+		end)
+	end
+end
+
+--- A player whose client keeps no look at all is dressed once - and the look is kept: it is written
+--- into his file and sent to his client, which writes it into the file of the Appearance Mod as
+--- well, so the next spawn of his reads it back instead of making another random look. That is how
+--- the save of the Appearance Mod works, and it is what "no random outfit every time" means here.
+function ZCO.DressOnce(client)
+	if not IsValid(client) or not client:IsPlayer() then return false end
+	if (client.IsBot and client:IsBot()) or wantsRandom(client) then return false end
+	if client.zcoAppearance or ZCO.SavedOf(client) then return false end
+	ZCO.Wear(client, ZCO.Random(client.zcoSex and ZCO.FEMALE or nil))
+	ZCO.Save(client, client.zcoAppearance)
+	ZCO.SendSaved(client)
+	return true
+end
+local dressOnce = ZCO.DressOnce
+
 -- --------------------------------------------------------------------------------------
 -- what the rest of the server calls
 -- --------------------------------------------------------------------------------------
@@ -224,7 +256,9 @@ local waiting = {}
 --- ApplyAppearance(ply, appearance, random, responseIsValid, useCached) - the call the gamemode
 --- of Z-City makes when a player spawns. Nothing on the server: the appearance of the file it
 --- keeps; no file yet: the client is asked for the one it kept before (his own data/zco/, and the
---- data/zcity/appearances/ of the Appearance Mod), and three seconds later a random one is put on.
+--- data/zcity/appearances/ of the Appearance Mod) - and what the client sends is put on him and
+--- kept from then on. A look is made on the server only when the client keeps nothing at all, and
+--- that look is kept too: the same player is never dressed at random on every spawn (2.24.0).
 --- random = true is what the modes ask for: a player who has a saved look keeps it (zco_keep_appearance).
 function ZCO.ApplyAppearance(client, appearance, random, _responseIsValid, useCached)
 	if not IsValid(client) or not client:IsPlayer() then return end
@@ -237,6 +271,21 @@ function ZCO.ApplyAppearance(client, appearance, random, _responseIsValid, useCa
 				ZCO.Wear(client, saved)
 				return
 			end
+			-- Nothing of his own on the server: his client is asked for the file it keeps, the way
+			-- the Appearance Mod asks (its Get_Appearance), and the answer is worn when it comes.
+			-- Until then the player stays as the gamemode dressed him - no random look of our own.
+			if not waiting[client] then
+				waiting[client] = CurTime() + 3
+				net.Start("zco_ask")
+				net.Send(client)
+				timer.Create("zco_wait_" .. client:EntIndex(), 3.2, 1, function()
+					if waiting[client] then
+						waiting[client] = nil
+						dressOnce(client)
+					end
+				end)
+			end
+			return
 		end
 		ZCO.Wear(client, ZCO.Random(sex))
 		return
@@ -267,7 +316,7 @@ function ZCO.ApplyAppearance(client, appearance, random, _responseIsValid, useCa
 	timer.Create("zco_wait_" .. client:EntIndex(), 3.2, 1, function()
 		if waiting[client] and IsValid(client) then
 			waiting[client] = nil
-			ZCO.Wear(client, ZCO.Random())
+			dressOnce(client)
 		end
 	end)
 end
@@ -301,6 +350,23 @@ local function theirSaved(client)
 	return copy
 end
 
+--- is this the same look as that one? (what a player sees, not the tables themselves)
+local function sameLook(one, two)
+	if not istable(one) or not istable(two) then return false end
+	if one.AModel ~= two.AModel or one.AName ~= two.AName or one.AFacemap ~= two.AFacemap then
+		return false
+	end
+	local function clothes(of)
+		local names = {}
+		for slot, worn in pairs(istable(of.AClothes) and of.AClothes or {}) do
+			names[#names + 1] = tostring(slot) .. "=" .. tostring(worn)
+		end
+		table.sort(names)
+		return table.concat(names, ",")
+	end
+	return clothes(one) == clothes(two)
+end
+
 --- put that wrapper in place (a pack may load later than we do, so it is tried more than once)
 function ZCO.KeepWrap()
 	if not (ZCO.Keep and ZCO.Keep:GetBool()) then return end
@@ -310,15 +376,38 @@ function ZCO.KeepWrap()
 	if not istable(AP) or not isfunction(AP.ForceApplyAppearance) then return end
 
 	local function wrapped(client, appearance, random, ...)
-		if random and ZCO.Keep:GetBool() and IsValid(client) and client:IsPlayer()
-			and not (client.IsBot and client:IsBot()) and not wantsRandom(client) then
-			local saved = theirSaved(client) or ZCO.SavedOf(client)
+		local mine = IsValid(client) and client:IsPlayer() and ZCO.Keep:GetBool()
+			and not (client.IsBot and client:IsBot()) and not wantsRandom(client)
+		if random and mine then
+			-- What this addon keeps for the player is his look, and the cache of the mod is read
+			-- only where there is none of it: at a spawn the mod fills that cache with a NEW random
+			-- look whenever the file of the client is empty, and taking the cache first is what
+			-- dressed the player at random every time (2.24.0). A look taken from the cache is kept
+			-- as his own from then on, so it is not another random one at the next spawn.
+			local saved = ZCO.SavedOf(client) or theirSaved(client)
 			if saved then
 				AP.ForceApplyAppearance(client, saved)
+				faceAgain(client)
+				if not sameLook(saved, ZCO.Load(client)) then
+					ZCO.Save(client, saved)
+					ZCO.SendSaved(client)
+				end
 				return
 			end
 		end
-		return orig(client, appearance, random, ...)
+		local got = orig(client, appearance, random, ...)
+		if mine then faceAgain(client) end
+		-- Whatever the mod itself put on the player - its editor after Apply, its own file, a mode
+		-- of the gamemode - is kept as the look of this addon: the next spawn does not take it away
+		-- and the client writes it into the file the mod reads (2.24.0).
+		if mine then
+			local now = theirSaved(client)
+			if now and not sameLook(now, ZCO.Load(client)) then
+				ZCO.Save(client, now)
+				ZCO.SendSaved(client)
+			end
+		end
+		return got
 	end
 
 	ZCO.Keeping = wrapped
@@ -337,21 +426,20 @@ end)
 net.Receive("zco_answer", function(_length, client)
 	local appearance = net.ReadTable()
 	if not IsValid(client) then return end
-	if type(appearance) ~= "table" or next(appearance) == nil then
-		if waiting[client] then
-			waiting[client] = nil
-			ZCO.Wear(client, ZCO.Random())
-		end
-		return
-	end
 	waiting[client] = nil
-	local ok = ZCO.Validate(ZCO.Clean(appearance))
-	if not ok then
-		ZCO.Wear(client, ZCO.Random())
+	-- The client keeps nothing: a look is made for him once and kept from then on (ZCO.DressOnce),
+	-- so that he is not dressed at random on every spawn. A look this server cannot wear is passed
+	-- over: the player stays exactly as the gamemode dressed him (2.24.0).
+	if type(appearance) ~= "table" or next(appearance) == nil then
+		dressOnce(client)
 		return
 	end
-	ZCO.Wear(client, appearance)
+	local clean = ZCO.Clean(appearance)
+	if not ZCO.Validate(clean) then return end
+	client.CachedAppearance = clean -- the spawn path of the gamemode reuses it from now on
+	ZCO.Wear(client, clean)
 	ZCO.Save(client, client.zcoAppearance)
+	faceAgain(client)
 	if client.zcoAppearance then
 		net.Start("zco_got")
 		net.WriteTable(client.zcoAppearance)
@@ -411,6 +499,13 @@ hook.Add("PlayerSpawn", "zco_spawn", function(ply)
 			ZCO.ApplyAppearance(ply, nil, nil, nil, true)
 		end
 	end)
+end)
+
+-- The gamemode puts a face on the player once, at the wear; a model change, a bodygroup or a heal
+-- of Z-City can take it back. After every spawn the face the player wears is put on him again -
+-- on the materials his model actually has (ZCG.ForceFace, sh_faces.lua) (2.24.0).
+hook.Add("PlayerSpawn", "zco_face", function(ply)
+	faceAgain(ply)
 end)
 
 hook.Add("PlayerLoadout", "zco_spawn", function(ply)

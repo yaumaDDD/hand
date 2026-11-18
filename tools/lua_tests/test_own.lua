@@ -118,8 +118,32 @@ return function(testdir, luaroot)
 	M.netFlush(false)          -- the client has no file either: it answers with nothing
 	M.netFlush(true)
 	M.advance(4)
-	check(ply.zcoAppearance ~= nil, "three seconds later a random look is on him")
-	check(ZCO.ModelByName(ply.zcoAppearance.AModel) ~= nil, "the random look is one of the catalog")
+	check(ply.zcoAppearance ~= nil, "with nothing kept anywhere a look is made for him once (2.24.0)")
+	local madeOnce = ply.zcoAppearance and ply.zcoAppearance.AModel
+	check(M.written[ZCO.FileOf(ply)] ~= nil, "... and it is written into his file, so it is not made again")
+	ZCO.ApplyAppearance(ply, nil, true)
+	eq(ply.zcoAppearance and ply.zcoAppearance.AModel, madeOnce,
+		"... the next spawn keeps that look: no random outfit every time")
+	M.written[ZCO.FileOf(ply)] = nil
+	ply.zcoAppearance, ply.zcoCached = nil, nil
+
+	-- the client answers with the file the Appearance Mod keeps: that file is the save of the
+	-- player, and the server puts it on him and hands it to the cache of the gamemode
+	net.Start("zco_answer")
+	net.WriteTable({
+		AModel = "Male 02",
+		AClothes = { main = "normal", pants = "normal", boots = "normal" },
+		AName = "Из файла",
+		AColor = { r = 12, g = 34, b = 56, a = 255 },
+		AAttachments = {},
+		ABodygroups = {},
+		AFacemap = "Default",
+	})
+	net.SendToServer()
+	M.netFlush(true)
+	check(ply.zcoAppearance ~= nil, "the look the client kept in the file of the Appearance Mod is put on him")
+	eq(ply.zcoAppearance and ply.zcoAppearance.AName, "Из файла", "... with the name it was saved under")
+	check(ply.CachedAppearance ~= nil, "the cache of the gamemode holds it: its own spawn path reuses it")
 
 	local look = {
 		AModel = "Male 02",
@@ -407,11 +431,22 @@ return function(testdir, luaroot)
 	check(bot.zcoAppearance ~= nil and bot.zcoAppearance.AName ~= "Вася Пупкин",
 		"a bot is dressed at random even with a file on the server")
 
-	-- nothing saved: a random look, as before; a file that is no look is not kept either
+	-- nothing saved: his client is asked for the file it keeps before anything is put on him
 	local fresh = M.newPlayer("Новый", oneEntry.mdl, { steamid64 = "76561198000000022" })
 	check(ZCO.SavedOf(fresh) == nil, "a player with nothing saved has no saved look")
 	ZCO.ApplyAppearance(fresh, nil, true)
-	check(fresh.zcoAppearance ~= nil, "... and a mode that asks for a random look dresses him at random")
+	local askedFresh = false
+	for _, message in ipairs(M.netMessages) do
+		if message.name == "zco_ask" then askedFresh = true end
+	end
+	check(askedFresh, "... and a mode that asks for a random look asks his client for the file it keeps")
+	check(fresh.zcoAppearance == nil, "... nothing is put on him while that answer is on its way")
+	M.advance(4)
+	check(fresh.zcoAppearance ~= nil, "... and when no answer comes a look is made for him once")
+	local madeFresh = fresh.zcoAppearance.AModel
+	check(M.written[ZCO.FileOf(fresh)] ~= nil, "... it is kept in his file")
+	ZCO.ApplyAppearance(fresh, nil, true)
+	eq(fresh.zcoAppearance.AModel, madeFresh, "... and the next call keeps it instead of another random one")
 	ZCO.Save(fresh, { AModel = "", AClothes = {}, AAttachments = {}, ABodygroups = {}, AFacemap = "Default" })
 	check(ZCO.SavedOf(fresh) ~= nil, "a file that is no look is not kept - what he wears now is")
 	M.written[ZCO.FileOf(fresh)] = "это не внешность"
@@ -443,10 +478,20 @@ return function(testdir, luaroot)
 	mine.CachedAppearance = { AModel = one, AClothes = { main = "normal" }, AAttachments = {},
 		ABodygroups = {}, AName = "Модовский", AFacemap = "Default", AColor = Color(1, 2, 3) }
 	ApplyAppearance(mine, nil, true)
-	check(forced ~= nil and forced.AName == "Модовский",
-		"the look the mod cached for a player is the one kept when a mode asks for a random one")
+	check(forced ~= nil and forced.AName == "Вася Пупкин",
+		"the look the server keeps for a player wins over the cache of the mod: at a spawn the mod "
+		.. "fills that cache with a new random look when the file of the client is empty (2.24.0)")
 	eq(calls, 1, "... and it is put on by ForceApplyAppearance of the mod")
 	eq(modded.calls, 0, "... and the mod is not asked to dress him at random")
+	-- with no file of his own the cache of the mod is the look of the player - and it is kept
+	M.written[ZCO.FileOf(mine)] = nil
+	mine.zcoCached, mine.zcoAppearance = nil, nil
+	forced, calls = nil, 0
+	ApplyAppearance(mine, nil, true)
+	check(forced ~= nil and forced.AName == "Модовский",
+		"with no file of his own the look the mod cached for the player is put on him")
+	eq((ZCO.Load(mine) or {}).AName, "Модовский", "... and it is kept in a file of his own from then on")
+	ZCO.Save(mine, look)
 	ApplyAppearance(mine, nil, false)
 	eq(modded.calls, 1, "a call that does not ask for a random look goes to the mod untouched")
 	eq(calls, 1, "... and nothing is forced on the player")
@@ -469,6 +514,26 @@ return function(testdir, luaroot)
 	forced, modded.calls = nil, 0
 	ApplyAppearance(bot2, nil, true)
 	check(forced == nil and modded.calls == 1, "a bot goes to the mod: it has no look to keep")
+
+	-- a look the mod made at random for a player who has no file of his own would be another one at
+	-- the next spawn: what was put on him is kept as his own from now on (2.24.0)
+	local nofile = M.newPlayer("Без файла", oneEntry.mdl, { steamid64 = "76561198000000024" })
+	check(ZCO.Load(nofile) == nil, "the player of the test has no file of his own on the server")
+	nofile.CachedAppearance = { AModel = one, AClothes = { main = "normal" }, AAttachments = {},
+		ABodygroups = {}, AName = "Случайный", AFacemap = "Default", AColor = Color(4, 5, 6) }
+	forced, modded.calls = nil, 0
+	ApplyAppearance(nofile, nil, true)
+	check(forced ~= nil and forced.AName == "Случайный", "what the mod cached for him is put on him")
+	check(ZCO.Load(nofile) ~= nil, "... and it is kept in a file of his own on the server")
+	eq((ZCO.Load(nofile) or {}).AName, "Случайный", "... the very look that was put on him")
+	check(#M.netMessages >= 1, "... and his client is told, so it writes the file the mod reads")
+	nofile.CachedAppearance = { AModel = one, AClothes = { main = "normal" }, AAttachments = {},
+		ABodygroups = {}, AName = "Другой случайный", AFacemap = "Default", AColor = Color(7, 8, 9) }
+	forced = nil
+	ApplyAppearance(nofile, nil, true)
+	eq((forced or {}).AName, "Случайный",
+		"... so the next spawn keeps it instead of another random look the mod makes")
+	M.netMessages = {}
 
 	do -- the content of the addon that no Lua names: found by walking its own folder (own/sh_scan.lua)
 		local FOLDER, MODEL = "addons/zcity_csgo_gloves", "models/odd/found_body.mdl"
@@ -839,6 +904,38 @@ return function(testdir, luaroot)
 	check(old ~= nil, "a set of the old mod is read")
 	if old then eq(old.AModel, "Male 05", "... with its model") end
 	check(#ZCO.OldList() >= 1, "the sets of the old mod are listed")
+
+	-- the file the Appearance Mod keeps is the save of the player: with no set of his own the client
+	-- answers the server with that file, so a look chosen once is not lost (2.24.0)
+	do
+		local wasLoad, wasSelected = hg.Appearance.LoadAppearanceFile, hg.Appearance.SelectedAppearance
+		local wasPreset, wasMine = ZCO.Presets["main"], C.written["zco/main.txt"]
+		local wasOld = C.written["zcity/appearances/main.json"]
+		local wasThere = (C.pathFiles.DATA or {})["zcity/appearances/main.json"]
+		ZCO.Presets["main"], C.written["zco/main.txt"] = nil, nil
+		C.written["zcity/appearances/main.json"] = nil
+		if C.pathFiles.DATA then C.pathFiles.DATA["zcity/appearances/main.json"] = nil end
+		hg.Appearance.LoadAppearanceFile = function()
+			return { AModel = "Male 04", AClothes = { main = "normal" }, AName = "Из мода",
+				AColor = Color(11, 22, 33), AAttachments = {}, ABodygroups = {}, AFacemap = "Default" }
+		end
+		hg.Appearance.SelectedAppearance = { GetString = function() return "main" end }
+		check(ZCO.LocalAppearance() == nil, "a set of his own the client has none of")
+		local sent = #C.netMessages
+		C.netReceivers["zco_ask"](8, C.localplayer)
+		check(#C.netMessages > sent, "... so the server that asks is answered")
+		local last = C.netMessages[#C.netMessages]
+		eq(last.name, "zco_answer", "... by zco_answer")
+		local answer = last.data and last.data[1]
+		check(type(answer) == "table" and answer.AModel == "Male 04",
+			"... with the look of the file the Appearance Mod keeps")
+		check(type(answer.AColor) == "table" and answer.AColor.r == 11 and answer.AColor.g == 22,
+			"... and its color as numbers: a Color of the game does not travel in a table")
+		hg.Appearance.LoadAppearanceFile, hg.Appearance.SelectedAppearance = wasLoad, wasSelected
+		ZCO.Presets["main"], C.written["zco/main.txt"] = wasPreset, wasMine
+		C.written["zcity/appearances/main.json"] = wasOld
+		if C.pathFiles.DATA then C.pathFiles.DATA["zcity/appearances/main.json"] = wasThere end
+	end
 
 	-- ------------------------------------------------------------------ a model that is not here
 	-- The server cannot tell what a player has downloaded, so the client looks for itself: a model
