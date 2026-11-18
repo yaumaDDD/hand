@@ -28,6 +28,9 @@ jobs:
     timeout-minutes: 30
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      # (the logs of the steps are kept out of the repository: a file at its root is content the
+      # build looks at)
+      LOGS: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -40,24 +43,38 @@ jobs:
       - name: Install the build tools
         run: python -m pip install py7zr==1.1.4 lupa==2.8
 
+      # (every step writes what it said into a file of its own: the logs of a run cannot always be
+      # fetched, and the last step keeps the ends of them as notices)
       - name: Test the Lua code
-        run: python tools/test_lua.py
+        run: |
+          set -o pipefail
+          python tools/test_lua.py 2>&1 | tee "$LOGS/lua.log"
 
       - name: Test the Lua code with the other version of the Appearance Mod
-        run: python tools/test_lua.py --pack "Z-City Appearance Mod LEGACY"
+        run: |
+          set -o pipefail
+          python tools/test_lua.py --pack "Z-City Appearance Mod LEGACY" 2>&1 | tee "$LOGS/lua_legacy.log"
 
       - name: Test the placing of drop-in content
-        run: python tools/test_content.py
+        run: |
+          set -o pipefail
+          python tools/test_content.py 2>&1 | tee "$LOGS/content.log"
 
       - name: Test sort_content as it is shipped
-        run: python tools/test_sort_tool.py
+        run: |
+          set -o pipefail
+          python tools/test_sort_tool.py 2>&1 | tee "$LOGS/tool.log"
 
       # (the unpacked archives are kept for the second build)
       - name: Build the addon
-        run: python build_addon.py --zip --keep-temp
+        run: |
+          set -o pipefail
+          python build_addon.py --zip --keep-temp 2>&1 | tee "$LOGS/build.log"
 
       - name: Build the addon with the other version of the Appearance Mod
-        run: python build_addon.py --zip --pack "Z-City Appearance Mod LEGACY"
+        run: |
+          set -o pipefail
+          python build_addon.py --zip --pack "Z-City Appearance Mod LEGACY" 2>&1 | tee "$LOGS/build_legacy.log"
 
       - name: Attach the archives to the release
         env:
@@ -72,3 +89,22 @@ jobs:
               gh release upload "$TAG" "$report" --clobber
             fi
           done
+
+      # (the logs of a run cannot always be fetched: the ends of them are kept as notices)
+      - name: Keep the results
+        if: always()
+        shell: python
+        run: |
+          import os
+          logs = os.environ.get('LOGS') or os.environ.get('RUNNER_TEMP') or '.'
+          for name in ('lua', 'lua_legacy', 'content', 'tool', 'build', 'build_legacy'):
+              path = os.path.join(logs, name + '.log')
+              if not os.path.isfile(path):
+                  continue
+              with open(path, encoding='utf-8', errors='replace') as f:
+                  text = f.read()
+              failed = [line for line in text.splitlines()
+                        if 'FAILED' in line or 'PROBLEM' in line or 'Traceback' in line or 'Error' in line]
+              text = '\n'.join(failed)[:2500] + '\n...\n' + text[-2500:]
+              text = text.replace('%', '%25').replace('\r', '').replace('\n', '%0A')
+              print('::notice title=%s::%s' % (name, text))
