@@ -1715,7 +1715,9 @@ build_addon.py / .bat     сборка готового аддона
 .github/workflows/        release.yml — при публикации релиза GitHub сам собирает аддон (обе
                           сборки: с Appearance Mod и с LEGACY) и прикладывает оба zip;
                           test.yml — тесты при каждом изменении кода, в том числе
-                          sort_content.bat на Windows
+                          sort_content.bat на Windows. Логи шагов иногда не отдаются наружу,
+                          поэтому оба файла пишут их в свои файлы и в конце оставляют концы
+                          заметками (notice) — их видно через API даже без логов
 docs/gloves.jpg           каталог
 docs/fingers.jpg          открытые перчатки крупно
 docs/content_names.txt    материалы и модели, которые называет Lua одежды
