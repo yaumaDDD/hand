@@ -8,7 +8,9 @@ ZCO = ZCO or {}
 
 ZCO.Selected = CreateClientConVar("zco_selected", "main", true, false,
 	"the set of data/zco/ that is sent to the server when it asks for the look of this client")
-ZCO.ForcedRandom = CreateClientConVar("zco_random", "0", true, false,
+-- (userinfo: the server reads it, so that a player who asks for a random look gets one even where
+-- a saved look would otherwise be kept - zco_keep_appearance)
+ZCO.ForcedRandom = CreateClientConVar("zco_random", "0", true, true,
 	"1: ask the server for a random look instead of the one of the files", 0, 1)
 
 ZCO.Presets = ZCO.Presets or {}       -- name -> the appearance of the files of this client

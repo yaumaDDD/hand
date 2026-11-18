@@ -339,6 +339,137 @@ return function(testdir, luaroot)
 		check(yours, "... and which model the one who asked wears himself")
 	end
 
+	-- ------------------------------------------------------------------ a saved look stays on
+	-- The modes of Z-City dress a player by asking for a RANDOM appearance. The Appearance Mod does
+	-- not take his look away on that call (its fix addon wraps ApplyAppearance and applies the saved
+	-- look instead), and saves work the same way here.
+	check(ZCO.Keep ~= nil and ZCO.Keep:GetBool(), "zco_keep_appearance is on by default")
+	local mine = M.newPlayer("Свой", oneEntry.mdl, { steamid64 = "76561198000000020" })
+	local look = { AModel = one, AClothes = { main = "normal", pants = "normal", boots = "normal" },
+		AName = "Вася Пупкин", AColor = Color(9, 8, 7), AAttachments = {}, ABodygroups = {},
+		AFacemap = "Default" }
+	ZCO.Save(mine, look)
+	check(ZCO.SavedOf(mine) ~= nil, "the look the server keeps for a player is his saved one")
+	eq((ZCO.SavedOf(mine) or {}).AName, "Вася Пупкин", "... with its name")
+	eq((ZCO.SavedOf(mine) or {}).AModel, one, "... and its model")
+
+	ZCO.ApplyAppearance(mine, nil, true)          -- a mode asks for a random look
+	eq(mine.zcoAppearance and mine.zcoAppearance.AName, "Вася Пупкин",
+		"a mode that asks for a random look leaves a player the one he saved")
+	eq(mine.zcoAppearance and mine.zcoAppearance.AModel, one, "... on the model he chose")
+	hg.Appearance.ApplyAppearance(mine, nil, true)
+	eq(mine.zcoAppearance and mine.zcoAppearance.AName, "Вася Пупкин",
+		"the call the gamemode makes by name keeps it too")
+
+	-- a player who asks for a random look himself gets one (zco_random is userinfo: the server reads it)
+	mine.info = { zco_random = "1" }
+	check(mine:GetInfoNum("zco_random", 0) == 1, "the server sees zco_random of a player")
+	ZCO.ApplyAppearance(mine, nil, true)
+	check(mine.zcoAppearance ~= nil and mine.zcoAppearance.AName ~= "Вася Пупкин",
+		"a player who asks for a random look in his own console gets a random one")
+	mine.info = nil
+
+	-- the server can be told to dress everybody at random on such a call, as before
+	M.setConVar("zco_keep_appearance", "0")
+	ZCO.ApplyAppearance(mine, nil, true)
+	check(mine.zcoAppearance ~= nil and mine.zcoAppearance.AName ~= "Вася Пупкин",
+		"zco_keep_appearance 0: every such call dresses the player at random")
+	M.setConVar("zco_keep_appearance", "1")
+	ZCO.ApplyAppearance(mine, nil, true)
+	eq(mine.zcoAppearance and mine.zcoAppearance.AName, "Вася Пупкин",
+		"... and 1 gives him his saved look back")
+
+	-- zco_status says which of the two it is, so a player can see it in the game
+	M.log = {}
+	M.command("zco_status", mine)
+	local told = false
+	for _, line in ipairs(M.log) do
+		if line:find("Сохранённая внешность: остаётся на игроке", 1, true)
+			and line:find("твоя: есть", 1, true) then told = true end
+	end
+	check(told, "zco_status tells a player that his saved look stays on him: "
+		.. table.concat(M.log, " | "))
+	M.setConVar("zco_keep_appearance", "0")
+	M.log = {}
+	M.command("zco_status", mine)
+	told = false
+	for _, line in ipairs(M.log) do
+		if line:find("не держится", 1, true) then told = true end
+	end
+	check(told, "... and that it does not when the server turns it off")
+	M.setConVar("zco_keep_appearance", "1")
+
+	-- a bot is dressed at random: it never chooses and never has a look of its own
+	local bot = M.newPlayer("Бот", oneEntry.mdl, { steamid64 = "76561198000000021", bot = true })
+	check(bot:IsBot(), "the bot of the test is a bot")
+	ZCO.Save(bot, look)
+	ZCO.ApplyAppearance(bot, nil, true)
+	check(bot.zcoAppearance ~= nil and bot.zcoAppearance.AName ~= "Вася Пупкин",
+		"a bot is dressed at random even with a file on the server")
+
+	-- nothing saved: a random look, as before; a file that is no look is not kept either
+	local fresh = M.newPlayer("Новый", oneEntry.mdl, { steamid64 = "76561198000000022" })
+	check(ZCO.SavedOf(fresh) == nil, "a player with nothing saved has no saved look")
+	ZCO.ApplyAppearance(fresh, nil, true)
+	check(fresh.zcoAppearance ~= nil, "... and a mode that asks for a random look dresses him at random")
+	ZCO.Save(fresh, { AModel = "", AClothes = {}, AAttachments = {}, ABodygroups = {}, AFacemap = "Default" })
+	check(ZCO.SavedOf(fresh) ~= nil, "a file that is no look is not kept - what he wears now is")
+	M.written[ZCO.FileOf(fresh)] = "это не внешность"
+	eq((ZCO.SavedOf(fresh) or {}).AName, fresh.zcoCached and fresh.zcoCached.AName,
+		"a file that cannot be read is passed over: what he wears is kept")
+	fresh.zcoAppearance, fresh.zcoCached = nil, nil
+	check(ZCO.SavedOf(fresh) == nil, "a damaged file with nothing behind it is no saved look")
+	fresh.zcoCached = look
+	eq((ZCO.SavedOf(fresh) or {}).AName, "Вася Пупкин",
+		"... and the look he sent before is taken when there is one")
+
+	-- and where the Appearance Mod is installed: its own call is wrapped the way the fix of the mod
+	-- wraps it (a pack that carries that fix does not include it here - sh_register.lua makes
+	-- hg.AppearanceFix, which the pack looks into first)
+	local forced, calls, modded = nil, 0, { calls = 0 }
+	modded.fn = function(_client, _appearance, random)
+		modded.calls = modded.calls + 1
+		modded.random = random
+	end
+	ApplyAppearance = modded.fn
+	hg.Appearance.ApplyAppearance = modded.fn
+	hg.Appearance.AppearanceValidater = function(tbl) return type(tbl) == "table" and tbl.AModel ~= nil end
+	hg.Appearance.ForceApplyAppearance = function(_client, tbl) forced, calls = tbl, calls + 1 end
+	ZCO.OwnApply, ZCO.Keeping = nil, nil
+	ZCO.KeepWrap()
+	check(ApplyAppearance ~= modded.fn and ApplyAppearance == ZCO.Keeping,
+		"the call of the mod is wrapped, as the fix of the mod wraps it")
+	mine.zcoCached, mine.zcoAppearance = nil, nil
+	mine.CachedAppearance = { AModel = one, AClothes = { main = "normal" }, AAttachments = {},
+		ABodygroups = {}, AName = "Модовский", AFacemap = "Default", AColor = Color(1, 2, 3) }
+	ApplyAppearance(mine, nil, true)
+	check(forced ~= nil and forced.AName == "Модовский",
+		"the look the mod cached for a player is the one kept when a mode asks for a random one")
+	eq(calls, 1, "... and it is put on by ForceApplyAppearance of the mod")
+	eq(modded.calls, 0, "... and the mod is not asked to dress him at random")
+	ApplyAppearance(mine, nil, false)
+	eq(modded.calls, 1, "a call that does not ask for a random look goes to the mod untouched")
+	eq(calls, 1, "... and nothing is forced on the player")
+	mine.CachedAppearance = nil
+	ZCO.Save(mine, look)
+	forced = nil
+	ApplyAppearance(mine, nil, true)
+	check(forced ~= nil and forced.AName == "Вася Пупкин",
+		"with nothing cached by the mod the look the server keeps for the player is used")
+	M.setConVar("zco_keep_appearance", "0")
+	forced, modded.calls = nil, 0
+	ApplyAppearance(mine, nil, true)
+	check(forced == nil and modded.calls == 1, "zco_keep_appearance 0: the mod is called as it was")
+	M.setConVar("zco_keep_appearance", "1")
+	forced, modded.calls = nil, 0
+	ApplyAppearance(mine, nil, true)
+	check(forced ~= nil and modded.calls == 0, "... and 1 keeps the saved look again")
+	local bot2 = M.newPlayer("Бот 2", oneEntry.mdl, { steamid64 = "76561198000000023", bot = true })
+	bot2.CachedAppearance = mine.zcoCached
+	forced, modded.calls = nil, 0
+	ApplyAppearance(bot2, nil, true)
+	check(forced == nil and modded.calls == 1, "a bot goes to the mod: it has no look to keep")
+
 	-- ------------------------------------------------------------------ the client
 	local C = dofile(testdir .. "/gmod_mock.lua")("client")
 	local Z = dofile(testdir .. "/zcity_mock.lua")(C)
@@ -360,6 +491,10 @@ return function(testdir, luaroot)
 	check(type(DrawAppearance) == "function", "the client draws what a player wears")
 	check(type(RenderAccessories) == "function" and type(RenderAccessoriesCool) == "function",
 		"... by the names Z-City calls")
+	-- zco_random is userinfo: that is how the server knows a player asked for a random look himself
+	-- (a player who wants one at every spawn keeps getting one)
+	check(C.userinfo and C.userinfo["zco_random"], "zco_random is userinfo: the server can read it")
+	check(not (C.userinfo and C.userinfo["zco_selected"]), "... and zco_selected stays his own choice")
 
 	local me = C.newPlayer("Игрок", Z.MALE, { steamid64 = "76561198000000001" })
 	C.localplayer = me

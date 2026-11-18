@@ -174,6 +174,48 @@ function ZCO.Load(ply)
 end
 
 -- --------------------------------------------------------------------------------------
+-- a saved look stays on the player
+-- --------------------------------------------------------------------------------------
+-- The modes of Z-City (Event, Superfighters, Deathmatch and the like) dress a player by asking for
+-- a RANDOM appearance: ApplyAppearance(ply, nil, true). The Appearance Mod does not take a player's
+-- look away on that call - its fix addon (sh_zcity_appearance_fix.lua, v5) wraps ApplyAppearance
+-- and, for a player who is not a bot and whose saved look passes the validator, applies the saved
+-- one instead (zcity_appfix_keep_appearance, 1 by default). Saves work the same way here: the look
+-- a player chose and the server kept is his, and a mode that asks for a random one does not dress
+-- him anew every spawn. Only a player who has nothing saved - and a bot, who never has - is dressed
+-- at random, and a player who asks for a random look himself (zco_random 1 in his own console)
+-- gets one: the server reads that from his userinfo.
+
+ZCO.Keep = CreateConVar("zco_keep_appearance", "1", { FCVAR_ARCHIVE, FCVAR_REPLICATED },
+	"1: a player who has a saved look keeps it when a gamemode asks for a random one - as the fix of "
+	.. "the Appearance Mod does (zcity_appfix_keep_appearance); 0: every such call dresses him at "
+	.. "random, as before 2.20.1", 0, 1)
+
+--- is this a look of the catalog? (a damaged file, an empty one, a look of a mod this server has
+--- not - none of them is a look a player can be kept in)
+local function aLook(got)
+	if type(got) ~= "table" or next(got) == nil then return nil end
+	local clean = ZCO.Clean(got)
+	local ok = ZCO.Validate(clean)
+	if not ok then return nil end
+	return clean
+end
+
+--- the look a player saved, the way the fix of the Appearance Mod reads it (CachedAppearance,
+--- CurAppearance): what the server keeps for him in data/zco/, then the look he sent before, then
+--- the one he wears right now - the first of them that is a look of the catalog
+function ZCO.SavedOf(client)
+	if not IsValid(client) then return nil end
+	return aLook(ZCO.Load(client)) or aLook(client.zcoCached) or aLook(client.zcoAppearance)
+end
+
+--- does this player ask for a random look himself? (zco_random is userinfo, so the server sees it)
+local function wantsRandom(client)
+	if not client.GetInfoNum then return false end
+	return client:GetInfoNum("zco_random", 0) ~= 0
+end
+
+-- --------------------------------------------------------------------------------------
 -- what the rest of the server calls
 -- --------------------------------------------------------------------------------------
 
@@ -183,10 +225,24 @@ local waiting = {}
 --- of Z-City makes when a player spawns. Nothing on the server: the appearance of the file it
 --- keeps; no file yet: the client is asked for the one it kept before (his own data/zco/, and the
 --- data/zcity/appearances/ of the Appearance Mod), and three seconds later a random one is put on.
+--- random = true is what the modes ask for: a player who has a saved look keeps it (zco_keep_appearance).
 function ZCO.ApplyAppearance(client, appearance, random, _responseIsValid, useCached)
 	if not IsValid(client) or not client:IsPlayer() then return end
-	if random or (client.IsBot and client:IsBot()) or (client.IsRagdoll and client:IsRagdoll()) then
-		ZCO.Wear(client, ZCO.Random(client.zcoSex and ZCO.FEMALE or nil))
+	local bot = (client.IsBot and client:IsBot()) or (client.IsRagdoll and client:IsRagdoll()) or false
+	local sex = client.zcoSex and ZCO.FEMALE or nil
+	if random then
+		if not bot and ZCO.Keep:GetBool() and not wantsRandom(client) then
+			local saved = ZCO.SavedOf(client)
+			if saved then
+				ZCO.Wear(client, saved)
+				return
+			end
+		end
+		ZCO.Wear(client, ZCO.Random(sex))
+		return
+	end
+	if bot then
+		ZCO.Wear(client, ZCO.Random(sex))
 		return
 	end
 	if type(appearance) == "table" and next(appearance) ~= nil then
@@ -220,7 +276,63 @@ if type(ApplyAppearance) ~= "function" then
 	ApplyAppearance = function(client, appearance, random, responseIsValid, useCached)
 		return ZCO.ApplyAppearance(client, appearance, random, responseIsValid, useCached)
 	end
+	ZCO.OwnApply = ApplyAppearance
 end
+
+-- --------------------------------------------------------------------------------------
+-- the same where the Appearance Mod is installed
+-- --------------------------------------------------------------------------------------
+-- The mod keeps a player's saved look on such a call by wrapping ApplyAppearance itself
+-- (sh_zcity_appearance_fix.lua of v5, zcity_appfix_keep_appearance). A pack that carries that fix
+-- does not include it where this addon is: sh_register.lua makes hg.AppearanceFix, and that is what
+-- the pack looks into before the include - so without a wrapper here saves would stop working the
+-- very moment the addon is installed. Wrapped is the one function the fix of the mod wraps itself,
+-- and only while nobody wrapped it before; the mod's own tables, menus and files are not touched.
+
+--- the look the mod keeps for a player, read the way the fix of the mod reads it
+local function theirSaved(client)
+	local AP = hg and hg.Appearance
+	if not istable(AP) then return nil end
+	local saved = client.CachedAppearance or client.CurAppearance
+	if not istable(saved) then return nil end
+	if isfunction(AP.AppearanceValidater) and not AP.AppearanceValidater(saved) then return nil end
+	local copy = table.Copy(saved)
+	if isfunction(AP.CheckAttachments) then copy = AP.CheckAttachments(client, copy) end
+	return copy
+end
+
+--- put that wrapper in place (a pack may load later than we do, so it is tried more than once)
+function ZCO.KeepWrap()
+	if not (ZCO.Keep and ZCO.Keep:GetBool()) then return end
+	local orig = ApplyAppearance
+	if not isfunction(orig) or orig == ZCO.Keeping or orig == ZCO.OwnApply then return end
+	local AP = hg and hg.Appearance
+	if not istable(AP) or not isfunction(AP.ForceApplyAppearance) then return end
+
+	local function wrapped(client, appearance, random, ...)
+		if random and ZCO.Keep:GetBool() and IsValid(client) and client:IsPlayer()
+			and not (client.IsBot and client:IsBot()) and not wantsRandom(client) then
+			local saved = theirSaved(client) or ZCO.SavedOf(client)
+			if saved then
+				AP.ForceApplyAppearance(client, saved)
+				return
+			end
+		end
+		return orig(client, appearance, random, ...)
+	end
+
+	ZCO.Keeping = wrapped
+	ApplyAppearance = wrapped
+	if AP.ApplyAppearance == orig then AP.ApplyAppearance = wrapped end
+end
+
+hook.Add("InitPostEntity", "zco_keep", function()
+	timer.Simple(1, ZCO.KeepWrap)
+	timer.Simple(5, ZCO.KeepWrap)     -- a pack that puts the mod in place later
+end)
+hook.Add("PostGamemodeLoaded", "zco_keep", function()
+	timer.Simple(1, ZCO.KeepWrap)
+end)
 
 net.Receive("zco_answer", function(_length, client)
 	local appearance = net.ReadTable()
@@ -364,6 +476,12 @@ concommand.Add("zco_status", function(ply)
 		for _name in ipairs(file.Find(ZCO.Directory .. "*", "DATA")) do files = files + 1 end
 		say(ply, ("Сохранено игроков: %d (data/%s). Твоя внешность: %s"):format(files, ZCO.Directory,
 			ply.zcoAppearance and ply.zcoAppearance.AModel or "ещё не применена"))
+		-- what a mode that asks for a random look does to his saved one
+		say(ply, ("Сохранённая внешность: %s; твоя: %s%s"):format(
+			ZCO.Keep:GetBool() and "остаётся на игроке, когда режим просит случайную (zco_keep_appearance 1)"
+				or "не держится: каждый такой вызов одевает игрока заново (zco_keep_appearance 0)",
+			ZCO.SavedOf(ply) and "есть" or "ещё нет",
+			ZCO.Keeping and "; вызов Appearance Mod обёрнут аддоном" or ""))
 	end
 end, nil, "What this addon has of the appearance and who may wear it")
 

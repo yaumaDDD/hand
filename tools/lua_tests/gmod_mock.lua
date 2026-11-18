@@ -400,6 +400,11 @@ return function(realm)
 			M.wholeHandsDefault = default
 			default = "0"
 		end
+		-- (which of them the server can read: FCVAR_USERINFO)
+		if userinfo then
+			M.userinfo = M.userinfo or {}
+			M.userinfo[name] = true
+		end
 		return CreateConVar(name, default, 0, help, min, max)
 	end
 	function GetConVar(name) return M.convars[name] end
@@ -565,6 +570,15 @@ return function(realm)
 	end
 	function ENT:PrintMessage(kind, text) M.log[#M.log + 1] = "[to " .. self:Nick() .. "] " .. text end
 	function ENT:GetEyeTrace() return { Entity = self.lookat or NULL } end
+	-- what the client of this player tells the server about its convars (userinfo)
+	function ENT:GetInfoNum(key, default)
+		local got = self.info and self.info[key]
+		return tonumber(got) or default or 0
+	end
+	function ENT:GetInfo(key, default)
+		local got = self.info and self.info[key]
+		return got ~= nil and tostring(got) or (default or "")
+	end
 	function ENT:Remove() self.removed = true end
 	function ENT:PS_HasItem(id) return self.items ~= nil and self.items[id] == true end
 	-- clientside model only
