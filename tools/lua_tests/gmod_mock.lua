@@ -406,15 +406,27 @@ return function(realm)
 
 	cvars = { callbacks = {} }
 	function cvars.AddChangeCallback(name, fn, id) cvars.callbacks[name] = fn end
+	function cvars.RemoveChangeCallback(name, id) cvars.callbacks[name] = nil end
+	-- the game calls this itself when a convar changed: it is not a hook
+	function cvars.OnConVarChanged(name, old, new)
+		if cvars.callbacks[name] then cvars.callbacks[name](name, old, new) end
+	end
 	function M.setConVar(name, value)
 		local cv = assert(M.convars[name], "unknown convar " .. name)
 		local old = cv.value
 		cv.value = tostring(value)
-		if cvars.callbacks[name] then cvars.callbacks[name](name, old, cv.value) end
+		if cv.value ~= old then cvars.OnConVarChanged(name, old, cv.value) end
 	end
 
 	concommand = { list = {} }
+	-- the game keeps the function itself here (concommand.GetTable()[name]), the imitation keeps
+	-- it in a table of its own so that a test can call it
 	function concommand.Add(name, fn, auto, help) concommand.list[name] = { fn = fn, auto = auto } end
+	function concommand.GetTable()
+		local got = {}
+		for name, entry in pairs(concommand.list) do got[name] = entry.fn end
+		return got
+	end
 	function M.command(name, caller, ...)
 		local args = { ... }
 		return concommand.list[name].fn(caller, name, args, table.concat(args, " "))

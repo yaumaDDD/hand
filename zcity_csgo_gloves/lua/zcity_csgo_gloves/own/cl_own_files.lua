@@ -14,6 +14,9 @@ ZCO.ForcedRandom = CreateClientConVar("zco_random", "0", true, false,
 ZCO.Presets = ZCO.Presets or {}       -- name -> the appearance of the files of this client
 ZCO.Saved = ZCO.Saved or nil          -- the appearance the server keeps for this player
 
+--- where the gamemode of Z-City and the Appearance Mod keep the looks of a player
+local OLD_DIRECTORY = "zcity/appearances/"
+
 local function folder()
 	return ZCO.Directory:sub(1, -2)
 end
@@ -67,8 +70,6 @@ end
 
 --- the sets the Appearance Mod kept (data/zcity/appearances/*.json), read into ours: the fields
 --- are the same, only the file is another one
-local OLD_DIRECTORY = "zcity/appearances/"
-
 function ZCO.OldList()
 	local names = {}
 	local files = file.Find(OLD_DIRECTORY .. "*", "DATA")
@@ -100,6 +101,41 @@ function ZCO.ImportOld(name, quiet)
 	})
 	if not quiet then ZCO.SavePreset(name, appearance) end
 	return appearance
+end
+
+--- The gamemode of Z-City keeps the look of a player in a file of its own -
+--- data/zcity/appearances/<name>.json, the name in hg_appearance_selected - and its client answers
+--- with that file when the server asks (the nets Get_Appearance / OnlyGet_Appearance). The look
+--- chosen here is written there as well, so that whichever of the two paths dresses the player
+--- next dresses him in what he chose, and the editor of Z-City shows the same look.
+--- how many files of the gamemode the look was written into (0 when there is nothing to write)
+function ZCO.WriteOld(name, appearance)
+	local got = appearance or ZCO.Saved
+	if type(got) ~= "table" or next(got) == nil then return 0 end
+	-- the set of our own, and the one the gamemode has chosen (hg_appearance_selected): its client
+	-- answers the server with that file, so it has to hold what the player chose here
+	local names, seen = {}, {}
+	local function want(one)
+		if type(one) ~= "string" or one == "" then return end
+		one = one:gsub("[\\/:*?\"<>|]", "_")
+		if one == "" or seen[one] then return end
+		seen[one] = true
+		names[#names + 1] = one
+	end
+	want(name)
+	want(ZCO.Selected:GetString())
+	local tables = hg and hg.Appearance
+	if type(tables) == "table" and tables.SelectedAppearance and tables.SelectedAppearance.GetString then
+		want(tables.SelectedAppearance:GetString())
+	end
+	if #names == 0 then return 0 end
+	file.CreateDir(OLD_DIRECTORY:sub(1, -2))
+	-- the way the module of the gamemode writes it: the same folder, the same JSON
+	local text = util.TableToJSON(got, true)
+	for index = 1, #names do
+		file.Write(OLD_DIRECTORY .. names[index] .. ".json", text)
+	end
+	return #names
 end
 
 --- the look this client asks the server for when the server has none of its own: the set of
@@ -138,6 +174,7 @@ net.Receive("zco_got", function()
 			ZCO.Saved.AColor = Color(ZCO.Saved.AColor.r, ZCO.Saved.AColor.g, ZCO.Saved.AColor.b,
 				ZCO.Saved.AColor.a or 255)
 		end
+		ZCO.WriteOld(ZCO.Selected:GetString(), ZCO.Saved)
 		hook.Run("ZCOSaved", ZCO.Saved)
 	end
 end)

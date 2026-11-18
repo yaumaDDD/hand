@@ -110,6 +110,9 @@ function ZCO.Apply(ply, appearance, noModelChange)
 
 	ply.zcoAppearance = ZCO.Copy(appearance)
 	ply.zcoCached = ZCO.Copy(appearance)
+	-- the field Z-City itself reads: its modes (homicide names a traitor by the name over his
+	-- head), its ragdolls (fake/sv_tier_0.lua copies it onto the body) and its admin tools
+	ply.CurAppearance = ZCO.Copy(appearance)
 	hook.Run("ZCOApplied", ply, ply.zcoAppearance)
 	return true
 end

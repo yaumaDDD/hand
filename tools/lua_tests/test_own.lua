@@ -140,6 +140,10 @@ return function(testdir, luaroot)
 	local worn = ply:GetNetVar("Accessories")
 	check(type(worn) == "table" and worn[1] == "armband black", "the clients are told what he wears")
 	check(M.written["zco/76561198000000001.txt"] ~= nil, "the look is kept on the server")
+	-- Z-City reads what a player wears from this field: its modes (homicide names a traitor by the
+	-- name over his head), its ragdolls and its admin tools
+	check(type(ply.CurAppearance) == "table" and ply.CurAppearance.AName == "Вася",
+		"ply.CurAppearance is there for the gamemode: " .. tostring(ply.CurAppearance and ply.CurAppearance.AName))
 
 	local back = ZCO.Load(ply)
 	check(back ~= nil, "the file is read back")
@@ -224,6 +228,17 @@ return function(testdir, luaroot)
 	concommand.list["zco_reset"].fn(ply, "zco_reset", { "Игрок" })
 	check(M.written["zco/76561198000000001.txt"] == nil or M.written["zco/76561198000000001.txt"] ~= before,
 		"zco_reset forgets the look of a player")
+
+	-- the tables of the game are what this server really has: a name they fill is taken as it
+	-- stands there (another version of the mod, a pack that was updated on the server)
+	hg.Appearance.PlayerModels[1]["Male 02"] = { mdl = "models/другой/male_02.mdl", sex = false,
+		submatSlots = { main = "models/другой/sheet" } }
+	hg.Appearance.Clothes[1]["normal"] = "models/другой/normal"
+	ZCO.Harvest()
+	eq((ZCO.Models(1)["Male 02"] or {}).mdl, "models/другой/male_02.mdl",
+		"a model the tables of the server fill is taken from there")
+	eq(ZCO.Clothes(1)["normal"], "models/другой/normal", "... and a piece of clothing too")
+	hg.Appearance.PlayerModels[1]["Male 02"] = ZCO.Catalog.Models[1]["Male 02"]
 
 	-- a pack that adds a model of its own is taken into the catalog
 	hg.Appearance.PlayerModels[1]["Свой"] = { mdl = "models/свой.mdl", sex = false, submatSlots = {} }
@@ -318,7 +333,41 @@ return function(testdir, luaroot)
 		check(C.written["zco/main.txt"] ~= nil, "and kept in data/zco/ of the client")
 		local kept = ZCO.Deserialize(C.written["zco/main.txt"] or "")
 		check(kept ~= nil and kept.AModel == state.AModel, "the file of the client holds the same look")
+		-- the file the gamemode of Z-City reads is written as well, so that both paths agree
+		local theirs = C.written["zcity/appearances/main.json"]
+		check(theirs ~= nil, "and into data/zcity/appearances/ of the gamemode, for its own path")
+		if theirs then
+			local read = util.JSONToTable(theirs)
+			eq(read and read.AModel, state.AModel, "... with the same model")
+		end
 	end
+
+	-- the command the buttons of Z-City open the appearance by: ours answers to it, and gives it
+	-- back where the editor that was there is wanted
+	local menu_command = concommand.GetTable()["hg_appearance_menu"]
+	check(type(menu_command) == "function", "hg_appearance_menu is a command")
+	check(ZCO.TakeMenu ~= nil and ZCO.TakeMenu:GetBool(), "our menu takes it by default")
+	if IsValid(ZCO.MenuFrame) then ZCO.MenuFrame:Close() end
+	check(not IsValid(ZCO.MenuFrame), "the menu is closed before the command is called")
+	menu_command()
+	check(IsValid(ZCO.MenuFrame), "... and calling it opens the menu of this addon")
+
+	-- a file the gamemode has chosen (hg_appearance_selected) is written as well
+	local their_choice = CreateClientConVar("hg_appearance_selected", "cool", true, false, "test")
+	hg.Appearance.SelectedAppearance = their_choice
+	eq(ZCO.WriteOld("main", state), 2, "both sets of files are written: ours and the one it chose")
+	check(C.written["zcity/appearances/cool.json"] ~= nil, "... the chosen one among them")
+	hg.Appearance.SelectedAppearance = nil
+
+	local opened = 0
+	concommand.list["hg_appearance_menu"] = { fn = function() opened = opened + 1 end }
+	C.setConVar("zco_take_menu", "0")
+	C.command("hg_appearance_menu", me)
+	eq(opened, 1, "zco_take_menu 0 leaves the command to the editor that had it")
+	C.setConVar("zco_take_menu", "1")
+	C.command("hg_appearance_menu", me)
+	eq(opened, 1, "zco_take_menu 1 takes it for our menu again")
+	check(IsValid(ZCO.MenuFrame), "... which opens ours")
 
 	-- the chat command opens the menu
 	C.localplayer = me

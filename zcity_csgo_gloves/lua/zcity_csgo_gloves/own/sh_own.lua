@@ -11,7 +11,7 @@
 
 ZCO = ZCO or {}
 
-ZCO.Version = "2.18.0"
+ZCO.Version = "2.18.1"
 ZCO.Name = "Z-City Own Appearance"
 ZCO.Catalog = ZCO.Catalog or {}
 ZCO.CatalogCounts = ZCO.CatalogCounts or {}
@@ -579,27 +579,32 @@ end
 
 --- what the game has in its appearance tables right now, taken into the catalog: a pack that
 --- adds a model, a piece of clothing or an accessory of its own is not lost (it is read after
---- every file of the game has run, and again whenever the catalog is asked for)
+--- every file of the game has run, and again whenever the catalog is asked for).
+--- The tables of the game are what this server really has - another version of the mod, a pack
+--- that was updated on the server - so a name they fill is taken as it stands there, and the
+--- catalog keeps what they do not fill. Returns how many names the game added to the catalog.
 function ZCO.Harvest()
 	local taken = 0
+	local catalog = ZCO.Catalog
+	local function take(into, name, value)
+		if into[name] == nil then taken = taken + 1 end
+		into[name] = value
+	end
+	local function text(value)
+		return type(value) == "string" and value ~= "" and value or nil
+	end
 	local appearance = hg and hg.Appearance
 	if type(appearance) == "table" then
-		local catalog = ZCO.Catalog
 		catalog.Models, catalog.Clothes = catalog.Models or {}, catalog.Clothes or {}
 		for _, sex in ipairs({ ZCO.MALE, ZCO.FEMALE }) do
 			catalog.Models[sex] = catalog.Models[sex] or {}
 			catalog.Clothes[sex] = catalog.Clothes[sex] or {}
 			for name, entry in pairs(appearance.PlayerModels and appearance.PlayerModels[sex] or {}) do
-				if type(entry) == "table" and entry.mdl and not catalog.Models[sex][name] then
-					catalog.Models[sex][name] = entry
-					taken = taken + 1
-				end
+				if type(entry) == "table" and text(entry.mdl) then take(catalog.Models[sex], name, entry) end
 			end
 			for name, material in pairs(appearance.Clothes and appearance.Clothes[sex] or {}) do
-				if type(material) == "string" and not catalog.Clothes[sex][name] then
-					catalog.Clothes[sex][name] = material
-					taken = taken + 1
-				end
+				local one = text(material)
+				if one then take(catalog.Clothes[sex], name, one) end
 			end
 		end
 		catalog.Bodygroups = catalog.Bodygroups or {}
@@ -608,13 +613,13 @@ function ZCO.Harvest()
 			for _, sex in ipairs({ ZCO.MALE, ZCO.FEMALE }) do
 				catalog.Bodygroups[group][sex] = catalog.Bodygroups[group][sex] or {}
 				for name, entry in pairs(by_sex[sex] or {}) do
-					if not catalog.Bodygroups[group][sex][name] then
-						catalog.Bodygroups[group][sex][name] = {
-							submodel = type(entry) == "table" and entry[1] or entry,
+					local submodel = text(type(entry) == "table" and entry[1] or entry)
+					if submodel then
+						take(catalog.Bodygroups[group][sex], name, {
+							submodel = submodel,
 							pointshop = type(entry) == "table" and entry[2] or false,
 							id = type(entry) == "table" and entry.ID or nil,
-						}
-						taken = taken + 1
+						})
 					end
 				end
 			end
@@ -623,25 +628,20 @@ function ZCO.Harvest()
 		for slot, by_name in pairs(appearance.FacemapsSlots or {}) do
 			catalog.Facemaps[slot] = catalog.Facemaps[slot] or {}
 			for name, material in pairs(by_name) do
-				if not catalog.Facemaps[slot][name] then
-					catalog.Facemaps[slot][name] = material
-					taken = taken + 1
-				end
+				local one = text(material)
+				if one then take(catalog.Facemaps[slot], name, one) end
 			end
 		end
 		for model, slot in pairs(appearance.FacemapsModels or {}) do
-			if not catalog.FacemapOf[model] then
-				catalog.FacemapOf[model] = slot
-				taken = taken + 1
-			end
+			local one = text(slot)
+			if one then take(catalog.FacemapOf, model, one) end
 		end
 		catalog.MultiFacemaps = catalog.MultiFacemaps or {}
 		for model, by_face in pairs(appearance.MultiFacemaps or {}) do
 			catalog.MultiFacemaps[model] = catalog.MultiFacemaps[model] or {}
 			for face, by_slot in pairs(by_face) do
-				if not catalog.MultiFacemaps[model][face] then
-					catalog.MultiFacemaps[model][face] = by_slot
-					taken = taken + 1
+				if type(by_slot) == "table" and next(by_slot) ~= nil then
+					take(catalog.MultiFacemaps[model], face, by_slot)
 				end
 			end
 		end
@@ -650,7 +650,7 @@ function ZCO.Harvest()
 	if type(accessories) == "table" then
 		ZCO.Catalog.Accessories = ZCO.Catalog.Accessories or {}
 		for name, data in pairs(accessories) do
-			if type(data) == "table" and (data.model or data.femmodel) and not ZCO.Catalog.Accessories[name] then
+			if type(data) == "table" and (text(data.model) or text(data.femmodel)) then
 				local got = { name = data.name or name }
 				for key, value in pairs(data) do
 					local ours = key
@@ -663,8 +663,7 @@ function ZCO.Harvest()
 					if ours == "malepos" then ours = "pos" end
 					if type(value) ~= "function" then got[ours] = value end
 				end
-				ZCO.Catalog.Accessories[name] = got
-				taken = taken + 1
+				take(ZCO.Catalog.Accessories, name, got)
 			end
 		end
 	end

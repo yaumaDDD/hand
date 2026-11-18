@@ -375,6 +375,7 @@ function ZCO.Menu.Build(appearance)
 		frame.zcoAppearance = clean
 		ZCO.Send(clean)
 		ZCO.SavePreset(ZCO.Selected:GetString(), clean)
+		ZCO.WriteOld(ZCO.Selected:GetString(), clean)
 		chat.AddText(Color(140, 220, 150), "[Внешность] ", Color(230, 230, 230), "Внешность отправлена серверу.")
 		frame:zcoRefresh()
 	end)
@@ -555,6 +556,40 @@ function ZCO.OpenMenu()
 end
 
 concommand.Add("zco_menu", function() ZCO.OpenMenu() end, nil, "The menu of the appearance of this addon")
+
+-- The buttons of Z-City open the appearance by the command hg_appearance_menu. With our own rails
+-- that command opens our menu; where our menu does not open (something missing on this computer),
+-- the editor that was there is called instead, so that nobody is left without an appearance.
+-- zco_take_menu 0 leaves the command to whoever had it - the editor of the gamemode or of the mod.
+ZCO.TakeMenu = CreateClientConVar("zco_take_menu", "1", true, false,
+	"1: hg_appearance_menu opens the menu of this addon, 0: the editor that was there")
+
+local had_menu = nil            -- the function that had the command before us
+local ours_menu = nil           -- ... and the one of ours, so that it is not remembered as theirs
+
+function ZCO.TakeAppearanceCommand()
+	local commands = concommand.GetTable and concommand.GetTable() or nil
+	local now = commands and commands["hg_appearance_menu"]
+	if type(now) == "function" and now ~= ours_menu then had_menu = now end
+	if ZCO.TakeMenu:GetBool() then
+		ours_menu = function()
+			local ok, err = pcall(ZCO.OpenMenu)
+			if ok then return end
+			print("[Внешность] своё меню не открылось: " .. tostring(err))
+			if type(had_menu) == "function" then had_menu() end
+		end
+		concommand.Add("hg_appearance_menu", ours_menu, nil, "The menu of the appearance of this addon")
+	elseif type(had_menu) == "function" then
+		concommand.Add("hg_appearance_menu", had_menu, nil, "The appearance editor of Z-City")
+	end
+end
+
+ZCO.TakeAppearanceCommand()
+
+-- the game tells a convar that changed to cvars, not to the hooks (cvars.OnConVarChanged)
+cvars.AddChangeCallback("zco_take_menu", function(_name, _old, _new)
+	ZCO.TakeAppearanceCommand()
+end, "zco_take_menu")
 
 local COMMANDS = { "/внешность", "/внешка", "/appearance", "/menu", "/меню", "!внешность", "!appearance" }
 hook.Add("OnPlayerChat", "zco_menu", function(ply, text)
