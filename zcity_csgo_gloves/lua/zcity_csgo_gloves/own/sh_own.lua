@@ -11,7 +11,7 @@
 
 ZCO = ZCO or {}
 
-ZCO.Version = "2.24.0"
+ZCO.Version = "2.24.1"
 ZCO.Name = "Z-City Own Appearance"
 ZCO.Catalog = ZCO.Catalog or {}
 ZCO.CatalogCounts = ZCO.CatalogCounts or {}
@@ -137,7 +137,13 @@ function ZCO.Faces(model, sex)
 			end
 		end
 	end
-	if not next(faces) then
+	-- a "Default" with no material behind it is the own face of the model and no choice at all:
+	-- a model with nothing but that one is a model nobody wrote a face for (2.24.1)
+	local chosen = 0
+	for _name, material in pairs(faces) do
+		if type(material) == "string" and material ~= "" then chosen = chosen + 1 end
+	end
+	if chosen == 0 then
 		-- a model nobody wrote a face for: the faces of its sex, so that the menu is not empty
 		for _slot, by_name in pairs(catalog.Facemaps or {}) do
 			local wanted = sex == ZCO.FEMALE and "female" or "male"

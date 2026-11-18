@@ -362,6 +362,78 @@ return function(testdir, luaroot)
 		"the slot the Lua wrote stays as it was")
 	M.setConVar("zcg_sync_faces", "1")
 
+	-- ------------------------------------------- a model nobody wrote a face for: the faces of its sex
+	-- The clothing Lua of Z-City gives such a model a slot with a "Default" and an empty material and
+	-- nothing else (models/slav/m/cohrt.mdl, leet.mdl, johnwick.mdl): both menus then list no face at
+	-- all, which is what "there are simply no facemaps in the choice" is. The own menu of this addon
+	-- has taken the faces of the sex for such a model since 2.20.0; now the tables the menus of the
+	-- game read hold them as well (2.24.1).
+	fresh()
+	M = dofile(testdir .. "/gmod_mock.lua")("server")
+	Z = dofile(testdir .. "/zcity_mock.lua")(M)
+	M.luaroot = luaroot
+	Z.install()
+	AP = hg.Appearance
+	local function countNames(set)
+		local got = 0
+		for _ in pairs(set or {}) do got = got + 1 end
+		return got
+	end
+	local PLAIN = "models/humans/male/group01/van_facemap"
+	local BARE = "models/humans/slav/cohrt/cohrt"
+	local BARE_MODEL, PLAIN_MODEL = "models/slav/m/cohrt.mdl", "models/slav/m/male_01.mdl"
+	M.installModel(PLAIN_MODEL, { "van_facemap", "players_sheet" }, { "models/humans/male/group01" })
+	M.installModel(BARE_MODEL, { "cohrt", "players_sheet" }, { "models/humans/slav/cohrt" })
+	AP.PlayerModels[1]["Male 01"] = { mdl = PLAIN_MODEL, sex = false }
+	AP.PlayerModels[1]["Male Cohrt"] = { mdl = BARE_MODEL, sex = false }
+	AP.FacemapsSlots = {
+		[PLAIN] = { Default = "", ["Face 1"] = "models/humans/male/group01/van_facemap1",
+			["Face 2"] = "models/humans/male/group02/van_facemap" },
+		[BARE] = { Default = "" },
+	}
+	AP.FacemapsModels = { [PLAIN_MODEL] = PLAIN, [BARE_MODEL] = BARE }
+	include("autorun/zcity_csgo_gloves.lua")
+	ZCG = ZCGloves
+	eq(ZCG.LoadErrors, nil, "the addon loaded: " .. tostring(ZCG.LoadErrors and ZCG.LoadErrors[1] or ""))
+	check((ZCG.FaceMade or {}).shared > 0, "the addon says how many faces it gave to a model without its own: "
+		.. tostring((ZCG.FaceMade or {}).shared))
+	local barePlain = plainMenu(AP, BARE_MODEL)
+	local bareCount = countNames(barePlain)
+	check(barePlain ~= nil and bareCount >= 2,
+		"the editor of Z-City lists faces for a model its Lua gave no face to: " .. tostring(bareCount))
+	check(barePlain and barePlain["Face 1"] and barePlain["Face 2"],
+		"... the faces of its sex, by the names the clothing Lua gave them")
+	eq(AP.FacemapsSlots[BARE] and AP.FacemapsSlots[BARE]["Default"], "",
+		"... and its own Default is left as the Lua wrote it")
+	local bareMod = modMenu(AP, BARE_MODEL)
+	check(bareMod["Face 1"] and bareMod["Face 2"], "the menu of the Appearance Mod lists the same faces")
+	check(same(bareMod, barePlain), "... and no others")
+	eq(AP.FacemapsModels[BARE_MODEL], BARE, "the model is told the slot it wears")
+	eq(AP.MultiFacemaps[BARE_MODEL] and AP.MultiFacemaps[BARE_MODEL]["Face 1"][BARE],
+		"models/humans/male/group01/van_facemap1", "... in the shape the mod reads: face, then slot")
+	-- a model with faces of its own keeps exactly them: the pool is for the ones with none
+	local ownPlain = plainMenu(AP, PLAIN_MODEL)
+	eq(countNames(ownPlain), 2,
+		"a model with its own faces keeps them and gets none of the pool: " .. tostring(countNames(ownPlain)))
+	check(ownPlain and ownPlain["Face 1"] and ownPlain["Face 2"], "... the ones its Lua wrote")
+	-- the faces of the pool land on the material the model actually carries, so that they are worn
+	local bare = M.newPlayer("Корт", BARE_MODEL, { steamid64 = "76561198000000031" })
+	bare.CurAppearance = { AFacemap = "Face 1" }
+	check(ZCG.ForceFace(bare) >= 1, "a face of the pool is put on the material the model carries")
+	eq(bare:GetSubMaterial(0), "models/humans/male/group01/van_facemap1", "... the very face that was chosen")
+	-- a second pass changes nothing, and the switch takes the whole of it back
+	local was, again = #ZCG.FaceAdded, ZCG.SyncFaces()
+	eq(#ZCG.FaceAdded, was, "a second pass adds nothing to it: " .. tostring(again))
+	M.setConVar("zcg_sync_faces", "0")
+	ZCG.SyncFaces()
+	check(not (AP.MultiFacemaps[BARE_MODEL] and AP.MultiFacemaps[BARE_MODEL]["Face 1"]),
+		"zcg_sync_faces 0 takes the faces of the pool back with the rest")
+	M.setConVar("zcg_sync_faces", "1")
+	ZCG.SyncFaces()
+	check(AP.MultiFacemaps[BARE_MODEL] and AP.MultiFacemaps[BARE_MODEL]["Face 1"] ~= nil,
+		"... and 1 gives them back")
+	eq(#M.errors, 0, "no errors: " .. table.concat(M.errors, " | "))
+
 	-- ----------------------------- tables with clothes alone: no face table is made for the sync
 	fresh()
 	M = dofile(testdir .. "/gmod_mock.lua")("server")

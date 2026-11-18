@@ -306,6 +306,18 @@ function ZCG.RegisteredOnly(AP)
 		local group, sex, name2 = string.match(key, "^bg|([^|]*)|([^|]*)|([^|]*)$")
 		if group then bodygroups[group .. "|" .. sex .. "|" .. name2] = true end
 	end
+	-- What the sync of the faces put into the tables itself (sh_faces.lua: a face of one menu into
+	-- the other, the faces of a sex for a model nobody wrote one for) is an entry of this addon and
+	-- not the content of an appearance system of somebody else's - without it a pack that called
+	-- this API would look like such a system the moment the sync ran (2.24.1).
+	local synced = {}
+	for _, one in ipairs(ZCG.FaceAdded or {}) do
+		local path = one[6]
+		if type(path) == "string" then
+			local slot, name = string.match(path, "^(.*)/([^/]+)$")
+			if slot then synced[slot .. "|" .. name] = true end
+		end
+	end
 	local total, ours = 0, 0
 	local function count(list, key)
 		if type(list) ~= "table" then return end
@@ -323,7 +335,9 @@ function ZCG.RegisteredOnly(AP)
 			function(name) return exact["cloth|" .. sex .. "|" .. name] end)
 	end
 	for slot, list in pairs(type(AP.FacemapsSlots) == "table" and AP.FacemapsSlots or {}) do
-		count(list, function(name) return faces[tostring(slot) .. "|" .. name] end)
+		count(list, function(name)
+			return faces[tostring(slot) .. "|" .. name] or synced[tostring(slot) .. "|" .. name]
+		end)
 	end
 	for group, by_sex in pairs(type(AP.Bodygroups) == "table" and AP.Bodygroups or {}) do
 		for sex = 1, 2 do

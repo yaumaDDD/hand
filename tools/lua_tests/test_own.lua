@@ -65,6 +65,33 @@ return function(testdir, luaroot)
 	check(type(hg.Accessories) == "table" and next(hg.Accessories) ~= nil, "the accessories are in the table")
 	check(type(hg.Appearance.FacemapsSlots) == "table" and next(hg.Appearance.FacemapsSlots) ~= nil,
 		"the faces are in the table")
+
+	-- A model the clothing Lua gave no face to - a slot with a "Default" and an empty material and
+	-- nothing else (Cohrt, Leet and John Wick of Z-City are such models): the choice of a face is not
+	-- left empty, the model is offered the faces of its sex - in this menu and in the tables the
+	-- menus of the game read alike (own/sh_own.lua, sh_faces.lua) (2.24.1)
+	if type(ZCGloves.SyncFaces) == "function" then ZCGloves.SyncFaces() end
+	local bareSlot = (ZCO.Catalog.FacemapOf or {})["models/slav/m/cohrt.mdl"]
+	check(type(bareSlot) == "string" and bareSlot ~= "",
+		"a model nobody wrote a face for keeps the slot its Lua named: " .. tostring(bareSlot))
+	local bareFaces, bareCount = ZCO.Faces("models/slav/m/cohrt.mdl", ZCO.MALE), 0
+	for _name, material in pairs(bareFaces or {}) do
+		if type(material) == "string" and material ~= "" then bareCount = bareCount + 1 end
+	end
+	check(bareCount >= 5, "... and the own menu offers it the faces of its sex: " .. bareCount)
+	check(bareFaces and bareFaces["Default"] ~= nil, "... its own Default among them")
+	local inTables = 0
+	for _name, material in pairs((hg.Appearance.FacemapsSlots or {})[bareSlot or ""] or {}) do
+		if type(material) == "string" and material ~= "" then inTables = inTables + 1 end
+	end
+	check(inTables >= 5, "... and the tables the editor of Z-City reads hold them: " .. inTables)
+	local inMulti = 0
+	for _name, bySlot in pairs((hg.Appearance.MultiFacemaps or {})["models/slav/m/cohrt.mdl"] or {}) do
+		for _slot, material in pairs(istable(bySlot) and bySlot or {}) do
+			if type(material) == "string" and material ~= "" then inMulti = inMulti + 1 end
+		end
+	end
+	check(inMulti >= 5, "... and the table the menu of the Appearance Mod reads holds them: " .. inMulti)
 	check(type(ApplyAppearance) == "function", "ApplyAppearance is there for the gamemode")
 	check(type(hg.Appearance.ForceApplyAppearance) == "function", "ForceApplyAppearance is there for the modes")
 	check(type(hg.Appearance.GetRandomAppearance) == "function", "GetRandomAppearance is there")
