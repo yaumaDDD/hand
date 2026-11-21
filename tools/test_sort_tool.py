@@ -244,10 +244,14 @@ def main():
         done = subprocess.run([sys.executable, '-I', '-B', script, '--keep-unused'], cwd=tmp, env=env, **quiet)
         got, report = result(addon)
         text = done.stdout.decode('utf-8', 'replace')
-        check(done.returncode == 0 and sorted(got) == T.TABLE_SORTED,
-              'the shipped script puts a material named in a table at its own place, not at its namesake\'s: %s' % sorted(got))
+        check(done.returncode == 0 and sorted(got) == sorted(T.TABLE_SORTED + [
+              'materials/models/humans/modern/male/sheet_16.vmt']),
+              'the shipped script puts a material named in a table at its own place, and with the fill '
+              'of namesakes on (the default since 2.24.6) the one file of that name it was filled from '
+              'stays as a copy under --keep-unused: %s' % sorted(got))
         check(u'\u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415' not in text, 'and has nothing to warn of')
-        if done.returncode != 0 or sorted(got) != T.TABLE_SORTED:
+        if done.returncode != 0 or sorted(got) != sorted(T.TABLE_SORTED + [
+              'materials/models/humans/modern/male/sheet_16.vmt']):
             show('the shipped script, names by running', done)
 
         # ---- folders thrown in the way they were collected: materials1, models2 ...

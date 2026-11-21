@@ -1361,8 +1361,11 @@ def main(argv=None):
     parser.add_argument('--no-fill', action='store_true',
                         help='do not fill the names that have no file with files that lie under another name '
                              '(copies of renamed files, see fill_content.py)')
-    parser.add_argument('--fill-namesakes', action='store_true',
-                        help='also fill a name the Lua gives with the only file of that name from ANOTHER folder')
+    parser.add_argument('--no-fill-namesakes', action='store_false', dest='fill_namesakes',
+                        help='do not fill a name the Lua gives with a file of that name from ANOTHER folder '
+                             '(by default such a name is filled when every file of that name is one and the '
+                             'same file: a face the tables name at a path no pack carries gets the picture '
+                             'of it that another pack carries)')
     parser.add_argument('--publish', action='store_true',
                         help='after the run: check the addon is ready for the Workshop and say how to publish it')
     parser.add_argument('--own-only', action='store_true',

@@ -20,8 +20,11 @@ written into the report. What is tried, for a name without a file, in this order
                material is written for it.
     namesake   for a file that another FILE asks for (a material of a model, a texture of a
                material): the only file of that name, in whatever folder it lies. For a name the
-               Lua tables give this is done only when asked (--fill-namesakes): the tables name
-               the same file name in several folders on purpose (male / female, one face of two packs).
+               Lua tables give this is done by default (sort_content.py --no-fill-namesakes turns
+               it off): the tables name the same file name in several folders on purpose
+               (male / female, one face of two packs), so a name is filled only when every file of
+               that name is one and the same file - different pictures under one name are left for
+               the owner and listed in the report.
 
 A name is filled only when all the files that fit are one and the same file (byte for byte);
 several different ones are left for the owner and listed.
