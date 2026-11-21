@@ -1073,6 +1073,60 @@ local function wrapFaceButton(main, viewer)
 	return true
 end
 
+-- The faces whose texture is not on this computer are blanked in the tables of the game (2.24.3):
+-- the wear of the game resets their slot and the menus of this addon filter them out, but the
+-- windows of the Appearance Mod and the drop-down of the editor of Z-City list every NAME they find
+-- in the tables - blanked ones included - and every one of those shows the own face of the model,
+-- which is the window where all the faces are the same (2.24.5). While such a menu is built, the
+-- blanked names are taken out of the tables and put back right after: a menu keeps what it captured
+-- while it was built, and the tables are whole again for the wear and for the counts.
+local function hideFaceless()
+	local hidden = {}
+	local AP = istable(hg) and hg.Appearance
+	if not istable(AP) then return hidden end
+	if istable(AP.FacemapsSlots) then
+		for _slot, faces in pairs(AP.FacemapsSlots) do
+			if istable(faces) then
+				for name, path in pairs(faces) do
+					if path == "" then
+						hidden[#hidden + 1] = { faces, name, "" }
+						faces[name] = nil
+					end
+				end
+			end
+		end
+	end
+	if istable(AP.MultiFacemaps) then
+		for _model, faces in pairs(AP.MultiFacemaps) do
+			if istable(faces) then
+				for name, slots in pairs(faces) do
+					if istable(slots) then
+						for slot, path in pairs(slots) do
+							if path == "" then
+								hidden[#hidden + 1] = { slots, slot, "" }
+								slots[slot] = nil
+							end
+						end
+						if next(slots) == nil then
+							hidden[#hidden + 1] = { faces, name, slots }
+							faces[name] = nil
+						end
+					end
+				end
+			end
+		end
+	end
+	return hidden
+end
+
+local function showFaceless(hidden)
+	for index = #hidden, 1, -1 do
+		local one = hidden[index]
+		one[1][one[2]] = one[3]
+	end
+end
+ZCG.HideFaceless, ZCG.ShowFaceless = hideFaceless, showFaceless
+
 -- The Appearance Mod replaces the drop-down of the editor with windows of previews, so its own two
 -- functions are wrapped as well: the faces go into the tables once more before the window is built
 -- (a model the tables have no face for at that moment gets no section at all in the window of all
@@ -1091,17 +1145,21 @@ local function hookFaceMenus()
 				if isfunction(ZCG.FacePass) then pcall(ZCG.FacePass) end
 				if isfunction(ZCG.MaterialAnew) then pcall(ZCG.MaterialAnew) end
 				if isfunction(ZCG.FixFaces) then pcall(ZCG.FixFaces) end
+				local hidden = hideFaceless()     -- a face with no file is not listed (2.24.5)
 				local main = rawget(_G, "zpan")
 				local appearance = (IsValid(main) and istable(main.AppearanceTable) and main.AppearanceTable)
 					or (istable(AP.CurrentEditTable) and AP.CurrentEditTable) or nil
 				if name == "OpenFacemapMenu" and faceCount((faceModelOf(appearance))) == 0 then
 					ZCG.Print("the face window of the Appearance Mod has nothing for this model - the faces"
 						.. " of this addon are listed instead (zcg_faces says what is in the tables of the game)")
+					showFaceless(hidden)
 					local ok, err = pcall(openFaceMenu, main, appearance)
 					if ok then return end
 					report("face menu of this addon", err)
 				end
-				return stock(...)
+				local got = { stock(...) }
+				showFaceless(hidden)
+				return unpack(got)
 			end
 			faceMenus[wrapped] = true
 			AP[name] = wrapped
@@ -1209,7 +1267,9 @@ local function hookEditorClass()
 
 	local postInit = class.PostInit
 	local function wrapped(self, ...)
+		local hidden = hideFaceless()   -- the drop-down of the editor lists no face without a file
 		postInit(self, ...)
+		showFaceless(hidden)
 		local ok, err = pcall(ZCG.AttachEditor, self)
 		if not ok then report("appearance editor", err) end
 	end

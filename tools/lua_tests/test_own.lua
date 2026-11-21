@@ -648,7 +648,11 @@ return function(testdir, luaroot)
 			"at a spawn the look the game wore is kept as the look of the player ...")
 		eq((ZCO.Load(who) or {}).AName, "Выбранное",
 			"... and the copy of this server is written from it, not put over it")
-		eq(who.zcoWore, nil, "... and nothing of this addon is put on him over what the game wore")
+		check(who.zcoWore ~= nil,
+			"... and the very same look is put on him once more by the rails of this addon: the wear of "
+			.. "the game leaves out the clothes and the face its own tables have no name for, which is "
+			.. "the reset of the chosen clothes at every death (2.24.5)")
+		eq(who.zcoAppearance.AFacemap, "Face 1", "... with the face he applied")
 	end
 	M.netMessages = {}
 

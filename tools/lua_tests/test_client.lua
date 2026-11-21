@@ -2382,5 +2382,28 @@ return function(testdir, luaroot)
 	end
 
 	eq(#M.errors, 0, "no errors at the end: " .. table.concat(M.errors, " | "))
+	do -- a face whose texture is not here is not listed while a menu of the game is built (2.24.5)
+		local AP = hg.Appearance or {}
+		hg.Appearance = AP
+		AP.FacemapsSlots = AP.FacemapsSlots or {}
+		AP.MultiFacemaps = AP.MultiFacemaps or {}
+		local SLOT, MODEL = "models/humans/male/group01/ted_facemap", "models/zcity/m/male_02.mdl"
+		local hadSlots, hadMulti = AP.FacemapsSlots[SLOT], AP.MultiFacemaps[MODEL]
+		AP.FacemapsSlots[SLOT] = { ["Face 1"] = "models/faces/ted_1", ["Face 9"] = "" }
+		AP.MultiFacemaps[MODEL] = { ["Face 2"] = { [SLOT] = "" },
+			["Face 3"] = { [SLOT] = "models/faces/ted_2" } }
+		local hidden = ZCG.HideFaceless()
+		eq(AP.FacemapsSlots[SLOT]["Face 9"], nil,
+			"a face whose texture is not here is out of the tables while a menu of the game is built")
+		eq(AP.FacemapsSlots[SLOT]["Face 1"], "models/faces/ted_1", "... and a face with a file stays")
+		eq(AP.MultiFacemaps[MODEL]["Face 2"], nil,
+			"... and a name whose every slot has no file is out of the other table as well")
+		eq(AP.MultiFacemaps[MODEL]["Face 3"][SLOT], "models/faces/ted_2", "... while a named file stays")
+		ZCG.ShowFaceless(hidden)
+		eq(AP.FacemapsSlots[SLOT]["Face 9"], "", "... and the tables are whole again for the wear")
+		eq(AP.MultiFacemaps[MODEL]["Face 2"][SLOT], "", "... in both tables")
+		AP.FacemapsSlots[SLOT], AP.MultiFacemaps[MODEL] = hadSlots, hadMulti
+	end
+
 	return checks, failures
 end

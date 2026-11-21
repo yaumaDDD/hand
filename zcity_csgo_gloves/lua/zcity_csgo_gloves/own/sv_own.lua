@@ -577,9 +577,20 @@ hook.Add("PlayerSpawn", "zco_spawn", function(ply)
 	-- from the copy this server keeps, and where there is none his client is asked for its file.
 	timer.Simple(0, function()
 		if not IsValid(ply) then return end
-		local worn = ZCO.GameLook(ply) or wornByGame(ply)
+		local worn = ZCO.GameLook(ply)
 		if worn then
 			ZCO.Adopt(ply, worn)
+			-- The wear of the game leaves out what its own tables have no name for: the clothes and
+			-- the face of a pack whose Lua the server has not run live in the tables of this addon,
+			-- and ForceApplyAppearance of the game reads only its own - that is the reset of the
+			-- chosen clothes at every death. What the player applied is put on him once more by the
+			-- rails of this addon: the very same look, so nothing of his is taken away (2.24.5).
+			ZCO.Apply(ply, worn, true)
+			return
+		end
+		local byGame = wornByGame(ply)
+		if byGame then
+			ZCO.Adopt(ply, byGame)
 			return
 		end
 		if ply.zcoAppearance then
