@@ -619,6 +619,13 @@ function ZCG.FaceReport(out)
 		+ (made.alias or 0) + (made.shared or 0) + (made.exact or 0)
 	out("  faces: " .. faces .. " in FacemapsSlots, " .. multi .. " in MultiFacemaps, " .. models
 		.. " models with a face, " .. slots .. " face materials of a model")
+	local dropped = 0
+	for _ in pairs(ZCG.FaceDropped or {}) do dropped = dropped + 1 end
+	if dropped > 0 then
+		out("  " .. dropped .. " of them name a texture that is not on this computer: they are out of the menu and their"
+			.. " models show their own face, until the file is there (zcg_content names every file that is missing and the"
+			.. " Lua that names it)")
+	end
 	if total > 0 then
 		out("  " .. total .. " of them this addon put where the other menu looks as well ("
 			.. (made.multi or 0) .. " into MultiFacemaps, " .. (made.slots or 0) .. " into FacemapsSlots, "

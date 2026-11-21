@@ -491,26 +491,42 @@ return function(testdir, luaroot)
 			"faces: with a player model that cannot be read nothing is set apart")
 		AP.PlayerModels[1]["Male 03"] = nil
 
-		-- ---- the addon does not know whether the players have the files the server lacks: the
-		-- faces stay as the clothing Lua made them until the owner says otherwise
+		-- ---- a face whose texture is nowhere on this computer is out of the menu by itself: all it
+		-- could show is a face that is not the one its name promises (2.24.3). What the switch is
+		-- for is the rest of them - a face list that names a piece of clothes.
 		local ted, lake = AP.FacemapsSlots[TED], AP.FacemapsSlots[LAKE]
-		local nothing, off = ZCG.FixFaces()
-		eq(tostring(nothing) .. "|" .. tostring(off), "nil|off", "faces: left alone by default")
-		eq(ted["Face 10 (New)"] .. "|" .. ted["Face 9"] .. "|" .. lake["Face 1"],
-			"models/humans/modern/male/male_02/facemap_01|Models\\Faces\\Ted_9|models/faces/lake_facemap", "faces: the tables are as the clothing Lua made them")
-		eq(next(ZCG.Faceless), nil, "faces: nothing is remembered")
-		eq(ZCG.FacesLeft.faces .. "|" .. ZCG.FacesLeft.why, "4|off", "faces: how many have no file is counted all the same, by file")
+		check(ZCG.IsFaceMaterial("models/humans/modern/male/male_02/facemap_01")
+			and ZCG.IsFaceMaterial("Models\\Faces\\lake_Facemap.VMT")
+			and not ZCG.IsFaceMaterial("models/faces/ted_1") and not ZCG.IsFaceMaterial("")
+			and not ZCG.IsFaceMaterial(nil), "faces: a face texture is told by its name, while the build wrote no list down")
+		check(ZCG.MaterialThere("models/faces/ted_1") and not ZCG.MaterialThere("models/faces/lake_facemap")
+			and ZCG.MaterialThere("!made_by_lua") and ZCG.MaterialThere("null") and not ZCG.MaterialThere(""),
+			"faces: and a material is told by its file")
+		local dropped, off = ZCG.FixFaces()
+		eq(tostring(dropped) .. "|" .. tostring(off), "3|off", "faces: by default the face textures that are not here are counted, by file")
+		eq(ted["Face 10 (New)"] .. "|" .. ted["Face 9"] .. "|" .. lake["Face 1"] .. "|" .. lake["Face 2"], "|Models\\Faces\\Ted_9||",
+			"faces: a face whose texture is a face texture holds the empty material Z-City uses for Default")
+		eq(AP.MultiFacemaps[MALE]["Face 10 (New)"][TED] .. "|" .. AP.MultiFacemaps[OTHER]["Face 1"][LAKE], "|",
+			"faces: also where the Appearance Mod lists them by model")
+		eq(ted["Face 1"] .. "|" .. ted.Default .. "|" .. ted.Made, "models/faces/ted_1||!made_by_lua",
+			"faces: a face with its file, the default and a material made by Lua stay")
+		eq(ZCG.Faceless["FacemapsSlots/" .. LAKE .. "/Face 1"], "models/faces/lake_facemap", "faces: what stood there is remembered")
+		eq(ZCG.FaceDropped["MultiFacemaps/" .. MALE .. "/Face 10 (New)/" .. TED], "models/humans/modern/male/male_02/facemap_01",
+			"faces: and named as a face that is out of the menu")
+		eq(ZCG.FacesLeft.faces .. "|" .. ZCG.FacesLeft.why .. "|" .. ZCG.FacesLeft.dropped, "3|off|7",
+			"faces: how many textures are out of the menu, and how many entries name them")
 		M.log = {}
 		M.command("zcg_content", me)
-		eq(logged("2 of them are faces: whoever gets one of them has purple and black squares for a face - and Z-City hands faces out by chance"), 1,
-			"zcg_content says what faces without files do")
-		eq(logged("zcg_fix_faces 1 (console of the server, or server.cfg) gives such a face the own face of the model"), 1,
-			"and how to give them the own face of the model")
-		eq(ted["Face 10 (New)"], "models/humans/modern/male/male_02/facemap_01", "zcg_content changes nothing by itself")
+		eq(logged("3 face textures have no file here: the 7 faces that name them are out of the menu"), 1,
+			"zcg_content says what became of the faces without their texture")
+		eq(logged("1 more face textures are not here and are not known to be face textures"), 1,
+			"and which faces stay in the menu all the same")
+		eq(logged("zcg_fix_faces 1 (console of the server, or server.cfg) gives such a face the own face of the model"), 0,
+			"(nobody is told to switch anything on for that)")
+		eq(ted["Face 10 (New)"] .. "|" .. ted["Face 9"], "|Models\\Faces\\Ted_9", "zcg_content leaves the tables as the pass made them")
 		hook.Run("InitPostEntity")
 		M.advance(200)
-		eq(ted["Face 10 (New)"] .. "|" .. logged("faces of the appearance menu have no material file"),
-			"models/humans/modern/male/male_02/facemap_01|0", "faces: nor does the running game, and it says nothing")
+		eq(ted["Face 10 (New)"], "", "faces: and the running game keeps them out of the menu")
 
 		-- ---- zcg_fix_faces 1: a face without its file shows the own face of the model
 		M.setConVar("zcg_fix_faces", 1)
@@ -576,8 +592,8 @@ return function(testdir, luaroot)
 		eq(logged("sort_content.bat was cut off"), 0, "(no word about a run that was cut off)")
 		eq(logged("2 more files are named only for faces that no player model of the menu can wear"), 1, "zcg_content tells the faces nobody can wear apart")
 		eq(logged("    materials/models/faces/lake_facemap2.vmt  <-  face Face 2"), 1, "and names them")
-		eq(logged("4 faces have no material file here: until the file is there they show the own face of the model"), 1,
-			"zcg_content says what became of the faces without files")
+		eq(logged("4 face textures have no file here"), 1, "zcg_content says what became of the faces without files")
+		eq(logged("faces that name them are out of the menu and their models show their own face"), 1, "and what the menu does about it")
 		eq(logged("  the Lua that names them:"), 1, "zcg_content tells which Lua names the missing files")
 		eq(logged("    2 - The \"Faces\" Pack (lua/pack/faces.lua)"), 1, "by the title of its pack")
 		eq(logged("pack/lake.lua"), 0, "(not for what is not counted)")
@@ -717,26 +733,29 @@ return function(testdir, luaroot)
 		M.log = {}
 		M.command("zcg_content", me)
 		eq(ted["Face 9"], "Models\\Faces\\Ted_9", "faces: with its file a face is itself again")
-		eq(logged("3 faces have no material file here"), 1, "faces: and is not counted any more")
+		eq(logged("3 face textures have no file here"), 1, "faces: and is not counted any more")
 		eq(ZCG.Faceless["FacemapsSlots/" .. TED .. "/Face 9"], nil, "faces: nor remembered")
 
 		-- ---- a computer without the content is left alone
 		for i = 1, 8 do M.files["materials/models/pack/shirt_" .. i .. ".vmt"] = nil end
 		M.log = {}
 		M.command("zcg_content", me)
-		eq(ted["Face 10 (New)"] .. "|" .. lake["Face 1"], "models/humans/modern/male/male_02/facemap_01|models/faces/lake_facemap",
-			"faces: where much of the content is missing the faces are put back as the clothing Lua made them")
-		eq(next(ZCG.Faceless), nil, "faces: nothing is remembered then")
-		eq(logged("1 of them are faces, and they stay purple and black squares: only 34 of the 43 materials the menu names are on this computer"), 1,
-			"zcg_content says why the faces were left alone")
+		eq(ted["Face 10 (New)"] .. "|" .. lake["Face 1"], "|",
+			"faces: where much of the content is missing the faces without a face texture stay out of the menu all the same")
+		eq(ZCG.Faceless["FacemapsSlots/" .. TED .. "/Face 10 (New)"], "models/humans/modern/male/male_02/facemap_01",
+			"faces: and are remembered")
+		eq(logged("3 face textures have no file here"), 1, "zcg_content says what became of them")
+		eq(logged("only 34 of the 43 materials the menu names are on this computer"), 0,
+			"zcg_content: (a computer without the content is no reason to leave a face in the menu that cannot be shown)")
 		eq(select(2, ZCG.FixFaces()), "share", "faces: and the function says so")
 		M.setConVar("zcg_fix_faces", 2)
 		eq(ZCG.FixFaces() .. "|" .. ted["Face 10 (New)"], "3|", "faces: zcg_fix_faces 2 does it on any computer")
 		M.setConVar("zcg_fix_faces", 0)
 		local nothing, off = ZCG.FixFaces()
-		eq(tostring(nothing) .. "|" .. tostring(off) .. "|" .. ted["Face 10 (New)"], "nil|off|models/humans/modern/male/male_02/facemap_01",
-			"faces: zcg_fix_faces 0 puts everything back")
-		eq(ZCG.FacesLeft.faces .. "|" .. ZCG.FacesLeft.why, "3|off", "faces: and says how many there are")
+		eq(tostring(nothing) .. "|" .. tostring(off) .. "|" .. ted["Face 10 (New)"], "3|off|",
+			"faces: zcg_fix_faces 0 puts back what is not known to be a face texture, and leaves the rest out")
+		eq(ZCG.FacesLeft.faces .. "|" .. ZCG.FacesLeft.why .. "|" .. ted["Face 9"], "3|off|Models\\Faces\\Ted_9",
+			"faces: and says how many there are")
 		-- (two entries that come out under one name are never touched)
 		AP.FacemapsSlots["models/x"] = { ["y/Face 2"] = "models/faces/nowhere_a" }
 		AP.FacemapsSlots["models/x/y"] = { ["Face 2"] = "models/faces/nowhere_b" }
@@ -753,30 +772,35 @@ return function(testdir, luaroot)
 
 		-- ---- by itself, while the game runs
 		M.setConVar("zcg_fix_faces", 0)
-		M.advance(300) -- (the passes of the starts above see that: nothing to tell)
-		eq(ted["Face 10 (New)"], "models/humans/modern/male/male_02/facemap_01", "faces: (switched off, the faces are as the clothing Lua made them)")
-		M.setConVar("zcg_fix_faces", 1)
 		M.log = {}
+		M.advance(300) -- (the passes of the starts above see that: nothing new to tell)
+		eq(ted["Face 10 (New)"], "", "faces: (switched off, a face whose texture is not here stays out of the menu)")
+		eq(ted["Face 9"], "Models\\Faces\\Ted_9", "faces: and one whose file is here stays in it")
+		eq(logged("face textures of the appearance menu have no file"), 0, "faces: and nothing is said again about the same faces")
+		M.setConVar("zcg_fix_faces", 1)
 		hook.Run("InitPostEntity")
 		M.advance(2)
 		eq(ted["Face 10 (New)"], "", "faces: a second after the start the faces without files are seen to")
-		eq(logged("3 faces of the appearance menu have no material file on the client: they show the own face of the model"), 1, "faces: one line says so")
+		-- (a texture that arrives while the game runs: its face comes back, one line says so)
+		M.files["materials/models/faces/lake_facemap.vmt"] = true
+		M.log = {}
+		M.advance(125)
+		eq(lake["Face 1"] .. "|" .. logged("2 face textures of the appearance menu have no file on the client"),
+			"models/faces/lake_facemap|1", "faces: one line says so when the number changes")
+		eq(logged("face textures of the appearance menu have no file"), 1, "faces: without a second line")
 		ted["Face 10 (New)"] = "models/humans/modern/male/male_02/facemap_01"
 		M.advance(125)
 		eq(ted["Face 10 (New)"], "", "faces: a clothing Lua that writes its faces anew later is seen to as well")
-		eq(logged("faces of the appearance menu have no material file"), 1, "faces: without a second line")
+		eq(logged("face textures of the appearance menu have no file"), 1, "faces: and nothing new is said")
 		-- the switch works at once
 		M.setConVar("zcg_fix_faces", 0)
+		M.log = {}
 		M.advance(0.1)
-		eq(ted["Face 10 (New)"] .. "|" .. logged("the faces of the appearance menu are as the clothing Lua made them again"),
-			"models/humans/modern/male/male_02/facemap_01|1", "faces: switching it off puts the faces back at once, and says so")
-		ZCG.FacesLeft = nil
+		eq(ted["Face 9"] .. "|" .. ted["Face 10 (New)"] .. "|"
+			.. logged("the faces of the appearance menu are as the clothing Lua made them again"),
+			"Models\\Faces\\Ted_9||0", "faces: switching it off puts back what is not known to be a face texture")
 		M.advance(300)
-		eq(ZCG.FacesLeft, nil, "faces: switched off, the running game does not even look")
-		M.setConVar("zcg_fix_faces", 1)
-		M.advance(0.1)
-		eq(ted["Face 10 (New)"] .. "|" .. logged("faces of the appearance menu have no material file"), "|2",
-			"faces: switching it on works at once, and says so")
+		check(istable(ZCG.FacesLeft), "faces: switched off, the running game still looks after the faces without their texture")
 		-- a file that gets mounted while the game runs: the next look finds it
 		M.files["materials/models/humans/modern/male/male_02/facemap_01.vmt"] = true
 		M.advance(125)
@@ -788,8 +812,9 @@ return function(testdir, luaroot)
 
 		M.setConVar("zcg_fix_faces", 0)
 		ZCG.FixFaces()
-		eq(ted["Face 10 (New)"] .. "|" .. tostring(next(ZCG.Faceless)), "models/humans/modern/male/male_02/facemap_01|nil",
-			"faces: switched off again, everything is back")
+		eq(ted["Face 10 (New)"] .. "|" .. tostring(ZCG.FaceDropped["FacemapsSlots/" .. TED .. "/Face 10 (New)"]),
+			"|models/humans/modern/male/male_02/facemap_01", "faces: switched off again, a face without its texture is still out of the menu")
+		eq(tostring(ZCG.Faceless["FacemapsSlots/" .. TED .. "/Face 9"]), "nil", "faces: and a face whose file is here is not remembered")
 		timer.Remove("zcg_faces")
 		ZCG.Bound, ZCG.BoundPacks = nil, nil
 		AP.Clothes, AP.PlayerModels = clothes, models

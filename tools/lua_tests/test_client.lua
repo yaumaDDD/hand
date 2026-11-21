@@ -1500,7 +1500,30 @@ return function(testdir, luaroot)
 		for _, option in ipairs(mine.options or {}) do
 			if option.text then names = names + 1 end
 		end
-		check(names > 0, "... and the list of this addon has faces in it: " .. names
+		-- (2.24.3) a face whose texture is not on this computer is not offered at all: all it could
+		-- put on the head is a picture that is not the one its name promises
+		eq(names, 1, "... and without the textures the list of this addon offers no face: " .. names)
+		local said = tostring((mine.options or {})[1] and mine.options[1].text)
+		check(said:find("no face of this model has its texture here", 1, true) ~= nil, "... and says why: " .. said)
+		-- the textures of those very faces arrive: they are offered, and one of them can be picked
+		local offered = select(2, pcall(ZCO.Faces, facePath, (entry and entry.sex) and 2 or 1))
+		local installed = {}
+		for _name, path in pairs(istable(offered) and offered or {}) do
+			if isstring(path) and path ~= "" then
+				local file = "materials/" .. string.lower(string.gsub(string.gsub(path, "\\", "/"), "^materials/", ""))
+				file = string.gsub(file, "%.vmt$", "") .. ".vmt"
+				M.files[file] = true
+				installed[#installed + 1] = file
+			end
+		end
+		check(#installed > 0, "the textures of the faces of the catalog are installed: " .. #installed)
+		M.menus = {}
+		faceButton:DoClick()
+		mine, names = M.menus[#M.menus], 0
+		for _, option in ipairs(mine.options or {}) do
+			if option.text then names = names + 1 end
+		end
+		check(names > 1, "... and with the files there the list of this addon has faces in it: " .. names
 			.. " (the game had " .. noFaces .. ")")
 		local firstName
 		for _, option in ipairs(mine.options or {}) do
@@ -1510,6 +1533,7 @@ return function(testdir, luaroot)
 		M.pickOption(mine, firstName)
 		eq(main.AppearanceTable.AFacemap, firstName, "a face picked there is the face worn as well")
 		eq(main.modelPosID, "Face", "... and the editor is told the part being chosen")
+		for _, file in ipairs(installed) do M.files[file] = nil end -- (the rest of the scenarios had none)
 
 		-- the windows of the Appearance Mod are wrapped the same way
 		local opened = 0

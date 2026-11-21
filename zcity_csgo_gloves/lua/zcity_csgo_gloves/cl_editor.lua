@@ -911,6 +911,9 @@ end)
 -- has nothing to list opens the list of this addon instead - it is baked into the addon when the
 -- addon is built (own/sh_catalog.lua) and offers the faces of the sex of the model even where no
 -- clothing Lua named one. (2.24.2)
+-- A click also takes the faces out of the tables whose texture is not on this computer, and the
+-- list of this addon does not offer them either: a face without its file puts a picture on the
+-- head that is not the one its name promises (ZCG.FixFaces, 2.24.3).
 
 --- the model an appearance wears, as the menus of the game name it
 local function faceModelOf(appearance)
@@ -975,7 +978,8 @@ local function faceOn(ent, name)
 end
 
 --- the list of this addon: the faces of the catalog and the ones the game has, and returns how
---- many faces it offers
+--- many faces it offers. A face whose texture is not on this computer is not offered at all: it
+--- would put a picture on the head that is not the one its name promises (2.24.3).
 local function openFaceMenu(main, appearance)
 	local model, entry = faceModelOf(appearance)
 	local sex = (istable(entry) and entry.sex) and 2 or 1
@@ -991,8 +995,14 @@ local function openFaceMenu(main, appearance)
 	for name, path in pairs(ZCG.FacesOf(model)) do
 		if faces[name] == nil then faces[name] = path end
 	end
-	local names = {}
-	for name in pairs(faces) do names[#names + 1] = name end
+	local names, noFile = {}, 0
+	for name, path in pairs(faces) do
+		if not isfunction(ZCG.MaterialThere) or ZCG.MaterialThere(path) then
+			names[#names + 1] = name
+		else
+			noFile = noFile + 1
+		end
+	end
 	table.sort(names)
 
 	local menu = DermaMenu()
@@ -1010,7 +1020,10 @@ local function openFaceMenu(main, appearance)
 		end)
 		if istable(option) and isfunction(option.SetChecked) then option:SetChecked(name == current) end
 	end
-	if #names == 0 then menu:AddOption("this addon knows no face for this model", function() end) end
+	if #names == 0 then
+		menu:AddOption(noFile > 0 and ("no face of this model has its texture here (" .. noFile .. " without a file)")
+			or "this addon knows no face for this model", function() end)
+	end
 	if IsValid(main) then
 		main.zcg_menu = menu
 		main.modelPosID = "Face"
@@ -1042,6 +1055,10 @@ local function wrapFaceButton(main, viewer)
 	local stock = button.DoClick
 	local function wrapped(self, ...)
 		if isfunction(ZCG.FacePass) then pcall(ZCG.FacePass) end
+		-- (the files are asked for anew, the faces go into the tables once more, and the ones whose
+		-- texture is not here come out)
+		if isfunction(ZCG.MaterialAnew) then pcall(ZCG.MaterialAnew) end
+		if isfunction(ZCG.FixFaces) then pcall(ZCG.FixFaces) end
 		local appearance = main.AppearanceTable
 		if faceCount((faceModelOf(appearance))) == 0 then
 			ZCG.Print("the face choice of Z-City has nothing for this model - the faces of this addon"
@@ -1072,6 +1089,8 @@ local function hookFaceMenus()
 			faceMenus[stock] = true
 			local function wrapped(...)
 				if isfunction(ZCG.FacePass) then pcall(ZCG.FacePass) end
+				if isfunction(ZCG.MaterialAnew) then pcall(ZCG.MaterialAnew) end
+				if isfunction(ZCG.FixFaces) then pcall(ZCG.FixFaces) end
 				local main = rawget(_G, "zpan")
 				local appearance = (IsValid(main) and istable(main.AppearanceTable) and main.AppearanceTable)
 					or (istable(AP.CurrentEditTable) and AP.CurrentEditTable) or nil

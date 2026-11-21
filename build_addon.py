@@ -1497,6 +1497,27 @@ def main():
         raise BuildError('the build is not usable, see the problems above')
     print('  %d gloves, %d materials: every model finds its materials and textures' % (len(L.variants()), vmts))
 
+    # The faces of the appearance menu are another matter: their textures come with the clothing
+    # packs, not with the gloves, and an addon that carries the Lua of a pack without its content
+    # puts faces into the menu that nobody can show (2.24.3: on a server with Z-City and this addon
+    # alone, of 243 face textures the tables named there was not one file). The addon takes such a
+    # face out of the menu itself (sh_content.lua, ZCG.FixFaces), and the build says how many there
+    # are, so that the loss is visible here and not only in the game.
+    faces = set()
+    for entry, value, _side in sort_content.read_bound_entries(out):
+        if entry.split('/')[0] in ('FacemapsSlots', 'MultiFacemaps') and value:
+            faces.add(value.lower().replace('\\', '/'))
+
+    def face_here(value):
+        rel = value[10:] if value.startswith('materials/') else value
+        rel = rel[:-4] if rel.endswith('.vmt') else rel
+        return os.path.isfile(os.path.join(out, 'materials', *rel.split('/')) + '.vmt')
+
+    have = sum(1 for value in faces if face_here(value))
+    print('  %d face textures the clothing Lua names, %d of them in this addon: a face whose texture'
+          ' is not on the computer is taken out of the menu by the addon itself (zcg_content names'
+          ' every file that is missing)' % (len(faces), have))
+
     for title, instead, files, names in joined:
         print('Together: "%s" is in the menu next to "%s" - %s; %d files only it names are asked for as well'
               % (title, instead, ', '.join('lua/' + rel for rel in files), len(names)))

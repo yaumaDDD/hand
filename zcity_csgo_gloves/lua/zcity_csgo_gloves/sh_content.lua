@@ -460,20 +460,32 @@ end, nil, "Name the files of the appearance menu that are not in the folder of t
 -- a face without its file
 -- ---------------------------------------------------------------------------------------------
 -- A face is a material Z-City puts over the face of a player model. One whose file is not
--- installed is purple and black squares - on whoever picks it, and on everybody Z-City gives it
--- to: a random appearance takes any face of the list. Clothing packs name such faces: files
--- that come with yet another addon, names that are plainly wrong.
+-- installed cannot show the picture its name promises: the head keeps the material of the model,
+-- or draws purple and black squares - on whoever picks it, and on everybody Z-City gives it to:
+-- a random appearance takes any face of the list. Clothing packs name such faces: their textures
+-- come with yet another addon that is not installed here (2.24.3: on a server with Z-City and
+-- this addon alone, of 243 face textures the tables name there was not one file - every face of
+-- the menu was a promise of a picture nobody had).
 --
--- zcg_fix_faces 1: a face without its file is given the empty material Z-City itself uses for
--- "Default" - the model keeps its own face. The name stays in the menu; ZCG.Faceless remembers
--- what stood there, so zcg_content goes on naming the file, and with the file the face is back.
--- Z-City dresses a player on the server, with the table of the server: there the files of the
--- server decide for everybody. That is right where the players get their content from the very
--- folder the server has, and wrong where they have files the server lacks - the addon cannot
--- know which, so this is off until the owner of the server switches it on.
--- A computer that has little of the content is left alone even then: a dedicated server needs
--- no materials at all. (2 = on any computer; 0 = never, and whatever was changed is put back.)
+-- A face whose texture is a face texture and is nowhere on this computer is therefore out of the
+-- menu on every computer, whatever zcg_fix_faces says: it is given the empty material Z-City
+-- itself uses for "Default", so the model keeps its own face instead of a wrong one. The name
+-- stays in the list; ZCG.Faceless remembers what stood there, so zcg_content goes on naming the
+-- file, and with the file the face is back. ZCG.FaceDropped holds the faces taken out this way.
+-- Only a texture that is a face is taken out - the build knows which lines of the clothing Lua
+-- are faces and which are clothes (sh_bound.lua), and where it does not, the name of the file
+-- tells (a face texture of Z-City is a "facemap" or a "cylmap"). A material that is clothes as
+-- well is never touched: taking it out would undress somebody.
+--
+-- zcg_fix_faces 1: the same for every face without its file, clothes among them. Z-City dresses
+-- a player on the server, with the table of the server: there the files of the server decide for
+-- everybody. That is right where the players get their content from the very folder the server
+-- has, and wrong where they have files the server lacks - the addon cannot know which, so this
+-- wider rule is off until the owner of the server switches it on. A computer that has little of
+-- the content is left alone even then: a dedicated server needs no materials at all.
+-- (2 = on any computer; 0 = only the faces above, and whatever else was changed is put back.)
 ZCG.Faceless = ZCG.Faceless or {} -- entry of the tables (as ZCG.ContentWalk names it) -> the material
+ZCG.FaceDropped = ZCG.FaceDropped or nil -- the same, of the faces that are out of the menu
 local MIN_SHARE = 0.9
 local there = {} -- material -> its file is there; asked once, zcg_content asks anew
 
@@ -491,6 +503,62 @@ local function materialThere(name)
 		there[name] = known
 	end
 	return known
+end
+
+-- Which materials are faces and which are clothes, as the build wrote it down: sh_bound.lua keeps
+-- every line the clothing Lua puts into the tables with the entry it goes into, and a line of
+-- FacemapsSlots or MultiFacemaps is a face while a line of Clothes is not. Without that list (an
+-- addon built without the Lua of the packs) the name of the file tells: a face texture of Z-City
+-- is a "facemap", and a "cylmap" in the packs that mirror the citizens of Half-Life 2.
+-- (a path is compared the way the build wrote it down: in lower case, with "/", and without the
+-- "materials/" in front and the ".vmt" behind that one list has and the other does not)
+local function faceKey(path) return materialName(clean(path)) end
+
+local boundWas, facePaths, clothesPaths
+local function facePathLists()
+	local bound = ZCG.Bound
+	if facePaths ~= nil and bound == boundWas then return end
+	boundWas, facePaths, clothesPaths = bound, {}, {}
+	if not istable(bound) then return end
+	for _, list in pairs(bound) do
+		for _, item in ipairs(istable(list) and list or {}) do
+			if istable(item) and isstring(item[1]) and isstring(item[2]) then
+				local where = string.match(item[1], "^([^/]+)/")
+				local name = faceKey(item[2])
+				if where == "FacemapsSlots" or where == "MultiFacemaps" then
+					facePaths[name] = true
+				elseif where == "Clothes" then
+					clothesPaths[name] = true
+				end
+			end
+		end
+	end
+end
+
+--- is this material a face texture, and not a piece of clothing that a face list names as well?
+function ZCG.IsFaceMaterial(path)
+	if not isstring(path) or path == "" then return false end
+	facePathLists()
+	local name = faceKey(path)
+	if clothesPaths[name] then return false end
+	if facePaths[name] then return true end
+	return string.find(name, "facemap", 1, true) ~= nil or string.find(name, "cylmap", 1, true) ~= nil
+end
+
+--- forgets the files that were asked for and not found: content gets mounted while a game runs,
+--- and a click on a button of the menu is a good moment to ask the disk again
+function ZCG.MaterialAnew()
+	for name, found in pairs(there) do
+		if not found then there[name] = nil end
+	end
+end
+
+--- is the file of this material on this computer? A material that needs no file ("null", the name
+--- GMod gives a material that draws nothing, and "!name", one Lua made) counts as there.
+function ZCG.MaterialThere(path)
+	if not isstring(path) or path == "" then return false end
+	if string.lower(path) == "null" or string.sub(path, 1, 1) == "!" then return true end
+	return materialThere(materialName(path))
 end
 
 -- fn(table, key, value, entry) for every face
@@ -556,11 +624,14 @@ function ZCG.FixFaces()
 		if times[faces[i].entry] > 1 then table.remove(faces, i) end
 	end
 
+	local dropped = {} -- faces that are out of the menu whatever the switch says: entry -> material
+
 	local function putBack()
 		for _, face in ipairs(faces) do
-			if face.tbl[face.key] == "" then face.tbl[face.key] = face.path end
+			if face.tbl[face.key] == "" and not dropped[face.entry] then face.tbl[face.key] = face.path end
 		end
 		for entry in pairs(lost) do lost[entry] = nil end
+		for entry, path in pairs(dropped) do lost[entry] = path end
 	end
 
 	local without, files, count = {}, {}, 0
@@ -575,18 +646,42 @@ function ZCG.FixFaces()
 		end
 	end
 
+	-- out of the menu on every computer: a face whose texture is a face texture and is nowhere here
+	-- can only show a face that is not the one its name promises (2.24.3)
+	local droppedFiles, droppedCount, keptFiles = {}, 0, {}
+	for _, face in ipairs(without) do
+		if ZCG.IsFaceMaterial(face.path) then
+			dropped[face.entry] = face.path
+			face.tbl[face.key] = ""
+			droppedCount = droppedCount + 1
+			droppedFiles[materialName(face.path)] = true
+		else
+			keptFiles[materialName(face.path)] = true -- (a face list may name a piece of clothes)
+		end
+	end
+	ZCG.FaceDropped = next(dropped) ~= nil and dropped or nil
+	local function countKeys(list)
+		local got = 0
+		for _ in pairs(list) do got = got + 1 end
+		return got
+	end
+	local droppedMats, keptMats = countKeys(droppedFiles), countKeys(keptFiles)
+
 	ZCG.FacesLeft = nil
 	if mode <= 0 then
 		putBack()
-		ZCG.FacesLeft = { faces = count, why = "off" }
-		return nil, "off"
+		ZCG.FacesLeft = { faces = droppedMats, why = "off", dropped = droppedCount, kept = keptMats }
+		if droppedMats == 0 then return nil, "off" end
+		return droppedMats, "off"
 	end
 	if mode == 1 then
 		local found, all = ZCG.ContentShare()
 		if all == 0 or found < MIN_SHARE * all then
 			putBack()
-			ZCG.FacesLeft = { faces = count, why = "share", there = found, all = all }
-			return nil, "share"
+			ZCG.FacesLeft = { faces = droppedMats, why = "share", there = found, all = all, dropped = droppedCount,
+				kept = keptMats }
+			if droppedMats == 0 then return nil, "share" end
+			return droppedMats, "share"
 		end
 	end
 
@@ -601,24 +696,19 @@ function ZCG.FixFaces()
 	end
 	for entry in pairs(lost) do lost[entry] = nil end
 	for entry, path in pairs(now) do lost[entry] = path end
+	ZCG.FacesLeft = { faces = count, dropped = droppedCount, kept = 0 }
 	return count
 end
 
 -- The clothing Lua fills the tables while the game starts, some of it on timers, and a Lua file
 -- that is loaded again fills them again: looked at a few times at the start, every two minutes
 -- after that, and when the switch is turned. One line in the console when the number changes.
--- Switched off, with nothing to put back, this does nothing at all.
+-- Switched off it still takes the faces out of the menu whose texture is a face texture and is
+-- nowhere on this computer (2.24.3), so it always has something to look at.
 local toldFaces = 0
 local function facesPass()
-	local mode = ZCG.cvFixFaces and ZCG.cvFixFaces:GetInt() or 0
-	if mode <= 0 and next(ZCG.Faceless) == nil then
-		toldFaces = 0
-		return
-	end
 	-- (a file that was not there is asked for again: content gets mounted while a game runs)
-	for name, found in pairs(there) do
-		if not found then there[name] = nil end
-	end
+	ZCG.MaterialAnew()
 	local ok, count = pcall(ZCG.FixFaces)
 	if not ok then
 		if toldFaces ~= -1 then
@@ -630,9 +720,12 @@ local function facesPass()
 	count = count or 0
 	if count ~= toldFaces then
 		if count > 0 then
-			ZCG.Print(count .. " faces of the appearance menu have no material file on the " .. (SERVER and "server" or "client")
-				.. ": they show the own face of the model instead of purple and black squares - zcg_content names the files, "
-				.. "zcg_fix_faces 0 leaves the faces as they are.")
+			-- (the wider rule of the switch is what is offered where the narrow one is all that runs)
+			local wider = istable(ZCG.FacesLeft) and ZCG.FacesLeft.why == nil
+			ZCG.Print(count .. " face textures of the appearance menu have no file on the " .. (SERVER and "server" or "client")
+				.. ": the faces that name them are out of the menu and their models show their own face"
+				.. (wider and "" or " - zcg_fix_faces 2 takes every other face without its file out as well")
+				.. " (zcg_content names the files and the Lua that names them).")
 		elseif toldFaces > 0 then
 			ZCG.Print("the faces of the appearance menu are as the clothing Lua made them again.")
 		end
@@ -976,18 +1069,31 @@ function ZCG.ContentReport(out)
 	-- what goes for the faces
 	local function faces()
 		local left = ZCG.FacesLeft
+		local droppedNow = 0
+		for _ in pairs(ZCG.FaceDropped or {}) do droppedNow = droppedNow + 1 end
 		if fixed and fixedCount and fixedCount > 0 then
-			out("  " .. fixedCount .. " faces have no material file here: until the file is there they show the own face of the"
-				.. " model instead of purple and black squares (zcg_fix_faces 0 leaves them as the clothing Lua made them)")
+			out("  " .. fixedCount .. " face textures have no file here: the " .. droppedNow .. " faces that name them are out of"
+				.. " the menu and their models show their own face, until the file is there (the textures come with the"
+				.. " clothing pack that names them - zcg_content names the Lua file)")
+			if istable(left) and (left.kept or 0) > 0 then
+				out("  " .. left.kept .. " more face textures are not here and are not known to be"
+					.. " face textures (a face list may name a piece of clothes): those faces stay in the menu, and whoever"
+					.. " gets one of them has purple and black squares for a face (zcg_fix_faces 2 gives them the own face"
+					.. " of the model)")
+			end
 		elseif faceCount > 0 and istable(left) and left.why == "share" then
-			out("  " .. faceCount .. " of them are faces, and they stay purple and black squares: only " .. left.there
-				.. " of the " .. left.all .. " materials the menu names are on this computer, which is taken for one without"
-				.. " the content (a server needs none) - zcg_fix_faces 2 gives them the own face of the model all the same")
+			out("  " .. faceCount .. " of them are faces, and they stay purple and"
+				.. " black squares: only " .. left.there .. " of the " .. left.all .. " materials the menu names are on this"
+				.. " computer, which is taken for one without the content (a server needs none) - zcg_fix_faces 2 gives them"
+				.. " the own face of the model all the same")
 		elseif faceCount > 0 then
-			out("  " .. faceCount .. " of them are faces: whoever gets one of them has purple and black squares for a face"
-				.. " - and Z-City hands faces out by chance")
+			out("  " .. faceCount .. " of them are faces: whoever gets one of them"
+				.. " has purple and black squares for a face - and Z-City hands faces out by chance")
 			out("  zcg_fix_faces 1 (console of the server, or server.cfg) gives such a face the own face of the model until"
 				.. " its file is there - right where the players get their content from the folder the server has")
+		elseif droppedNow > 0 then
+			out("  no face of the menu is left without its texture: " .. droppedNow .. " faces that had none are out of the"
+				.. " menu until the file is there")
 		end
 		if #apart > 0 then
 			out("  " .. #apart .. " more files are named only for faces that no player model of the menu can wear"
