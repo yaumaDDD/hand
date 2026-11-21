@@ -741,7 +741,9 @@ function ZCG.ForceFace(ply)
 	for index = 1, #mats do
 		local list = listOf(mats[index])
 		local path = list and list[face] or nil
-		if isstring(path) and path ~= "" then
+		-- (a face whose texture is not here would put a picture on the head that is not the one its
+		-- name promises: the model keeps its own face - ZCG.FixFaces, 2.24.3)
+		if isstring(path) and path ~= "" and (not isfunction(ZCG.MaterialUsable) or ZCG.MaterialUsable(path)) then
 			ply:SetSubMaterial(index - 1, path)
 			done = done + 1
 		end
@@ -752,7 +754,8 @@ function ZCG.ForceFace(ply)
 	if istable(by_slot) then
 		for index = 1, #mats do
 			local material = by_slot[mats[index]] or by_slot[clean(mats[index])]
-			if isstring(material) and material ~= "" then
+			if isstring(material) and material ~= ""
+				and (not isfunction(ZCG.MaterialUsable) or ZCG.MaterialUsable(material)) then
 				ply:SetSubMaterial(index - 1, material)
 				done = done + 1
 			end

@@ -348,11 +348,19 @@ return function(testdir, luaroot)
 	-- the old way, straight on the player: what he wears is put back on his own materials
 	local faceply = M.newPlayer("Лицо", OWN)
 	faceply.CurAppearance = { AFacemap = "Face 10 (New)" }
+	-- (2.24.3) a face whose texture is not on this computer is not put on the player either: all it
+	-- could show is a picture that is not the one its name promises
+	check(ZCG.ForceFace(faceply) == 0, "a face whose texture is not here is not put on the player")
+	eq(tostring(faceply:GetSubMaterial(0)), "", "... and the head keeps the material of the model")
+	M.files["materials/models/humans/modern/male/male_04/facemap_01.vmt"] = true
+	ZCG.MaterialAnew()
 	check(ZCG.ForceFace(faceply) >= 1, "the face the player wears is put back onto the material his model carries")
 	eq(faceply:GetSubMaterial(0), "models/humans/modern/male/male_04/facemap_01",
-		"... exactly the material the tables name for it")
+		"... exactly the material the tables name for it, once its file is there")
 	faceply.CurAppearance.AFacemap = "Default"
 	check(ZCG.ForceFace(faceply) >= 1, "the face of the model itself takes the sub-material back")
+	M.files["materials/models/humans/modern/male/male_04/facemap_01.vmt"] = nil
+	ZCG.MaterialAnew()
 	eq(#M.errors, 0, "no errors: " .. table.concat(M.errors, " | "))
 	M.setConVar("zcg_sync_faces", "0")
 	eq(ZCG.SyncFaces(), false, "zcg_sync_faces 0: nothing is synced")
@@ -419,8 +427,12 @@ return function(testdir, luaroot)
 	-- the faces of the pool land on the material the model actually carries, so that they are worn
 	local bare = M.newPlayer("Корт", BARE_MODEL, { steamid64 = "76561198000000031" })
 	bare.CurAppearance = { AFacemap = "Face 1" }
+	M.files["materials/models/humans/male/group01/van_facemap1.vmt"] = true
+	ZCG.MaterialAnew()
 	check(ZCG.ForceFace(bare) >= 1, "a face of the pool is put on the material the model carries")
 	eq(bare:GetSubMaterial(0), "models/humans/male/group01/van_facemap1", "... the very face that was chosen")
+	M.files["materials/models/humans/male/group01/van_facemap1.vmt"] = nil
+	ZCG.MaterialAnew()
 	-- a second pass changes nothing, and the switch takes the whole of it back
 	local was, again = #ZCG.FaceAdded, ZCG.SyncFaces()
 	eq(#ZCG.FaceAdded, was, "a second pass adds nothing to it: " .. tostring(again))

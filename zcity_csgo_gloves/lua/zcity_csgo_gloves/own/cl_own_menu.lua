@@ -83,11 +83,24 @@ function ZCO.Menu.Items(category, appearance)
 	elseif category == "face" then
 		local _name, entry = ZCO.ModelByName(appearance.AModel)
 		local model = (entry and entry.mdl) or (type(appearance.AModel) == "string" and appearance.AModel) or ""
-		local names = {}
-		for name, material in pairs(ZCO.Faces(model, sex)) do names[#names + 1] = { name, material } end
+		-- A face whose texture is not on this computer is not offered: all it could put on the head
+		-- is a picture that is not the one its name promises (2.24.3). The empty material - the own
+		-- face of the model, "Default" - is offered whatever files are there.
+		local names, noFile = {}, 0
+		for name, material in pairs(ZCO.Faces(model, sex)) do
+			if material == "" or not ZCGloves.MaterialUsable or ZCGloves.MaterialUsable(material) then
+				names[#names + 1] = { name, material }
+			else
+				noFile = noFile + 1
+			end
+		end
 		table.sort(names, function(a, b) return a[1] < b[1] end)
 		for _, pair in ipairs(names) do
 			got[#got + 1] = { title = pair[1], value = pair[1], material = pair[2] }
+		end
+		if #names == 0 and noFile > 0 then
+			got[#got + 1] = { title = "ни одного лица с текстурой здесь (" .. noFile .. " без файла)",
+				value = "Default", material = "" }
 		end
 	else
 		local group = nil
@@ -316,13 +329,19 @@ function ZCO.Menu.Preview(panel, appearance)
 		local material = worn and (clothes[worn] or ZCO.Clothes(ZCO.MALE)[worn] or ZCO.Clothes(ZCO.FEMALE)[worn])
 		if index and material and material ~= "" then ent:SetSubMaterial(index, material) end
 	end
+	-- (a face whose texture is not here is not put on the model in the window either: the window
+	-- would show a picture that nobody has, 2.24.3)
+	local function usable(material)
+		if type(material) ~= "string" or material == "" then return false end
+		return not ZCGloves.MaterialUsable or ZCGloves.MaterialUsable(material)
+	end
 	local materials = ent:GetMaterials() or {}
 	for index = 1, #materials do
 		local by_name = (ZCO.Catalog.Facemaps or {})[materials[index]]
 		local face = appearance.AFacemap or "Default"
-		if type(by_name) == "table" and by_name[face] then ent:SetSubMaterial(index - 1, by_name[face]) end
+		if type(by_name) == "table" and usable(by_name[face]) then ent:SetSubMaterial(index - 1, by_name[face]) end
 		local multi = (ZCO.Catalog.MultiFacemaps or {})[model]
-		if type(multi) == "table" and type(multi[face]) == "table" and multi[face][materials[index]] then
+		if type(multi) == "table" and type(multi[face]) == "table" and usable(multi[face][materials[index]]) then
 			ent:SetSubMaterial(index - 1, multi[face][materials[index]])
 		end
 	end

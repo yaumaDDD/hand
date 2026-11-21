@@ -796,6 +796,29 @@ return function(testdir, luaroot)
 	check(type(state) == "table" and state.AModel ~= nil, "the menu starts with what the player wears")
 	check(#ZCO.Menu.Items("model", state) >= 10, "the models in the menu: " .. #ZCO.Menu.Items("model", state))
 	check(#ZCO.Menu.Items("main", state) >= 50, "the clothes in the menu: " .. #ZCO.Menu.Items("main", state))
+	-- (2.24.3) a face whose texture is not on this computer is not offered by the own menu either:
+	-- all it could put on the head is a picture that is not the one its name promises
+	local bare = ZCO.Menu.Items("face", state)
+	check(#bare == 1 and bare[1].title == "Default",
+		"without the textures the own menu offers the own face of the model and nothing else: "
+			.. tostring(bare[1] and bare[1].title))
+	local faceFiles = 0
+	local function install(path)
+		if type(path) ~= "string" or path == "" then return end
+		local rel = string.lower(string.gsub(string.gsub(path, "\\", "/"), "^materials/", ""))
+		C.files["materials/" .. string.gsub(rel, "%.vmt$", "") .. ".vmt"] = true
+		faceFiles = faceFiles + 1
+	end
+	for _, faces in pairs(ZCO.Catalog.Facemaps or {}) do
+		for _name, path in pairs(faces) do install(path) end
+	end
+	for _, byface in pairs(ZCO.Catalog.MultiFacemaps or {}) do
+		for _name, byslot in pairs(byface) do
+			for _slot, path in pairs(byslot) do install(path) end
+		end
+	end
+	check(faceFiles > 50, "the textures of the faces of the catalog are installed: " .. faceFiles)
+	ZCGloves.MaterialAnew()
 	check(#ZCO.Menu.Items("face", state) >= 5, "the faces in the menu: " .. #ZCO.Menu.Items("face", state))
 	check(#ZCO.Menu.Items("attach", state) >= 20, "the accessories in the menu: " .. #ZCO.Menu.Items("attach", state))
 	check(#ZCO.Menu.Items("HANDS", state) >= 10, "the gloves in the menu: " .. #ZCO.Menu.Items("HANDS", state))

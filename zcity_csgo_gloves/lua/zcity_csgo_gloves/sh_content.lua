@@ -553,6 +553,15 @@ function ZCG.MaterialAnew()
 	end
 end
 
+--- may this material be put on a player? A face whose file is not on this computer can only show
+--- a picture that is not the one its name promises, and the model is better left with its own face
+--- (2.24.3). The empty material - the one Z-City itself uses for "Default" - is always all right.
+function ZCG.MaterialUsable(path)
+	if not isstring(path) then return false end
+	if path == "" then return true end
+	return ZCG.MaterialThere(path)
+end
+
 --- is the file of this material on this computer? A material that needs no file ("null", the name
 --- GMod gives a material that draws nothing, and "!name", one Lua made) counts as there.
 function ZCG.MaterialThere(path)

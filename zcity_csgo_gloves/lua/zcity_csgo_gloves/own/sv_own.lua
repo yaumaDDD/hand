@@ -79,13 +79,19 @@ function ZCO.Apply(ply, appearance, noModelChange)
 		end
 	end
 
-	-- the face: the material of the slot the model has is replaced by the one of the face
+	-- the face: the material of the slot the model has is replaced by the one of the face. A face
+	-- whose texture is not on this computer is left out: all it could show is a picture that is not
+	-- the one its name promises, and the model keeps its own face instead (2.24.3).
+	local function usable(material)
+		if type(material) ~= "string" or material == "" then return false end
+		return not ZCGloves.MaterialUsable or ZCGloves.MaterialUsable(material)
+	end
 	if ply.SetNWString then ply:SetNWString("ZCOFacemap", tostring(appearance.AFacemap or "Default")) end
 	local materials = ply:GetMaterials() or {}
 	for index = 1, #materials do
 		local by_name = (hg.Appearance and hg.Appearance.FacemapsSlots or {})[materials[index]]
 			or (ZCO.Catalog.Facemaps or {})[materials[index]]
-		if type(by_name) == "table" and by_name[appearance.AFacemap or "Default"] then
+		if type(by_name) == "table" and usable(by_name[appearance.AFacemap or "Default"]) then
 			ply:SetSubMaterial(index - 1, by_name[appearance.AFacemap or "Default"])
 		end
 	end
@@ -96,7 +102,7 @@ function ZCO.Apply(ply, appearance, noModelChange)
 		if type(by_slot) == "table" then
 			for index = 1, #materials do
 				local material = by_slot[materials[index]]
-				if material and material ~= "" then ply:SetSubMaterial(index - 1, material) end
+				if usable(material) then ply:SetSubMaterial(index - 1, material) end
 			end
 		end
 	end
