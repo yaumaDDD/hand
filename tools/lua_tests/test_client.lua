@@ -1521,12 +1521,18 @@ return function(testdir, luaroot)
 		hg.Appearance.FacemapsModels[facePath] = FACE_SLOT
 		hg.Appearance.OpenAllFacemapsMenu()
 		eq(opened, 1, "... and the window of the game opens where the tables have a face")
+		-- (this runs every half a second in the game: a wrapper that is wrapped again would put the
+		-- whole sync one layer deeper every time, and a click would run it a thousand times)
+		local wrappedOnce, wrappedTwice = hg.Appearance.OpenAllFacemapsMenu, hg.Appearance.OpenFacemapMenu
 		ZCG.HookFaceMenus()
-		eq(opened, 1, "a second call wraps nothing twice")
+		eq(hg.Appearance.OpenAllFacemapsMenu, wrappedOnce, "a second call wraps nothing twice")
+		eq(hg.Appearance.OpenFacemapMenu, wrappedTwice, "... neither the other window")
+		hg.Appearance.OpenAllFacemapsMenu()
+		eq(opened, 2, "... and the window opens once, not once per wrap")
 		hg.Appearance.FacemapsModels[facePath] = nil
 		M.menus = {}
 		hg.Appearance.OpenFacemapMenu()
-		eq(opened, 1, "the window of the game is not opened where it would be empty")
+		eq(opened, 2, "the window of the game is not opened where it would be empty")
 		check(#M.menus >= 1, "... the list of this addon is opened instead")
 		hg.Appearance.OpenFacemapMenu = nil
 		hg.Appearance.OpenAllFacemapsMenu = nil

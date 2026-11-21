@@ -1067,6 +1067,8 @@ local function hookFaceMenus()
 	for _, name in ipairs({ "OpenFacemapMenu", "OpenAllFacemapsMenu" }) do
 		local stock = AP[name]
 		if isfunction(stock) and not faceMenus[stock] then
+			-- the wrapper is the one remembered: this runs every half a second, and a wrapper that
+			-- is not known would be wrapped again, one layer deeper every time (as PostInit above)
 			faceMenus[stock] = true
 			local function wrapped(...)
 				if isfunction(ZCG.FacePass) then pcall(ZCG.FacePass) end
@@ -1082,6 +1084,7 @@ local function hookFaceMenus()
 				end
 				return stock(...)
 			end
+			faceMenus[wrapped] = true
 			AP[name] = wrapped
 		end
 	end
