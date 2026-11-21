@@ -200,11 +200,41 @@ net.Receive("zco_say", function()
 	if text and text ~= "" then chat.AddText(Color(120, 200, 255), "[Внешность] ", Color(230, 230, 230), text) end
 end)
 
---- ask the server for an appearance (what the menu does when a player chooses his look)
+--- Is the module of the gamemode here? Its client half (LoadAppearanceFile, SelectedAppearance)
+--- is loaded from the same place as the server half that receives OnlyGet_Appearance, so where the
+--- one is, the other is as well - and sending a net message nobody registered is an error.
+local function gameThere()
+	local tables = hg and hg.Appearance
+	return istable(tables) and isfunction(tables.LoadAppearanceFile) and tables.SelectedAppearance
+		and isfunction(tables.SelectedAppearance.GetString)
+end
+ZCO.GameThere = gameThere
+
+--- A look a player chose, saved and sent exactly the way the Apply button of Z-City does it (2.24.4):
+--- 1. the file the gamemode reads - data/zcity/appearances/<hg_appearance_selected>.json, the same
+---    folder and the same JSON as its CreateAppearanceFile writes;
+--- 2. OnlyGet_Appearance with that very table - the net of its Apply, which puts the look into
+---    CachedAppearance on the server, and CachedAppearance is what the gamemode wears at a spawn;
+--- 3. zco_set - the copy of this addon on the server (data/zco/), written from the same table at the
+--- same moment, so that no path on the server keeps a copy from before the Apply.
 function ZCO.Send(appearance)
+	local look = appearance or ZCO.Saved or ZCO.Default()
+	if gameThere() then
+		ZCO.WriteOld(hg.Appearance.SelectedAppearance:GetString(), look)
+		local ok = pcall(function()
+			net.Start("OnlyGet_Appearance")
+			net.WriteTable(look)
+			net.SendToServer()
+		end)
+		if not ok then
+			chat.AddText(Color(120, 200, 255), "[Внешность] ", Color(230, 230, 230),
+				"Модуль внешности игры не отвечает на OnlyGet_Appearance - вид сохранён только в аддоне.")
+		end
+	end
 	net.Start("zco_set")
-	net.WriteTable(appearance or ZCO.Saved or ZCO.Default())
+	net.WriteTable(look)
 	net.SendToServer()
+	return look
 end
 
 concommand.Add("zco_import", function()

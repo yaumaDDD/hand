@@ -525,11 +525,13 @@ return function(testdir, luaroot)
 	mine.CachedAppearance = { AModel = one, AClothes = { main = "normal" }, AAttachments = {},
 		ABodygroups = {}, AName = "Модовский", AFacemap = "Default", AColor = Color(1, 2, 3) }
 	ApplyAppearance(mine, nil, true)
-	check(forced ~= nil and forced.AName == "Вася Пупкин",
-		"the look the server keeps for a player wins over the cache of the mod: at a spawn the mod "
-		.. "fills that cache with a new random look when the file of the client is empty (2.24.0)")
+	check(forced ~= nil and forced.AName == "Модовский",
+		"the look the game keeps for a player - what its Apply wrote into CachedAppearance - wins "
+		.. "over the copy this server keeps: the order the original module reads it in (2.24.4)")
 	eq(calls, 1, "... and it is put on by ForceApplyAppearance of the mod")
 	eq(modded.calls, 0, "... and the mod is not asked to dress him at random")
+	eq((ZCO.Load(mine) or {}).AName, "Модовский",
+		"... and the copy of this server is written from it at once, not at the next spawn")
 	-- with no file of his own the cache of the mod is the look of the player - and it is kept
 	M.written[ZCO.FileOf(mine)] = nil
 	mine.zcoCached, mine.zcoAppearance = nil, nil
@@ -578,8 +580,76 @@ return function(testdir, luaroot)
 		ABodygroups = {}, AName = "Другой случайный", AFacemap = "Default", AColor = Color(7, 8, 9) }
 	forced = nil
 	ApplyAppearance(nofile, nil, true)
-	eq((forced or {}).AName, "Случайный",
-		"... so the next spawn keeps it instead of another random look the mod makes")
+	eq((forced or {}).AName, "Другой случайный",
+		"a look the game put into the cache again is the look of the player once more, and it is kept "
+		.. "as his own - his client is told, so it writes the file the game reads and the cache stops "
+		.. "changing (2.24.4)")
+	eq((ZCO.Load(nofile) or {}).AName, "Другой случайный",
+		"... and the copy of this server follows it")
+
+	-- A table this addon wrote into the cache itself is not a look the player applied: a random
+	-- dress of our own would otherwise become his look and stay it (2.24.0).
+	nofile.zcoCached = nil
+	local ours = ZCO.Clean({ AModel = one, AClothes = { main = "normal" }, AAttachments = {},
+		ABodygroups = {}, AName = "Наш случайный", AFacemap = "Default", AColor = Color(1, 1, 1) })
+	nofile.zcoAppearance, nofile.zcoWore = ours, ours
+	nofile.CachedAppearance, nofile.zcoWrote = ours, ours
+	nofile.CurAppearance = ours
+	ZCO.Save(nofile, look)
+	forced = nil
+	ApplyAppearance(nofile, nil, true)
+	eq((forced or {}).AName, "Вася Пупкин",
+		"a random dress of this addon is not the look of the player: the tables it wrote are its own, "
+		.. "and the copy this server keeps is used (2.24.0)")
+	M.netMessages = {}
+
+	-- ------------------------------------------------------------------ Apply of the editor of Z-City
+	-- Its Apply writes the look into the file of the gamemode on the client and into CachedAppearance
+	-- on the server, and the look is worn at the next spawn. The copy this server keeps has to follow
+	-- it at once: a mode, a relog or a map change in between would keep the copy from before (2.24.4).
+	do
+		local who = M.newPlayer("Применил", oneEntry.mdl, { steamid64 = "76561198000000025" })
+		ZCO.Save(who, look)
+		eq((ZCO.Load(who) or {}).AName, "Вася Пупкин", "(the imitation: a copy of this server)")
+		who.CachedAppearance = { AModel = one, AClothes = { main = "normal" }, AAttachments = {},
+			ABodygroups = {}, AName = "Выбранное", AFacemap = "Face 1", AColor = Color(3, 4, 5) }
+		M.netMessages = {}
+		M.advance(1.2)
+		eq((ZCO.Load(who) or {}).AName, "Выбранное",
+			"an Apply of the editor of Z-City is kept by this server at once, not at the next spawn")
+		eq(who.zcoAppearance and who.zcoAppearance.AName, "Выбранное",
+			"... and it is the look of the player from then on")
+		local told = 0
+		for _, message in ipairs(M.netMessages) do
+			if message.name == "zco_got" then told = told + 1 end
+		end
+		check(told >= 1, "... and his client is told, so it writes the file the gamemode reads")
+		M.netMessages = {}
+		M.advance(3)
+		eq((ZCO.Load(who) or {}).AName, "Выбранное",
+			"... and the watch keeps it: nothing is written again while he applies nothing")
+		local sent = 0
+		for _, message in ipairs(M.netMessages) do
+			if message.name == "zco_got" then sent = sent + 1 end
+		end
+		eq(sent, 0, "... and nothing is sent to his client again either")
+
+		-- A spawn: the game wore what its Apply put into the cache, and the copy of this server is
+		-- from before that Apply. Putting that copy on the player is what took the applied look
+		-- away at every spawn; now the copy follows what the game wore, not the other way round.
+		ZCO.Save(who, look)
+		eq((ZCO.Load(who) or {}).AName, "Вася Пупкин", "(the imitation: the copy is the older one)")
+		who.zcoWore = nil
+		who.CurAppearance = { AModel = one, AClothes = { main = "normal" }, AAttachments = {},
+			ABodygroups = {}, AName = "Выбранное", AFacemap = "Face 1", AColor = Color(3, 4, 5) }
+		hook.Run("PlayerSpawn", who)
+		M.advance(0.2)
+		eq(who.zcoAppearance and who.zcoAppearance.AName, "Выбранное",
+			"at a spawn the look the game wore is kept as the look of the player ...")
+		eq((ZCO.Load(who) or {}).AName, "Выбранное",
+			"... and the copy of this server is written from it, not put over it")
+		eq(who.zcoWore, nil, "... and nothing of this addon is put on him over what the game wore")
+	end
 	M.netMessages = {}
 
 	do -- the content of the addon that no Lua names: found by walking its own folder (own/sh_scan.lua)

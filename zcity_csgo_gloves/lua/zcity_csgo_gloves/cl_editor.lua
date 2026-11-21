@@ -1110,6 +1110,53 @@ local function hookFaceMenus()
 end
 ZCG.HookFaceMenus = hookFaceMenus
 
+--- a button of a panel by its text, looked for through the panels below it as well (the Apply
+--- button of Z-City sits three panels deep: viewer -> bottomContainer -> downPanel -> ApplyButton)
+local function findButton(panel, text, depth)
+	if not (ispanel(panel) and IsValid(panel)) then return nil end
+	depth = depth or 0
+	if depth > 4 then return nil end
+	local children = isfunction(panel.GetChildren) and panel:GetChildren() or nil
+	if not istable(children) then return nil end
+	for _, child in ipairs(children) do
+		if isfunction(child.DoClick) and isfunction(child.GetText) and child:GetText() == text then
+			return child
+		end
+	end
+	for _, child in ipairs(children) do
+		local got = findButton(child, text, depth + 1)
+		if got then return got end
+	end
+	return nil
+end
+
+--- The Apply button of the editor of Z-City writes the look into the file of the gamemode on the
+--- client and sends it to CachedAppearance of the server, where it waits for the next spawn. The
+--- server keeps a copy of its own (data/zco/) and that copy has to be written from the very same
+--- table at the very same moment: a copy from before the Apply is what took the applied look away
+--- at the next spawn, at a relog and at every call of a mode that dresses the player (2.24.4). The
+--- button keeps doing what it did - the file, the net of the gamemode and its sound are its own -
+--- and the look goes to this addon as well, by the rails of its own menu (own/cl_own_files.lua:
+--- the file of the gamemode, OnlyGet_Appearance, and zco_set which wears it and keeps it).
+local function wrapApplyButton(main, viewer)
+	local button = findButton(viewer, "Apply")
+	if not button or button.zcg_apply then return false end
+	button.zcg_apply = true
+	local stock = button.DoClick
+	button.DoClick = function(self, ...)
+		local got = stock(self, ...)
+		local appearance = (IsValid(main) and istable(main.AppearanceTable) and main.AppearanceTable)
+			or nil
+		if istable(appearance) and next(appearance) ~= nil
+			and istable(ZCO) and isfunction(ZCO.Send) then
+			local ok, err = pcall(ZCO.Send, appearance)
+			if not ok then report("the Apply button of the editor", err) end
+		end
+		return got
+	end
+	return true
+end
+
 function ZCG.AttachEditor(main)
 	if not IsValid(main) then return false end
 
@@ -1128,6 +1175,9 @@ function ZCG.AttachEditor(main)
 
 				ok, err = pcall(wrapFaceButton, main, child)
 				if not ok then report("appearance editor face button", err) end
+
+				ok, err = pcall(wrapApplyButton, main, child)
+				if not ok then report("appearance editor Apply button", err) end
 			end
 
 			main.zcg_viewer = child

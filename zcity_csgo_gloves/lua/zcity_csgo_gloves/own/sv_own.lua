@@ -144,11 +144,13 @@ function ZCO.Apply(ply, appearance, noModelChange)
 	-- the field Z-City itself reads: its modes (homicide names a traitor by the name over his
 	-- head), its ragdolls (fake/sv_tier_0.lua copies it onto the body) and its admin tools
 	ply.CurAppearance = ZCO.Copy(appearance)
+	ply.zcoWore = ply.CurAppearance      -- this table is of this addon, not a look the game put on
 	-- the field the Appearance Mod itself reads before it does anything else (its ApplyAppearance
 	-- takes Client.CachedAppearance first, and its own spawn path asks for a random look when that
 	-- field is empty): what this addon put on the player is what the mod keeps for him, so his own
 	-- path does not dress him at random over it (2.24.0)
 	ply.CachedAppearance = ZCO.Copy(appearance)
+	ply.zcoWrote = ply.CachedAppearance  -- ... and neither is this one
 	hook.Run("ZCOApplied", ply, ply.zcoAppearance)
 	return true
 end
@@ -212,12 +214,48 @@ local function aLook(got)
 	return clean
 end
 
---- the look a player saved, the way the fix of the Appearance Mod reads it (CachedAppearance,
---- CurAppearance): what the server keeps for him in data/zco/, then the look he sent before, then
---- the one he wears right now - the first of them that is a look of the catalog
+--- The look the game itself keeps for a player, read in the very order the module of Z-City and
+--- the fix of the Appearance Mod read it: CachedAppearance - what its Apply button put there, and
+--- that IS the look the player chose - and then CurAppearance, what he wears. A look the game
+--- accepts is accepted here too, even where the catalog of this addon does not know it (a model or
+--- a cloth of another addon): the copy of this addon is a copy, and a copy that goes ahead of the
+--- look a player applied is what took his Apply away (2.24.4).
+function ZCO.GameLook(client)
+	if not IsValid(client) then return nil end
+	local saved = client.CachedAppearance
+	-- A table this addon put there itself is its own copy and not a look the player applied: the
+	-- game replaces that field with a NEW table - its Apply button, the answer of the client to its
+	-- OnlyGet_Appearance, a mode of it - and only such a table is the look of the player (2.24.4).
+	if not istable(saved) or next(saved) == nil or saved == client.zcoWrote then return nil end
+	local AP = hg and hg.Appearance
+	local their = istable(AP) and isfunction(AP.AppearanceValidater)
+		and AP.AppearanceValidater(saved) and true or false
+	local copy = table.Copy(saved)
+	if istable(AP) and isfunction(AP.CheckAttachments) then
+		local ok, checked = pcall(AP.CheckAttachments, client, copy)
+		if ok and istable(checked) then copy = checked end
+	end
+	local clean = ZCO.Clean(copy)
+	if their then return clean end
+	if not ZCO.Validate(clean) then return nil end
+	return clean
+end
+
+--- what the game put on a player and this addon did not: the dress of a mode of the gamemode, of
+--- its editor, of the Appearance Mod - a look of his own, where this server keeps none
+local function wornByGame(client)
+	local worn = client.CurAppearance
+	if not istable(worn) or next(worn) == nil or worn == client.zcoWore then return nil end
+	return aLook(worn)
+end
+
+--- the look a player saved: the one the game keeps for him (what he applied) first, then the copy
+--- this server keeps in data/zco/, then the look he sent before, then what the game put on him - a
+--- copy of this addon never goes ahead of the look the player applied himself (2.24.4)
 function ZCO.SavedOf(client)
 	if not IsValid(client) then return nil end
-	return aLook(ZCO.Load(client)) or aLook(client.zcoCached) or aLook(client.zcoAppearance)
+	return ZCO.GameLook(client) or aLook(ZCO.Load(client)) or aLook(client.zcoCached)
+		or wornByGame(client) or aLook(client.zcoAppearance)
 end
 
 --- does this player ask for a random look himself? (zco_random is userinfo, so the server sees it)
@@ -305,6 +343,13 @@ function ZCO.ApplyAppearance(client, appearance, random, _responseIsValid, useCa
 		ZCO.Save(client, client.zcoAppearance)
 		return
 	end
+	-- the order of the original module: what its Apply wrote into CachedAppearance is the look of
+	-- the player, and the copy in data/zco/ is only for when the game keeps none of its own (2.24.4)
+	local worn = ZCO.GameLook(client)
+	if worn then
+		ZCO.Wear(client, worn)
+		return
+	end
 	local saved = ZCO.Load(client)
 	if saved then
 		ZCO.Wear(client, saved)
@@ -345,16 +390,7 @@ end
 -- and only while nobody wrapped it before; the mod's own tables, menus and files are not touched.
 
 --- the look the mod keeps for a player, read the way the fix of the mod reads it
-local function theirSaved(client)
-	local AP = hg and hg.Appearance
-	if not istable(AP) then return nil end
-	local saved = client.CachedAppearance or client.CurAppearance
-	if not istable(saved) then return nil end
-	if isfunction(AP.AppearanceValidater) and not AP.AppearanceValidater(saved) then return nil end
-	local copy = table.Copy(saved)
-	if isfunction(AP.CheckAttachments) then copy = AP.CheckAttachments(client, copy) end
-	return copy
-end
+local theirSaved = ZCO.GameLook
 
 --- is this the same look as that one? (what a player sees, not the tables themselves)
 local function sameLook(one, two)
@@ -373,6 +409,27 @@ local function sameLook(one, two)
 	return clothes(one) == clothes(two)
 end
 
+--- Keep a look the game put on a player as his own: the copy in data/zco/ is written from it and
+--- sent to his client, which writes it into data/zcity/appearances/ - the file the gamemode itself
+--- reads at the next spawn. Nothing is put on the player here: what he wears is what the game wore,
+--- and taking it away to put our own copy on is what lost an Apply (2.24.4). Returns true when the
+--- look was another one than the copy this server kept.
+function ZCO.Adopt(client, look)
+	if not IsValid(client) or not istable(look) or next(look) == nil then return false end
+	local clean = ZCO.Clean(look)
+	local file = aLook(ZCO.Load(client))
+	if client.zcoAppearance and sameLook(clean, client.zcoAppearance)
+		and file and sameLook(clean, file) then
+		return false              -- it is his look already, on him and in the file of this server
+	end
+	client.zcoAppearance = clean
+	client.zcoCached = clean
+	ZCO.Save(client, clean)
+	ZCO.SendSaved(client)         -- his client writes the file the gamemode reads from now on
+	faceAgain(client)
+	return true
+end
+
 --- put that wrapper in place (a pack may load later than we do, so it is tried more than once)
 function ZCO.KeepWrap()
 	if not (ZCO.Keep and ZCO.Keep:GetBool()) then return end
@@ -385,19 +442,14 @@ function ZCO.KeepWrap()
 		local mine = IsValid(client) and client:IsPlayer() and ZCO.Keep:GetBool()
 			and not (client.IsBot and client:IsBot()) and not wantsRandom(client)
 		if random and mine then
-			-- What this addon keeps for the player is his look, and the cache of the mod is read
-			-- only where there is none of it: at a spawn the mod fills that cache with a NEW random
-			-- look whenever the file of the client is empty, and taking the cache first is what
-			-- dressed the player at random every time (2.24.0). A look taken from the cache is kept
-			-- as his own from then on, so it is not another random one at the next spawn.
-			local saved = ZCO.SavedOf(client) or theirSaved(client)
+			-- The look the game keeps for the player - what he applied - is read first, exactly as
+			-- the fix of the mod reads it, and the copy of this server only where the game has none
+			-- (2.24.4). A look taken from the cache is kept as his own and written into the file his
+			-- client reads, so it is not another random one at the next spawn (2.24.0).
+			local saved = ZCO.SavedOf(client)
 			if saved then
 				AP.ForceApplyAppearance(client, saved)
-				faceAgain(client)
-				if not sameLook(saved, ZCO.Load(client)) then
-					ZCO.Save(client, saved)
-					ZCO.SendSaved(client)
-				end
+				ZCO.Adopt(client, saved)
 				return
 			end
 		end
@@ -427,6 +479,29 @@ hook.Add("InitPostEntity", "zco_keep", function()
 end)
 hook.Add("PostGamemodeLoaded", "zco_keep", function()
 	timer.Simple(1, ZCO.KeepWrap)
+end)
+
+-- The Apply button of the editor of Z-City does two things: it writes the look into
+-- data/zcity/appearances/<hg_appearance_selected>.json on the client and sends it to the server,
+-- which keeps it in CachedAppearance and wears it at the next spawn. The copy this server keeps
+-- (data/zco/) has to follow that look at once and not at the next spawn: a mode that dresses the
+-- player, a relog or a map change in between would otherwise keep the copy from before the Apply,
+-- and the player would lose what he chose (2.24.4). CachedAppearance is replaced by a new table at
+-- every Apply, so the watch is by the table itself and costs nothing while nothing is applied.
+local watched = {}
+hook.Add("InitPostEntity", "zco_watch", function()
+	timer.Create("zco_watch", 1, 0, function()
+		for _, ply in ipairs(player.GetAll()) do
+			if IsValid(ply) then
+				local got = ply.CachedAppearance
+				if istable(got) and watched[ply] ~= got then
+					watched[ply] = got
+					local look = ZCO.GameLook(ply)
+					if look then ZCO.Adopt(ply, look) end
+				end
+			end
+		end
+	end)
 end)
 
 net.Receive("zco_answer", function(_length, client)
@@ -496,9 +571,17 @@ hook.Add("PlayerInitialSpawn", "zco_spawn", function(ply)
 end)
 
 hook.Add("PlayerSpawn", "zco_spawn", function(ply)
-	-- the gamemode of Z-City calls ApplyAppearance itself; where nothing calls it, we do
+	-- The gamemode of Z-City calls ApplyAppearance itself and wears, exactly as the original module
+	-- does, what its Apply wrote into CachedAppearance. Nothing is put over that: what the game wore
+	-- is kept as the look of the player (2.24.4). Only a player the game did not dress is dressed
+	-- from the copy this server keeps, and where there is none his client is asked for its file.
 	timer.Simple(0, function()
 		if not IsValid(ply) then return end
+		local worn = ZCO.GameLook(ply) or wornByGame(ply)
+		if worn then
+			ZCO.Adopt(ply, worn)
+			return
+		end
 		if ply.zcoAppearance then
 			ZCO.Apply(ply, ply.zcoAppearance)
 		else
@@ -525,6 +608,7 @@ end)
 hook.Add("PlayerDisconnected", "zco_save", function(ply)
 	if IsValid(ply) and ply.zcoAppearance then ZCO.Save(ply, ply.zcoAppearance) end
 	waiting[ply] = nil
+	watched[ply] = nil
 end)
 
 hook.Add("ShutDown", "zco_save", function()

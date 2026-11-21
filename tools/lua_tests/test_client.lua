@@ -1978,6 +1978,78 @@ return function(testdir, luaroot)
 		M.errors = {}
 	end
 
+	-- ------------------------------------------------- Apply: the very structure of the original
+	-- The Apply button of the editor of Z-City writes the look into data/zcity/appearances/ of the
+	-- client and sends OnlyGet_Appearance, which puts it into CachedAppearance of the server, where
+	-- it waits for the next spawn. The copy this addon keeps on the server (data/zco/) is written
+	-- from the same table at the same moment - a copy from before the Apply is what took the
+	-- applied look away at the next spawn, at a relog and at every call of a mode (2.24.4).
+	do
+		local clicks = 0
+		local PANEL4 = {}
+		function PANEL4:Init() end
+		function PANEL4:PostInit()
+			self.AppearanceTable = { AModel = "Male 03", AClothes = { main = "normal" },
+				AAttachments = {}, ABodygroups = {}, AName = "Применённое", AFacemap = "Face 7",
+				AColor = Color(9, 8, 7) }
+			local v = vgui.Create("DModelPanel", self)
+			v:SetModel(Z.MALE)
+			self.viewer = v
+			-- as deep as it is in the editor of Z-City: viewer -> bottomContainer -> downPanel
+			local bottom = vgui.Create("DPanel", v)
+			local down = vgui.Create("DPanel", bottom)
+			local b = vgui.Create("DButton", down)
+			b:SetText("Apply")
+			function b:DoClick() clicks = clicks + 1 end
+			self.apply = b
+		end
+		vgui.Register("HG_AppearanceMenu", PANEL4, "DFrame")
+		M.advance(1)
+		local win4 = vgui.Create("HG_AppearanceMenu")
+		win4:PostInit()
+		M.errors = {}
+		check(ZCG.AttachEditor(win4), true, "an editor with an Apply button is attached to")
+		check(win4.apply.zcg_apply == true, "... and its Apply button is wrapped once")
+		local had = hg.Appearance
+		hg.Appearance = { SelectedAppearance = { GetString = function() return "main" end },
+			LoadAppearanceFile = function(_name) return nil end }
+		M.netMessages, M.written = {}, {}
+		win4.apply:DoClick()
+		eq(clicks, 1, "the Apply of the game runs as it did: its file, its net and its sound are its own")
+		local sent = {}
+		for _, message in ipairs(M.netMessages) do
+			sent[message.name] = (sent[message.name] or 0) + 1
+		end
+		eq(sent["OnlyGet_Appearance"], 1, "... and the net of the original Apply carries the look")
+		eq(sent["zco_set"], 1, "... and the copy of this addon is sent at the same moment")
+		check(M.written["zcity/appearances/main.json"] ~= nil,
+			"... into the very file the gamemode reads at the next spawn")
+		check(string.find(M.written["zcity/appearances/main.json"] or "", "Применённое", 1, true) ~= nil,
+			"... holding the look the player applied")
+		check(string.find(M.written["zcity/appearances/main.json"] or "", "Face 7", 1, true) ~= nil,
+			"... with the face he chose")
+		M.netMessages = {}
+		win4.apply:DoClick()
+		eq(clicks, 2, "a second Apply runs the stock button of the game once more")
+		local again = 0
+		for _, message in ipairs(M.netMessages) do
+			if message.name == "zco_set" then again = again + 1 end
+		end
+		eq(again, 1, "... and the look goes to the server once, not once per wrap")
+		-- where the gamemode is not there, nothing of it is asked for: only the rails of this addon
+		hg.Appearance = nil
+		M.netMessages, M.written = {}, {}
+		win4.apply:DoClick()
+		sent = {}
+		for _, message in ipairs(M.netMessages) do
+			sent[message.name] = (sent[message.name] or 0) + 1
+		end
+		eq(sent["OnlyGet_Appearance"], nil, "with no module of the gamemode its net is not sent")
+		eq(sent["zco_set"], 1, "... and the look still goes to this addon")
+		hg.Appearance = had
+		M.errors, M.netMessages = {}, {}
+	end
+
 	-- ---------------------------------------------------------------- a glove that brings its own materials
 	-- The Specialist model names only ten pairs of materials for its eleven gloves: the fifth
 	-- one gets its materials from sh_data.lua ("mats").
