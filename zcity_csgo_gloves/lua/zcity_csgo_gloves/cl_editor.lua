@@ -6,7 +6,10 @@
 --   2. the "Gloves" button keeps its menu with the stock gloves and gets one more entry that
 --      opens a picker with an icon for every CS:GO glove (hover = try it on, click = take it);
 --   3. with the "Z-City Appearance Mod" installed the "Gloves" button opens that addon's window
---      of previews instead: the window gets one more tile, which opens the same picker.
+--      of previews instead: the window gets one more tile, which opens the same picker;
+--   4. the "Facemap" button, and the face windows of the Appearance Mod, list the faces of the
+--      model at the moment of the click - and where the tables of the game have none for it at
+--      that moment, the list of this addon opens instead, so that there is always a face to pick.
 --
 -- Everything is optional: if the editor changes in a future Z-City version and something cannot
 -- be found, the gloves are still listed by name in the stock "Gloves" menu, because they are
@@ -896,6 +899,195 @@ end)
 -- ---------------------------------------------------------------------------------------------
 -- Hooks into every model panel of the editor window that is not hooked yet (PostInit may run
 -- more than once and builds a new one each time). Returns true if the window has one.
+-- ---------------------------------------------------------------------------------------------
+-- 6. the choice of a face
+-- ---------------------------------------------------------------------------------------------
+-- Both menus of Z-City list the faces out of the tables of the game at the very moment their button
+-- is clicked: the editor reads FacemapsSlots[FacemapsModels[the path of the model as the menu wrote
+-- it]], the windows of the Appearance Mod read MultiFacemaps[the same path in lower case], and the
+-- window of all facemaps shows a model only while one of the two has a face for it. A model with no
+-- entry there at that moment has nothing to choose from: an empty list and no way to tell why. So
+-- the faces go into the tables once more right before a click is handed on, and a click that still
+-- has nothing to list opens the list of this addon instead - it is baked into the addon when the
+-- addon is built (own/sh_catalog.lua) and offers the faces of the sex of the model even where no
+-- clothing Lua named one. (2.24.2)
+
+--- the model an appearance wears, as the menus of the game name it
+local function faceModelOf(appearance)
+	local entry = istable(appearance) and ZCG.AppearanceModel(appearance.AModel) or nil
+	if istable(entry) and isstring(entry.mdl) and entry.mdl ~= "" then return entry.mdl, entry end
+	if istable(appearance) and isstring(appearance.AModel) and appearance.AModel ~= "" then
+		return appearance.AModel, entry
+	end
+	return nil, entry
+end
+
+--- the faces the game lists for a model right now: { name = material }
+function ZCG.FacesOf(model)
+	local got = {}
+	local AP = hg and hg.Appearance
+	if not istable(AP) or not isstring(model) then return got end
+	local lower = string.lower(model)
+	local multi = istable(AP.MultiFacemaps) and (AP.MultiFacemaps[lower] or AP.MultiFacemaps[model]) or nil
+	if istable(multi) then
+		for name, byslot in pairs(multi) do
+			if istable(byslot) then
+				for _, path in pairs(byslot) do
+					if isstring(path) and path ~= "" and got[name] == nil then got[name] = path end
+				end
+			elseif isstring(byslot) and byslot ~= "" and got[name] == nil then
+				got[name] = byslot
+			end
+		end
+	end
+	local slot = istable(AP.FacemapsModels) and (AP.FacemapsModels[model] or AP.FacemapsModels[lower]) or nil
+	local list = isstring(slot) and istable(AP.FacemapsSlots) and AP.FacemapsSlots[slot] or nil
+	if istable(list) then
+		for name, path in pairs(list) do
+			if isstring(path) and path ~= "" and got[name] == nil then got[name] = path end
+		end
+	end
+	return got
+end
+
+local function faceCount(model)
+	local count = 0
+	for _name, path in pairs(ZCG.FacesOf(model)) do
+		if isstring(path) and path ~= "" then count = count + 1 end
+	end
+	return count
+end
+
+--- the face onto the model of the editor, the way the editor of Z-City puts it there: it reads
+--- FacemapsSlots[a material the model carries][the name of the face] and replaces that material
+local function faceOn(ent, name)
+	if not IsValid(ent) or not isfunction(ent.SetSubMaterial) or not isfunction(ent.GetMaterials) then return end
+	local AP = hg and hg.Appearance
+	if not (istable(AP) and istable(AP.FacemapsSlots)) then return end
+	local mats = ent:GetMaterials()
+	if not istable(mats) then return end
+	for index, mat in ipairs(mats) do
+		if isstring(mat) then
+			local list = AP.FacemapsSlots[mat] or AP.FacemapsSlots[string.lower(mat)]
+			if istable(list) and isstring(list[name]) then ent:SetSubMaterial(index - 1, list[name]) end
+		end
+	end
+end
+
+--- the list of this addon: the faces of the catalog and the ones the game has, and returns how
+--- many faces it offers
+local function openFaceMenu(main, appearance)
+	local model, entry = faceModelOf(appearance)
+	local sex = (istable(entry) and entry.sex) and 2 or 1
+	local faces = {}
+	if ZCO ~= nil and isfunction(ZCO.Faces) then
+		local ok, got = pcall(ZCO.Faces, model, sex)
+		if ok and istable(got) then
+			for name, path in pairs(got) do
+				if isstring(name) and isstring(path) and path ~= "" then faces[name] = path end
+			end
+		end
+	end
+	for name, path in pairs(ZCG.FacesOf(model)) do
+		if faces[name] == nil then faces[name] = path end
+	end
+	local names = {}
+	for name in pairs(faces) do names[#names + 1] = name end
+	table.sort(names)
+
+	local menu = DermaMenu()
+	local current = istable(appearance) and appearance.AFacemap or nil
+	for _, name in ipairs(names) do
+		local option = menu:AddOption(name, function()
+			if istable(appearance) then appearance.AFacemap = name end
+			surface.PlaySound("player/weapon_draw_0" .. math.random(2, 5) .. ".wav")
+			local viewer = IsValid(main) and main.zcg_viewer or nil
+			local ent = (IsValid(viewer) and isfunction(viewer.GetEntity)) and viewer:GetEntity() or nil
+			if IsValid(ent) then pcall(faceOn, ent, name) end
+			if IsValid(main) and isfunction(main.CallbackAppearance) then
+				pcall(main.CallbackAppearance, main)
+			end
+		end)
+		if istable(option) and isfunction(option.SetChecked) then option:SetChecked(name == current) end
+	end
+	if #names == 0 then menu:AddOption("this addon knows no face for this model", function() end) end
+	if IsValid(main) then
+		main.zcg_menu = menu
+		main.modelPosID = "Face"
+	end
+	menu:Open()
+	function menu:OnRemove()
+		if not IsValid(main) then return end
+		if main.zcg_menu == self then main.zcg_menu = nil end
+	end
+	return #names
+end
+
+--- the button of the editor that lists the faces ("Facemap" in the editor of Z-City and in the
+--- LEGACY build, its drop-down replaced by a window in the Appearance Mod)
+local function findFaceButton(viewer)
+	for _, child in ipairs(viewer:GetChildren()) do
+		if isfunction(child.DoClick) and isfunction(child.GetText) then
+			local text = child:GetText()
+			if text == "Facemap" or text == "Face" then return child end
+		end
+	end
+	return nil
+end
+
+local function wrapFaceButton(main, viewer)
+	local button = findFaceButton(viewer)
+	if not button or button.zcg_face then return false end
+	button.zcg_face = true
+	local stock = button.DoClick
+	local function wrapped(self, ...)
+		if isfunction(ZCG.FacePass) then pcall(ZCG.FacePass) end
+		local appearance = main.AppearanceTable
+		if faceCount((faceModelOf(appearance))) == 0 then
+			ZCG.Print("the face choice of Z-City has nothing for this model - the faces of this addon"
+				.. " are listed instead (zcg_faces says what is in the tables of the game)")
+			local ok, err = pcall(openFaceMenu, main, appearance)
+			if ok then return end
+			report("face menu of this addon", err)
+		end
+		return stock(self, ...)
+	end
+	button.DoClick = wrapped
+	return true
+end
+
+-- The Appearance Mod replaces the drop-down of the editor with windows of previews, so its own two
+-- functions are wrapped as well: the faces go into the tables once more before the window is built
+-- (a model the tables have no face for at that moment gets no section at all in the window of all
+-- facemaps), and the window of one model opens the list of this addon where the game has nothing.
+local faceMenus = setmetatable({}, { __mode = "k" })
+local function hookFaceMenus()
+	local AP = hg and hg.Appearance
+	if not istable(AP) then return end
+	for _, name in ipairs({ "OpenFacemapMenu", "OpenAllFacemapsMenu" }) do
+		local stock = AP[name]
+		if isfunction(stock) and not faceMenus[stock] then
+			faceMenus[stock] = true
+			local function wrapped(...)
+				if isfunction(ZCG.FacePass) then pcall(ZCG.FacePass) end
+				local main = rawget(_G, "zpan")
+				local appearance = (IsValid(main) and istable(main.AppearanceTable) and main.AppearanceTable)
+					or (istable(AP.CurrentEditTable) and AP.CurrentEditTable) or nil
+				if name == "OpenFacemapMenu" and faceCount((faceModelOf(appearance))) == 0 then
+					ZCG.Print("the face window of the Appearance Mod has nothing for this model - the faces"
+						.. " of this addon are listed instead (zcg_faces says what is in the tables of the game)")
+					local ok, err = pcall(openFaceMenu, main, appearance)
+					if ok then return end
+					report("face menu of this addon", err)
+				end
+				return stock(...)
+			end
+			AP[name] = wrapped
+		end
+	end
+end
+ZCG.HookFaceMenus = hookFaceMenus
+
 function ZCG.AttachEditor(main)
 	if not IsValid(main) then return false end
 
@@ -911,6 +1103,9 @@ function ZCG.AttachEditor(main)
 
 				ok, err = pcall(wrapGlovesButton, main, child)
 				if not ok then report("appearance editor menu", err) end
+
+				ok, err = pcall(wrapFaceButton, main, child)
+				if not ok then report("appearance editor face button", err) end
 			end
 
 			main.zcg_viewer = child
@@ -918,6 +1113,7 @@ function ZCG.AttachEditor(main)
 			-- it the two buttons are the only way to them)
 			local AP = hg and hg.Appearance
 			if AP and (AP.OpenClothesMenu or AP.OpenFacemapMenu) then pcall(hideOldButtons, child) end
+			pcall(hookFaceMenus)
 
 			-- the Appearance Mod wraps the button later than this addon does
 			if not child.zcg_mod_failed then
@@ -963,6 +1159,7 @@ end)
 -- already be open; "zpan" is the global Z-City keeps the open editor in.
 timer.Create("zcg_editor", 0.5, 0, function()
 	hookEditorClass()
+	pcall(hookFaceMenus)
 	local open = rawget(_G, "zpan")
 	if ispanel(open) and IsValid(open) then
 		local ok, err = pcall(ZCG.AttachEditor, open)

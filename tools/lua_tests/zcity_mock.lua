@@ -206,8 +206,28 @@ return function(M)
 				Entity:SetupBones()
 			end
 
+			-- (cl_appearance_editor1.lua: the faces of the slot the model is told to wear, by the
+			-- very path the menu wrote - a model told no slot gets an empty list and no error)
 			local other = vgui.Create("DButton", viewer)
+			other:SetSize(ScreenScale(100), ScreenScale(16))
 			other:SetText("Facemap")
+			function other:DoClick()
+				main.modelPosID = "Face"
+				local menu = DermaMenu()
+				local facemaps = AP.FacemapsSlots and AP.FacemapsModels
+					and AP.FacemapsSlots[AP.FacemapsModels[tMdl.mdl]] or {}
+				for k, v in SortedPairs(facemaps) do
+					menu:AddOption(k, function()
+						surface.PlaySound("player/weapon_draw_02.wav")
+						main.AppearanceTable.AFacemap = k
+					end)
+				end
+				menu:Open()
+				main.faceMenu = menu -- (test access only, the real editor keeps it in a local)
+				function menu:OnRemove()
+					main.modelPosID = "All"
+				end
+			end
 
 			local glovesSelector = vgui.Create("DButton", viewer)
 			glovesSelector:SetSize(ScreenScale(100), ScreenScale(16))

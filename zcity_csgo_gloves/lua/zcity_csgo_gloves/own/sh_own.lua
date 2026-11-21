@@ -11,7 +11,7 @@
 
 ZCO = ZCO or {}
 
-ZCO.Version = "2.24.1"
+ZCO.Version = "2.24.2"
 ZCO.Name = "Z-City Own Appearance"
 ZCO.Catalog = ZCO.Catalog or {}
 ZCO.CatalogCounts = ZCO.CatalogCounts or {}
@@ -123,9 +123,37 @@ function ZCO.Faces(model, sex)
 			faces[name] = material
 		end
 	end
+	-- The path the clothing Lua declared and the path the model has in the menu are not always the
+	-- same file (models/zcityadodser/... and models/slav/...), and a slot the Lua named is not
+	-- always a material the model carries: the faces of every other path of the same file and of
+	-- every slot the model file itself carries are the faces of the model as well (2.24.2).
+	local lowered = type(model) == "string" and string.lower(model) or nil
+	local base = lowered and string.match(lowered, "([^/]+)$") or nil
+	local function takeSlot(one)
+		for name, material in pairs((catalog.Facemaps or {})[one] or {}) do
+			if faces[name] == nil then faces[name] = material end
+		end
+	end
+	if base ~= nil and #base > 0 then
+		for known, one in pairs(catalog.FacemapOf or {}) do
+			local other = type(known) == "string" and string.lower(known) or nil
+			if other ~= nil and other ~= lowered and #other >= #base and string.sub(other, -#base) == base then
+				takeSlot(one)
+			end
+		end
+	end
+	local textures = ZCGloves and ZCGloves.ModelTextures and ZCGloves.ModelTextures(model) or nil
+	if type(textures) == "table" and type(textures.names) == "table" then
+		for index = 1, #textures.names do
+			for _, path in ipairs(ZCGloves.TexturePaths(textures, index) or {}) do
+				if type(path) == "string" and (catalog.Facemaps or {})[path] then takeSlot(path) end
+			end
+		end
+	end
 	-- a model with several face slots (the ones MultiFacemaps knows): every face of every slot
 	for known, by_face in pairs(catalog.MultiFacemaps or {}) do
-		if known == model then
+		local other = type(known) == "string" and string.lower(known) or nil
+		if known == model or (lowered ~= nil and other ~= nil and other == lowered) then
 			for face, by_slot in pairs(by_face) do
 				if type(by_slot) == "table" then
 					for _slot, material in pairs(by_slot) do

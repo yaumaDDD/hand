@@ -1443,6 +1443,97 @@ return function(testdir, luaroot)
 		if child:GetText() == "Gloves" then button = child end
 	end
 
+	-- ---------------------------------------------------------------- the choice of a face (2.24.2)
+	-- The editor lists the faces of the model out of the tables of the game at the moment of the
+	-- click, and a model the tables have no face for gets an empty list: nothing to choose, and
+	-- nothing that says why. The button is wrapped: the faces go into the tables once more before
+	-- the click is handed on, and a click that still has nothing to list opens the list of this
+	-- addon instead, which is baked into it and always has the faces of the sex of the model.
+	do
+		local faceButton
+		for _, child in ipairs(viewer:GetChildren()) do
+			if child:GetText() == "Facemap" then faceButton = child end
+		end
+		check(faceButton ~= nil, "the editor has a Facemap button")
+		eq(faceButton and faceButton.zcg_face, true, "... and this addon wrapped it")
+		local faceModel = main.AppearanceTable.AModel
+		local entry = ZCG.AppearanceModel(faceModel)
+		local facePath = (entry and entry.mdl) or faceModel
+		check(type(ZCG.FacesOf) == "function", "ZCG.FacesOf is there")
+
+		-- the tables of the game have faces for the model: its own menu lists them
+		-- (the gamemode makes the three of them in new_appearance/sh_shared.lua)
+		hg.Appearance.FacemapsSlots = hg.Appearance.FacemapsSlots or {}
+		hg.Appearance.FacemapsModels = hg.Appearance.FacemapsModels or {}
+		hg.Appearance.MultiFacemaps = hg.Appearance.MultiFacemaps or {}
+		local FACE_SLOT = "models/humans/male/group01/van_facemap"
+		hg.Appearance.FacemapsSlots[FACE_SLOT] = { Default = "", ["Face 1"] = "models/faces/van_1",
+			["Face 2"] = "models/faces/van_2" }
+		hg.Appearance.FacemapsModels[facePath] = FACE_SLOT
+		local hadFaces = 0
+		for _name, path in pairs(ZCG.FacesOf(facePath)) do
+			if path ~= "" then hadFaces = hadFaces + 1 end
+		end
+		check(hadFaces >= 2, "ZCG.FacesOf lists the faces the tables of the game have: " .. hadFaces)
+		M.menus = {}
+		faceButton:DoClick()
+		check(#M.menus >= 1, "a click on it opens a menu")
+		local listed = {}
+		for _, option in ipairs(M.menus[1].options or {}) do
+			if option.text then listed[option.text] = true end
+		end
+		check(listed["Face 1"] and listed["Face 2"], "... with the faces of the tables of the game")
+		M.pickOption(M.menus[1], "Face 2")
+		eq(main.AppearanceTable.AFacemap, "Face 2", "and a face picked there is the face worn")
+
+		-- the tables have none: the list of this addon opens instead, and a face can be picked
+		hg.Appearance.FacemapsModels[facePath] = nil
+		hg.Appearance.MultiFacemaps[string.lower(facePath)] = nil
+		local noFaces = 0
+		for _name, path in pairs(ZCG.FacesOf(facePath)) do
+			if path ~= "" then noFaces = noFaces + 1 end
+		end
+		M.menus = {}
+		faceButton:DoClick()
+		check(#M.menus >= 1, "a click on it opens a menu where the game has no face for the model")
+		local mine, names = M.menus[#M.menus], 0
+		for _, option in ipairs(mine.options or {}) do
+			if option.text then names = names + 1 end
+		end
+		check(names > 0, "... and the list of this addon has faces in it: " .. names
+			.. " (the game had " .. noFaces .. ")")
+		local firstName
+		for _, option in ipairs(mine.options or {}) do
+			if option.text and firstName == nil then firstName = option.text end
+		end
+		main.AppearanceTable.AFacemap = nil
+		M.pickOption(mine, firstName)
+		eq(main.AppearanceTable.AFacemap, firstName, "a face picked there is the face worn as well")
+		eq(main.modelPosID, "Face", "... and the editor is told the part being chosen")
+
+		-- the windows of the Appearance Mod are wrapped the same way
+		local opened = 0
+		hg.Appearance.OpenFacemapMenu = function() opened = opened + 1 end
+		hg.Appearance.OpenAllFacemapsMenu = function() opened = opened + 1 end
+		ZCG.HookFaceMenus()
+		check(hg.Appearance.OpenFacemapMenu ~= nil, "the face window of the mod is wrapped")
+		hg.Appearance.FacemapsSlots[FACE_SLOT] = { Default = "", ["Face 1"] = "models/faces/van_1" }
+		hg.Appearance.FacemapsModels[facePath] = FACE_SLOT
+		hg.Appearance.OpenAllFacemapsMenu()
+		eq(opened, 1, "... and the window of the game opens where the tables have a face")
+		ZCG.HookFaceMenus()
+		eq(opened, 1, "a second call wraps nothing twice")
+		hg.Appearance.FacemapsModels[facePath] = nil
+		M.menus = {}
+		hg.Appearance.OpenFacemapMenu()
+		eq(opened, 1, "the window of the game is not opened where it would be empty")
+		check(#M.menus >= 1, "... the list of this addon is opened instead")
+		hg.Appearance.OpenFacemapMenu = nil
+		hg.Appearance.OpenAllFacemapsMenu = nil
+		M.sounds = {} -- (the picks above played the sound of a choice, as the game does)
+		eq(#M.errors, 0, "no errors in the choice of a face: " .. table.concat(M.errors, " | "))
+	end
+
 	-- preview of a selected CS:GO glove
 	main.AppearanceTable.ABodygroups.HANDS = "CS:GO Moto 05"
 	Z.paintViewer(viewer)

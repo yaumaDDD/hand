@@ -92,6 +92,26 @@ return function(testdir, luaroot)
 		end
 	end
 	check(inMulti >= 5, "... and the table the menu of the Appearance Mod reads holds them: " .. inMulti)
+	-- The path a menu holds a model under and the path its faces are declared under are not always
+	-- the same file: the clothing Lua of Z-City declares the same model as models/zcity/...,
+	-- models/zcityadodser/... and models/slav/..., and a model file names materials no Lua declared
+	-- a slot for. The faces of every path of the same file, and of every slot the model file itself
+	-- carries, are the faces of the model - so the own menu lists them whichever path came by
+	-- (own/sh_own.lua, 2.24.2).
+	local rochelle = ZCO.Faces("models/slav/f/rochelle.mdl", ZCO.FEMALE)
+	eq(rochelle["Face 1"], "models/humans/slav/rochelletrs/trs_rochelle_head_1",
+		"the catalog has the faces of a model of its own")
+	local elsewhere = ZCO.Faces("models/wherever/else/rochelle.mdl", ZCO.FEMALE)
+	eq(elsewhere["Face 1"], rochelle["Face 1"],
+		"... and the same model under another path of the same file has the same faces")
+	local upper = ZCO.Faces("models/slav/f/ROCHELLE.MDL", ZCO.FEMALE)
+	eq(upper["Face 1"], rochelle["Face 1"], "... whatever the case of the path a menu holds")
+	local alien = ZCO.Faces("models/nowhere/something_else.mdl", ZCO.FEMALE)
+	local alienCount = 0
+	for _name, material in pairs(alien or {}) do
+		if type(material) == "string" and material ~= "" then alienCount = alienCount + 1 end
+	end
+	check(alienCount >= 5, "and a model no Lua named at all is offered the faces of its sex: " .. alienCount)
 	check(type(ApplyAppearance) == "function", "ApplyAppearance is there for the gamemode")
 	check(type(hg.Appearance.ForceApplyAppearance) == "function", "ForceApplyAppearance is there for the modes")
 	check(type(hg.Appearance.GetRandomAppearance) == "function", "GetRandomAppearance is there")

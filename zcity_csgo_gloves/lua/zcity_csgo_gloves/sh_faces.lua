@@ -47,7 +47,8 @@ ZCG.FaceAdded = ZCG.FaceAdded or {}
 local added = ZCG.FaceAdded
 
 ZCG.FaceClash = ZCG.FaceClash or 0 -- an entry that is there with another value: left alone
-ZCG.FaceMade = ZCG.FaceMade or { multi = 0, slots = 0, models = 0, lower = 0, alias = 0, shared = 0 }
+ZCG.FaceMade = ZCG.FaceMade or { multi = 0, slots = 0, models = 0, lower = 0, alias = 0, shared = 0,
+	exact = 0 }
 
 local function clean(path)
 	return string.lower(string.gsub(tostring(path), "\\", "/"))
@@ -95,7 +96,7 @@ local function takeBack()
 		end
 		added[index] = nil
 	end
-	ZCG.FaceMade = { multi = 0, slots = 0, models = 0, lower = 0, alias = 0, shared = 0 }
+	ZCG.FaceMade = { multi = 0, slots = 0, models = 0, lower = 0, alias = 0, shared = 0, exact = 0 }
 	ZCG.FaceClash = 0
 end
 
@@ -399,6 +400,7 @@ function ZCG.SyncFaces()
 			return nil
 		end
 
+
 		--- the faces of one sex: the slots whose material path names the sex, as the own menu of
 		--- this addon takes them (own/sh_own.lua: slot:find("female" or "male"))
 		local poolOf = {}
@@ -437,7 +439,65 @@ function ZCG.SyncFaces()
 				local model = written and clean(written) or nil
 				if model and model ~= "" then
 					local faces, told = usable(model)
-					if faces == 0 then
+					-- The slot the model wears and that has a face in it. The editor of Z-City asks
+					-- for FacemapsSlots[FacemapsModels[the path exactly as the menu wrote it]] and
+					-- the windows of the Appearance Mod for MultiFacemaps[the same path in lower
+					-- case]: a model whose faces are in the tables under another key than the one
+					-- its menu asks for has no face to choose, whatever is in there. (2.24.2)
+					local worn
+					if faces > 0 then
+						local function hasFace(one)
+							local list = isstring(one) and (slots[one] or slots[clean(one)]) or nil
+							if not istable(list) then return false end
+							for _, path in pairs(list) do
+								if isstring(path) and path ~= "" then return true end
+							end
+							return false
+						end
+						-- the slot the model is told to wear by the key a menu asks for is the one
+						-- taken: what the clothing Lua said about a model is not talked over
+						local said = istable(AP.FacemapsModels)
+							and (AP.FacemapsModels[written] or AP.FacemapsModels[model]) or nil
+						if hasFace(said) then
+							worn = said
+						else
+							local keys = {}
+							for _, one in pairs(told) do keys[#keys + 1] = one end
+							table.sort(keys)
+							for _, one in ipairs(keys) do
+								if hasFace(one) then
+									worn = one
+									break
+								end
+							end
+						end
+					end
+					if faces > 0 and isstring(worn) then
+						if not istable(AP.FacemapsModels) then AP.FacemapsModels = {} end
+						if not istable(AP.ModelFaceSlots) then AP.ModelFaceSlots = {} end
+						if not istable(AP.MultiFacemaps) then AP.MultiFacemaps = {} end
+						multi = AP.MultiFacemaps
+						for _, key in ipairs({ written, model }) do
+							if AP.FacemapsModels[key] == nil then
+								if put("exact", AP.FacemapsModels, { key }, worn) then made = made + 1 end
+							end
+							if put("exact", AP.ModelFaceSlots, { key, clean(worn) }, true) then
+								made = made + 1
+							end
+						end
+						for name, path in pairs(slots[worn] or slots[clean(worn)] or {}) do
+							if isstring(name) and isstring(path) and path ~= "" then
+								for _, key in ipairs({ written, model }) do
+									local byname = istable(multi[key]) and multi[key][name] or nil
+									if not (istable(byname) and byname[clean(worn)] ~= nil) then
+										if put("exact", multi, { key, name, clean(worn) }, path) then
+											made = made + 1
+										end
+									end
+								end
+							end
+						end
+					elseif faces == 0 then
 						local target = targetOf(model, told)
 						if isstring(target) and target ~= "" then
 							if not istable(AP.MultiFacemaps) then AP.MultiFacemaps = {} end
@@ -556,7 +616,7 @@ function ZCG.FaceReport(out)
 	if faces == 0 and multi == 0 then return end
 	local made = ZCG.FaceMade or {}
 	local total = (made.multi or 0) + (made.slots or 0) + (made.models or 0) + (made.lower or 0)
-		+ (made.alias or 0) + (made.shared or 0)
+		+ (made.alias or 0) + (made.shared or 0) + (made.exact or 0)
 	out("  faces: " .. faces .. " in FacemapsSlots, " .. multi .. " in MultiFacemaps, " .. models
 		.. " models with a face, " .. slots .. " face materials of a model")
 	if total > 0 then
@@ -565,10 +625,12 @@ function ZCG.FaceReport(out)
 			.. (made.models or 0) .. " models told their slot, " .. (made.lower or 0)
 			.. " keys in the lower case the menus ask for, " .. (made.alias or 0)
 			.. " mirrored into the material their model actually carries, " .. (made.shared or 0)
-			.. " given to a model nobody wrote a face for): a face of the clothing Lua is listed"
+			.. " given to a model nobody wrote a face for, " .. (made.exact or 0)
+			.. " keys by the very path a menu asks for): a face of the clothing Lua is listed"
 			.. " by the menu of the Appearance Mod, and a multi-facemap by the plain menu of Z-City and by the"
 			.. " LEGACY build; a model whose Lua named no face but \"Default\" is offered the faces of its sex,"
-			.. " so that the choice of a face is never empty (zcg_faces names them, zcg_sync_faces 0 takes them back)")
+			.. " and every model of the menu is told its slot by the path the menu wrote, so that the choice of"
+			.. " a face is never empty (zcg_faces names them, zcg_sync_faces 0 takes them back)")
 	end
 	if (ZCG.FaceClash or 0) > 0 then
 		out("  " .. ZCG.FaceClash .. " face entries are there with another value and are left as they are")
@@ -618,7 +680,8 @@ concommand.Add("zcg_faces" .. (CLIENT and "_cl" or ""), function(ply)
 		.. (made.slots or 0) .. " into FacemapsSlots, " .. (made.models or 0) .. " models told their slot, "
 		.. (made.lower or 0) .. " keys in lower case, " .. (made.alias or 0)
 		.. " mirrored into the material their model carries, " .. (made.shared or 0)
-		.. " given to a model nobody wrote a face for; left alone with another value: " .. (ZCG.FaceClash or 0))
+		.. " given to a model nobody wrote a face for, " .. (made.exact or 0)
+		.. " keys by the very path a menu asks for; left alone with another value: " .. (ZCG.FaceClash or 0))
 	local lines = {}
 	for _, one in ipairs(added) do
 		lines[#lines + 1] = one[1] .. "  " .. tostring(one[6]) .. (one[5] and "/" or " = " .. tostring(one[4]))

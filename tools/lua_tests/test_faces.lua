@@ -434,6 +434,61 @@ return function(testdir, luaroot)
 		"... and 1 gives them back")
 	eq(#M.errors, 0, "no errors: " .. table.concat(M.errors, " | "))
 
+	-- -------------- the path a menu asks for: a model of the menu told its slot by that very path
+	-- The editor of Z-City reads FacemapsSlots[FacemapsModels[tMdl.mdl]] - the path of the model
+	-- exactly as the menu wrote it (new_appearance/derma/cl_appearance_editor1.lua) - while the
+	-- Appearance Mod declares its models in lower case (sh_shared_appearancemod_addition.lua:
+	-- "model = string.lower(model)") and everything this addon reads out of a model file is lower
+	-- case as well. A model whose faces are in the tables, but under a key no menu asks for, has an
+	-- empty choice all the same - so every model of the menu is told its slot by the path the menu
+	-- wrote, and its faces are put where the window of the mod looks for them (2.24.2).
+	fresh()
+	M = dofile(testdir .. "/gmod_mock.lua")("server")
+	Z = dofile(testdir .. "/zcity_mock.lua")(M)
+	M.luaroot = luaroot
+	Z.install()
+	AP = hg.Appearance
+	local WORN = "models/humans/male/group01/ted_facemap"
+	local WRITTEN = "models/slav/m/Male_04.mdl" -- the path the menu wrote
+	local LOWER = "models/slav/m/male_04.mdl" -- the same path as the tables know it
+	AP.PlayerModels[1]["Male 04"] = { mdl = WRITTEN, sex = false }
+	AP.FacemapsSlots = { [WORN] = { Default = "", ["Face 1"] = "models/faces/ted_1",
+		["Face 2"] = "models/faces/ted_2" } }
+	AP.FacemapsModels = { [LOWER] = WORN }
+	AP.MultiFacemaps = { [LOWER] = { ["Face 1"] = { [WORN] = "models/faces/ted_1" } } }
+	AP.ModelFaceSlots = { [LOWER] = { [WORN] = true } }
+	include("autorun/zcity_csgo_gloves.lua")
+	ZCG = ZCGloves
+	eq(ZCG.LoadErrors, nil, "the addon loaded: " .. tostring(ZCG.LoadErrors and ZCG.LoadErrors[1] or ""))
+	check((ZCG.FaceMade or {}).exact > 0, "the addon says how many keys it wrote by the path a menu asks for: "
+		.. tostring((ZCG.FaceMade or {}).exact))
+	eq(AP.FacemapsModels[WRITTEN], WORN, "the model of the menu is told its slot by the path the menu wrote")
+	eq(AP.FacemapsModels[LOWER], WORN, "... and the key that was there is left as it was")
+	-- the editor of Z-City asks by the exact path alone, with no lower case to fall back on
+	local exactSlot = AP.FacemapsModels[WRITTEN]
+	local exactList = isstring(exactSlot) and AP.FacemapsSlots[exactSlot] or nil
+	check(istable(exactList) and exactList["Face 1"] ~= nil and exactList["Face 2"] ~= nil,
+		"so the editor of Z-City lists the faces of the model")
+	eq(AP.ModelFaceSlots[WRITTEN] and AP.ModelFaceSlots[WRITTEN][WORN], true,
+		"... and the model is told its face material by that path as well")
+	check(istable(AP.MultiFacemaps[WRITTEN]) and AP.MultiFacemaps[WRITTEN]["Face 1"] ~= nil,
+		"the window of the mod has the face under the path the menu wrote, too")
+	check(istable(AP.MultiFacemaps[LOWER]) and AP.MultiFacemaps[LOWER]["Face 2"] ~= nil,
+		"... and under the one in lower case it asks for, with every face of the slot")
+	check(same(modMenu(AP, WRITTEN), modMenu(AP, LOWER)), "both keys list the same faces")
+	local exactWas = #ZCG.FaceAdded
+	ZCG.SyncFaces()
+	eq(#ZCG.FaceAdded, exactWas, "a second pass adds nothing to it")
+	eq(ZCG.FaceClash, 0, "and nothing stands in its way: " .. tostring(ZCG.FaceClash))
+	M.setConVar("zcg_sync_faces", "0")
+	ZCG.SyncFaces()
+	eq(AP.FacemapsModels[WRITTEN], nil, "zcg_sync_faces 0 takes the key this addon wrote back")
+	eq(AP.FacemapsModels[LOWER], WORN, "... and leaves what the game wrote where it was")
+	M.setConVar("zcg_sync_faces", "1")
+	ZCG.SyncFaces()
+	eq(AP.FacemapsModels[WRITTEN], WORN, "... and 1 writes it again")
+	eq(#M.errors, 0, "no errors: " .. table.concat(M.errors, " | "))
+
 	-- ----------------------------- tables with clothes alone: no face table is made for the sync
 	fresh()
 	M = dofile(testdir .. "/gmod_mock.lua")("server")
